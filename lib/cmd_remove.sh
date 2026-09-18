@@ -43,8 +43,11 @@ cmd_remove() {
 
     local dir; dir="$(site_dir "$name")"
 
-    remove_vhost "$name"
-    remove_custom_domain_vhost "$name"
+    # Removal has to stay robust even if nginx -t fails for an unrelated
+    # reason (e.g. another vhost hand-edited elsewhere) — a bare call
+    # here would otherwise abort the rest of removal under set -e.
+    remove_vhost "$name" || log_warn "removing the vhost for '$name' hit an error — continuing with the rest of removal"
+    remove_custom_domain_vhost "$name" || log_warn "removing the custom-domain vhost for '$name' hit an error — continuing with the rest of removal"
 
     local ver=""
     local cfg_path; cfg_path="$(resolve_config_path "$name")"

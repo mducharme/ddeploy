@@ -205,8 +205,10 @@ cmd_remove_preview() {
         log_warn "'$name' has no preview metadata — removing it as best-effort anyway"
     fi
 
-    remove_vhost "$name"
-    remove_custom_domain_vhost "$name"
+    # Same reasoning as cmd_remove.sh: removal has to stay robust even if
+    # one of these hits an unrelated nginx error.
+    remove_vhost "$name" || log_warn "removing the vhost for '$name' hit an error — continuing with the rest of removal"
+    remove_custom_domain_vhost "$name" || log_warn "removing the custom-domain vhost for '$name' hit an error — continuing with the rest of removal"
 
     # resolve_preview_config can die() if neither the preview's own nor
     # the parent's config resolves — removal has to stay robust even in

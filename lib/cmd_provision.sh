@@ -102,7 +102,14 @@ cmd_provision() {
     [[ -n "$DOCROOT" ]] && root="$dir/$DOCROOT"
     local auth="${auth_flag:-$BASIC_AUTH_DEFAULT}"
     install_vhost "$name" "$root" "$auth" "${ADDITIONAL_HOSTNAMES[@]}"
-    install_custom_domain_vhost "$name" "$root" "$auth" "${ADDITIONAL_FQDNS[@]}"
+    # A custom domain's HTTP-01 request routinely fails on first
+    # provision (DNS not propagated yet) — that must not abort the rest
+    # of setup: the site is already reachable at the wildcard domain
+    # above, and a bare call here would otherwise kill the whole
+    # provision run under set -e before db_ensure/hooks ever ran.
+    if ! install_custom_domain_vhost "$name" "$root" "$auth" "${ADDITIONAL_FQDNS[@]}"; then
+        log_warn "custom domain setup failed for '$name' — continuing with the rest of provisioning; re-run provision once DNS is ready to retry it"
+    fi
 
     db_ensure "$name" "$dir"   # each scheme re-owns the file it writes itself
 
