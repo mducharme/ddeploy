@@ -15,7 +15,16 @@ detect_cms() {
     local composer="$dir/composer.json"
     if [[ -f "$composer" ]]; then
         grep -q '"craftcms/cms"' "$composer" 2>/dev/null && { echo craftcms; return; }
-        grep -qE '"locomotivemtl/charcoal-(app|core|cms|project-boilerplate)"' "$composer" 2>/dev/null && { echo charcoal; return; }
+        # Real Charcoal projects vary in which package they depend on
+        # directly — the meta-package (charcoal/charcoal), a specific
+        # locomotivemtl/charcoal-* component (charcoal-app, -admin,
+        # -contrib-*, -presenter, ...), or even a third-party extension
+        # under a different vendor entirely (e.g. mcaskill/charcoal-*).
+        # Matching "any vendor, package name starting with charcoal"
+        # instead of enumerating specific package names holds up against
+        # that variety (confirmed against a real project's composer.json
+        # that a narrower, enumerated match missed entirely).
+        grep -qE '"[a-zA-Z0-9_.-]+/charcoal[a-zA-Z0-9_.-]*"' "$composer" 2>/dev/null && { echo charcoal; return; }
         grep -qE '"roots/(bedrock|wordpress)"' "$composer" 2>/dev/null && { echo wordpress-bedrock; return; }
         grep -q '"johnpbloch/wordpress"' "$composer" 2>/dev/null && { echo wordpress; return; }
     fi
