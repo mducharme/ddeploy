@@ -33,7 +33,7 @@ cmd_deploy_all() {
     for site_path in "$SITES_ROOT"/*/; do
         [[ -d "$site_path" ]] || continue
         name="$(basename "$site_path")"
-        [[ -f "/etc/nginx/sites-available/$name.conf" ]] || continue
+        is_provisioned "$name" || continue
         log_info "== deploy-all: $name =="
         if ! "$PROVISIONER_DIR/provision.sh" deploy "$name"; then
             log_error "deploy failed for $name"

@@ -14,7 +14,7 @@ cmd_backup_database() {
         [[ -d "$site_path" ]] || continue
         name="$(basename "$site_path")"
         [[ -z "$only" || "$only" == "$name" ]] || continue
-        [[ -f "/etc/nginx/sites-available/$name.conf" ]] || continue
+        is_provisioned "$name" || continue
 
         local cfg_path; cfg_path="$(resolve_config_path "$name")"
         [[ -n "$cfg_path" ]] || continue

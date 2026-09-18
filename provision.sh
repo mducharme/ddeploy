@@ -30,6 +30,8 @@ source "$LIB_DIR/custom_domain.sh"
 source "$LIB_DIR/backup.sh"
 # shellcheck source=lib/db_backup.sh
 source "$LIB_DIR/db_backup.sh"
+# shellcheck source=lib/preview.sh
+source "$LIB_DIR/preview.sh"
 # shellcheck source=lib/cmd_init.sh
 source "$LIB_DIR/cmd_init.sh"
 # shellcheck source=lib/cmd_init_db.sh
@@ -48,6 +50,8 @@ source "$LIB_DIR/cmd_fleet.sh"
 source "$LIB_DIR/cmd_backup.sh"
 # shellcheck source=lib/cmd_db_backup.sh
 source "$LIB_DIR/cmd_db_backup.sh"
+# shellcheck source=lib/cmd_preview.sh
+source "$LIB_DIR/cmd_preview.sh"
 
 usage() {
     cat <<'EOF'
@@ -64,6 +68,10 @@ commands:
   deploy-all                    deploy every provisioned site
   backup-uploads [name]         sync upload_dirs to object storage (needs BACKUP_ENABLED=true)
   backup-database [name]        dump + upload each site's DB (needs DB_BACKUP_ENABLED=true)
+  provision-preview <project> <branch> [repo-url] [opts]   branch preview (see -h)
+  deploy-preview <project> <branch>       pull + redeploy a preview
+  remove-preview <project> <branch> [opts]   remove a preview (see -h)
+  prune-previews [project]      remove previews whose branch no longer exists
 EOF
 }
 
@@ -80,6 +88,10 @@ main() {
         deploy-all)     cmd_deploy_all "$@" ;;
         backup-uploads) cmd_backup_uploads "$@" ;;
         backup-database) cmd_backup_database "$@" ;;
+        provision-preview) cmd_provision_preview "$@" ;;
+        deploy-preview) cmd_deploy_preview "$@" ;;
+        remove-preview) cmd_remove_preview "$@" ;;
+        prune-previews) cmd_prune_previews "$@" ;;
         -h|--help|help|"") usage ;;
         *) usage; die "unknown command: $cmd" ;;
     esac

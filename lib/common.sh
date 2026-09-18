@@ -48,6 +48,10 @@ load_conf() {
     DB_BACKUP_ENABLED="${DB_BACKUP_ENABLED:-false}"
     DB_BACKUP_SCHEDULE="${DB_BACKUP_SCHEDULE:-23 * * * *}"
     DB_BACKUP_RETENTION_DAYS="${DB_BACKUP_RETENTION_DAYS:-7}"
+    PREVIEW_DB_MODE="${PREVIEW_DB_MODE:-shared}"
+    PREVIEW_SEED="${PREVIEW_SEED:-true}"
+    PREVIEW_PRUNE_ENABLED="${PREVIEW_PRUNE_ENABLED:-false}"
+    PREVIEW_PRUNE_SCHEDULE="${PREVIEW_PRUNE_SCHEDULE:-37 3 * * *}"
 }
 
 # Lighter loader for `init-db`, run on a dedicated database server that
@@ -60,6 +64,10 @@ load_db_conf() {
     : "${DB_ADMIN_CREDENTIALS:?provisioner.conf: DB_ADMIN_CREDENTIALS not set}"
     : "${DB_ALLOWED_HOSTS:?provisioner.conf: DB_ALLOWED_HOSTS not set}"
 }
+
+# Whether $1 has a live vhost — the simplest reliable signal that
+# `provision` has actually completed for it (not just cloned/configured).
+is_provisioned() { [[ -f "/etc/nginx/sites-available/$1.conf" ]]; }
 
 validate_name() {
     local name="$1"

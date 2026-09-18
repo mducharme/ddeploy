@@ -26,8 +26,12 @@ scan_hooks() {
     done < "$steps"
 }
 
+# $4/$5 (optional) exec user/home — default to the site's own www-<name>.
+# A shared-mode preview passes its parent's user/dir instead, since its
+# deploy steps (a migration, notably) run as whoever actually owns the
+# database they're pointed at.
 replay_hooks() {
-    local name="$1" php="$2" dir="$3"
+    local name="$1" php="$2" dir="$3" exec_user="${4:-www-$name}" exec_home="${5:-$dir}"
     local steps="$GENERATED_DIR/$name.steps"
     [[ -f "$steps" ]] || { log_info "no deploy steps for $name"; return 0; }
 
@@ -44,12 +48,12 @@ replay_hooks() {
             exec)
                 log_info "exec ($name, php$php): $cmd"
                 site_log "$name" "deploy: exec: $cmd"
-                sudo -u "www-$name" env HOME="$dir" PATH="$shim:/usr/bin:/bin" bash -lc "cd '$dir' && $cmd"
+                sudo -u "$exec_user" env HOME="$exec_home" PATH="$shim:/usr/bin:/bin" bash -lc "cd '$dir' && $cmd"
                 ;;
             composer)
                 log_info "composer ($name, php$php): $cmd"
                 site_log "$name" "deploy: composer: $cmd"
-                sudo -u "www-$name" env HOME="$dir" PATH="$shim:/usr/bin:/bin" bash -lc "cd '$dir' && composer $cmd"
+                sudo -u "$exec_user" env HOME="$exec_home" PATH="$shim:/usr/bin:/bin" bash -lc "cd '$dir' && composer $cmd"
                 ;;
             exec-host)
                 log_warn "exec-host step skipped by default — host-context command, review before trusting: $cmd"

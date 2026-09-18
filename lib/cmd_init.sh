@@ -133,5 +133,16 @@ EOF
         log_info "DB_BACKUP_ENABLED=false — skipping database backup cron"
     fi
 
+    if [[ "$PREVIEW_PRUNE_ENABLED" == "true" ]]; then
+        cat > /etc/cron.d/ddeploy-prune-previews <<EOF
+$PREVIEW_PRUNE_SCHEDULE root $PROVISIONER_DIR/provision.sh prune-previews >> $LOG_DIR/prune-previews.log 2>&1
+EOF
+        chmod 644 /etc/cron.d/ddeploy-prune-previews
+        log_info "cron: prune-previews runs on schedule '$PREVIEW_PRUNE_SCHEDULE'"
+    else
+        rm -f /etc/cron.d/ddeploy-prune-previews
+        log_info "PREVIEW_PRUNE_ENABLED=false — skipping preview-prune cron"
+    fi
+
     log_info "init complete."
 }

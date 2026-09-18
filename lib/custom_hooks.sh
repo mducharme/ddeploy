@@ -11,9 +11,10 @@
 # Both are optional; a missing directory/file is silently a no-op.
 
 # $1 name, $2 php, $3 site dir, $4 script path relative to the site dir,
-# $5 label for logging.
+# $5 label for logging, $6/$7 (optional) exec user/home — see
+# replay_hooks in lib/hooks.sh for why a shared-mode preview overrides these.
 run_repo_hook() {
-    local name="$1" php="$2" dir="$3" script_rel="$4" label="$5"
+    local name="$1" php="$2" dir="$3" script_rel="$4" label="$5" exec_user="${6:-www-$name}" exec_home="${7:-$dir}"
     local script="$dir/$script_rel"
     [[ -f "$script" ]] || return 0
     if [[ ! -x "$script" ]]; then
@@ -24,7 +25,7 @@ run_repo_hook() {
     local shim; shim="$(ensure_php_shim "$php")"
     log_info "running $label: $script_rel"
     site_log "$name" "$label: $script_rel"
-    sudo -u "www-$name" env HOME="$dir" PATH="$shim:/usr/bin:/bin" bash -lc "cd '$dir' && ./$script_rel"
+    sudo -u "$exec_user" env HOME="$exec_home" PATH="$shim:/usr/bin:/bin" bash -lc "cd '$dir' && ./$script_rel"
 }
 
 # $1 stage ("post-provision" or "post-deploy"), $2 name, $3 site dir, $4 php.

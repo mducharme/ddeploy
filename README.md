@@ -44,10 +44,14 @@ provision-all                 provision every site in ./manifest
 deploy-all                    deploy every provisioned site
 backup-uploads [name]         sync upload_dirs to object storage (needs BACKUP_ENABLED=true)
 backup-database [name]        dump + upload each site's DB (needs DB_BACKUP_ENABLED=true)
+provision-preview <project> <branch> [repo-url] [opts]   branch preview (see -h)
+deploy-preview <project> <branch>       pull + redeploy a preview
+remove-preview <project> <branch> [opts]   remove a preview (see -h)
+prune-previews [project]      remove previews whose branch no longer exists
 ```
 
 `init`, `init-db`, `provision`, `deploy`, `remove`, `backup-uploads`,
-`backup-database` need root.
+`backup-database`, and the `*-preview`/`prune-previews` commands need root.
 
 ## Site config resolution
 
@@ -96,6 +100,70 @@ since a custom domain generally isn't on the same Cloudflare account as
   setup — set that up per domain as needed.
 
 Once issued, renewal is certbot's timer, same as the wildcard.
+
+## Branch previews
+
+`provision-preview <project> <branch> [repo-url]` stands up a site for
+one branch of an existing project, at a name derived deterministically
+from `<project>` + `<branch>` (`preview_slug` in `lib/preview.sh` —
+lowercased, slugified, truncated with a hash suffix to fit the 28-char
+name cap). `deploy-preview`/`remove-preview` take the same `(project,
+branch)` pair and resolve the same name, so nothing needs to remember or
+pass around a generated name — CI just needs to know the project and
+branch it's already building.
+
+**Database and uploads are shared with the parent project by default,
+not copied.** This is deliberate, not a shortcut: these sites are
+typically deployed pre-launch, while a client is actively entering real
+content — the database *is* their content, with nothing else it could be
+restored from. Isolating a preview's database means content a client
+enters while a feature is in review has no way back into the main site
+when the branch merges; there's no equivalent of a git merge for a
+database. So `PREVIEW_DB_MODE=shared` (the default) links a preview to
+its parent's actual, current database and uploads — a migration in the
+preview's deploy steps runs against real data, and content entered
+through the preview is immediately the same content the main site has,
+because it's the same database. The Linux user is shared too (the
+preview's FPM pool runs as the parent's `www-<project>`, not a new
+user) — once the data itself is shared, a separate user protects nothing
+that matters.
+
+The accepted tradeoff: two previews active at once with diverging schema
+changes can conflict with each other against that one shared database.
+Given the alternative is guaranteed content loss, that's the right side
+to be on — and `backup-database` already covers this exact failure mode
+with a rolling snapshot history, which is what actually makes the
+tradeoff acceptable rather than reckless.
+
+`--isolated` opts a specific preview out into a fully normal, separate
+site — its own database, uploads, and Linux user — for when shared
+continuity isn't what's wanted: testing a risky migration against a
+site that's already live with real customers, or a branch that
+genuinely wants a disposable blank slate. `PREVIEW_SEED` (default
+`true`) seeds an isolated preview's database and uploads once, at
+creation, from the parent's current state (`mysqldump | mysql`, reusing
+`backup-database`'s dump; `rsync`, a copy not a link) — `--no-seed` skips
+that for a truly empty database.
+
+`deploy-preview` does `git fetch && reset --hard`, not `--ff-only pull`
+— PR branches get rebased and force-pushed routinely, and there's
+nothing local worth protecting on a preview. Basic auth defaults to on
+for previews (`--no-auth` to turn it off), unlike normal sites, since
+these are meant for internal/client eyes, not public or indexed.
+
+`remove-preview --purge-db` only drops a database for an isolated-mode
+preview — for shared mode it's a no-op, since that database belongs to
+the parent. `--purge-files` only ever removes the preview's own
+checkout; a shared preview's uploads paths are symlinks into the
+parent's directory, and `rm -rf` on the preview's own dir removes the
+symlinks, never what they point to.
+
+`prune-previews [project]` is the cleanup safety net: it diffs every
+provisioned preview against its branch's actual state on the remote
+(`git ls-remote`) and removes ones whose branch is gone. The primary
+cleanup path is still CI calling `remove-preview` when a PR closes —
+this only catches what that missed. Wire it into `init` via
+`PREVIEW_PRUNE_ENABLED`/`PREVIEW_PRUNE_SCHEDULE` for a periodic cron run.
 
 ## Database server
 

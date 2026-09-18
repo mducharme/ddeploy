@@ -11,7 +11,7 @@ cmd_list() {
     for site_path in "$SITES_ROOT"/*/; do
         [[ -d "$site_path" ]] || continue
         name="$(basename "$site_path")"
-        [[ -f "/etc/nginx/sites-available/$name.conf" ]] || continue
+        is_provisioned "$name" || continue
 
         local cfg_path; cfg_path="$(resolve_config_path "$name")"
         local php="?" docroot="" db="$name"
