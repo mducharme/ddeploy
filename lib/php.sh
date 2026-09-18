@@ -6,6 +6,14 @@
 
 SHIM_ROOT="$PROVISIONER_DIR/phpshim"
 
+# Installs php<ver>-fpm plus every currently-configured PHP_EXTENSIONS
+# package. Checks each package individually rather than just "is
+# php<ver>-fpm present" — otherwise adding a new entry to
+# PHP_EXTENSIONS (provisioner.conf) later never actually gets installed
+# for a PHP version that's already provisioned, since the old check
+# would short-circuit on the FPM package alone. ondrej/php packages
+# imagick, redis, mongodb, apcu, xdebug, and most other common
+# extensions the same way — add them here, not via pecl.
 ensure_php_installed() {
     local ver="$1"
     local pkgs=("php${ver}-fpm")
@@ -14,11 +22,16 @@ ensure_php_installed() {
         pkgs+=("php${ver}-${ext}")
     done
 
-    if dpkg -s "php${ver}-fpm" >/dev/null 2>&1; then
-        log_info "php${ver}-fpm already installed"
+    local missing=() pkg
+    for pkg in "${pkgs[@]}"; do
+        dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+    done
+
+    if [[ "${#missing[@]}" -gt 0 ]]; then
+        log_info "installing ${missing[*]}"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}"
     else
-        log_info "installing ${pkgs[*]}"
-        DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}"
+        log_info "php${ver}-fpm and configured extensions already installed"
     fi
     systemctl enable --now "php${ver}-fpm" >/dev/null 2>&1 || true
 }

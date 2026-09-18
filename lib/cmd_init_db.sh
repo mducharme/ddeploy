@@ -51,7 +51,10 @@ EOF
     log_info "admin credentials at $DB_ADMIN_CREDENTIALS — copy this file to DB_ADMIN_CREDENTIALS on each web server"
 
     log_info "== firewall (ufw): 3306 from allowed hosts only, SSH open =="
-    ufw allow 22/tcp comment 'ssh' >/dev/null
+    local ssh_port
+    for ssh_port in $(detect_ssh_ports); do
+        ufw allow "$ssh_port/tcp" comment 'ssh' >/dev/null
+    done
 
     # Replace any previously-added rules with the current list — delete
     # highest-numbered first so earlier deletions don't shift the

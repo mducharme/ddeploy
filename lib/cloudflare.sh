@@ -43,7 +43,10 @@ configure_cloudflare_firewall() {
         return
     fi
 
-    ufw allow 22/tcp comment 'ssh' >/dev/null
+    local ssh_port
+    for ssh_port in $(detect_ssh_ports); do
+        ufw allow "$ssh_port/tcp" comment 'ssh' >/dev/null
+    done
 
     # Replace any previously-added Cloudflare rules with the current
     # list — delete highest-numbered first so earlier deletions don't

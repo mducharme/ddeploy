@@ -78,6 +78,20 @@ require_root() {
     [[ "$EUID" -eq 0 ]] || die "this command must be run as root (use sudo)"
 }
 
+# Prints the port(s) sshd is actually configured to listen on (usually
+# just 22, but not always — hardcoding 22 in a firewall rule risks
+# locking out a server using a non-standard SSH port the moment ufw's
+# default-deny takes effect). `sshd -T` prints the fully-resolved
+# effective config (Include directives, defaults, and all), so it's used
+# over grepping sshd_config directly; falls back to 22 if sshd isn't
+# found or its config can't be parsed for some reason.
+detect_ssh_ports() {
+    local ports
+    ports="$(sshd -T 2>/dev/null | awk 'tolower($1)=="port"{print $2}' | sort -u)"
+    [[ -z "$ports" ]] && ports="$(grep -iE '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | sort -u)"
+    echo "${ports:-22}"
+}
+
 # Confirms the Go (mikefarah) yq is on PATH, not the Python (kislyuk) one
 # — same binary name, incompatible CLI.
 require_yq() {
