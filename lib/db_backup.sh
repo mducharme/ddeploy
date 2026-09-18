@@ -62,3 +62,46 @@ prune_database_backups() {
     local days="${DB_BACKUP_RETENTION_DAYS:-7}"
     rclone delete "${remote}/$name/db/" --min-age "${days}d" 2>/dev/null || true
 }
+
+# Lists $1's available dump filenames, newest first — filenames encode a
+# zero-padded timestamp (<db>-YYYYMMDD-HHMMSS.sql.gz), so a plain
+# lexicographic sort is also a chronological one.
+list_database_backups() {
+    local name="$1" remote="$2"
+    rclone lsf "${remote}/$name/db/" 2>/dev/null | sort -r
+}
+
+# Downloads $3 (a filename from list_database_backups, or empty for the
+# newest available) and restores it into $2, OVERWRITING that database.
+# $1 name (the bucket prefix backups are filed under — not necessarily
+# $2's own name, see restore_target in lib/cmd_restore.sh for why a
+# shared-mode preview's restore targets its parent's prefix).
+restore_site_database() {
+    local name="$1" db_name="$2" filename="$3"
+    require_rclone
+    require_backup_credentials
+    local remote; remote="$(backup_remote_spec)"
+
+    if [[ -z "$filename" ]]; then
+        filename="$(list_database_backups "$name" "$remote" | head -n1)"
+        [[ -n "$filename" ]] || { log_error "restore: no backups found for '$name'"; return 1; }
+    fi
+
+    local tmp_dir; tmp_dir="$(mktemp -d)"
+    log_info "restore: $name: downloading $filename"
+    if ! rclone copy "${remote}/$name/db/$filename" "$tmp_dir/"; then
+        log_error "restore: $name: failed to download $filename"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    log_info "restore: $name: restoring '$filename' into database '$db_name' (OVERWRITING it)"
+    local ok=1
+    if [[ ( "$DB_HOST" == "127.0.0.1" || "$DB_HOST" == "localhost" ) && -z "$DB_ADMIN_CREDENTIALS" ]]; then
+        gunzip -c "$tmp_dir/$filename" | mysql "$db_name" || ok=0
+    else
+        gunzip -c "$tmp_dir/$filename" | mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" "$db_name" || ok=0
+    fi
+    rm -rf "$tmp_dir"
+    [[ "$ok" -eq 1 ]]
+}

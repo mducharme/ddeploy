@@ -52,6 +52,8 @@ source "$LIB_DIR/cmd_backup.sh"
 source "$LIB_DIR/cmd_db_backup.sh"
 # shellcheck source=lib/cmd_preview.sh
 source "$LIB_DIR/cmd_preview.sh"
+# shellcheck source=lib/cmd_restore.sh
+source "$LIB_DIR/cmd_restore.sh"
 
 usage() {
     cat <<'EOF'
@@ -68,6 +70,8 @@ commands:
   deploy-all                    deploy every provisioned site
   backup-uploads [name]         sync upload_dirs to object storage (needs BACKUP_ENABLED=true)
   backup-database [name]        dump + upload each site's DB (needs DB_BACKUP_ENABLED=true)
+  restore-uploads <name> --yes  overwrite local upload_dirs from the backup (see -h)
+  restore-database <name> [--from <file>] --yes   overwrite the DB from a dump (see -h)
   provision-preview <project> <branch> [repo-url] [opts]   branch preview (see -h)
   deploy-preview <project> <branch>       pull + redeploy a preview
   remove-preview <project> <branch> [opts]   remove a preview (see -h)
@@ -88,6 +92,8 @@ main() {
         deploy-all)     cmd_deploy_all "$@" ;;
         backup-uploads) cmd_backup_uploads "$@" ;;
         backup-database) cmd_backup_database "$@" ;;
+        restore-uploads) cmd_restore_uploads "$@" ;;
+        restore-database) cmd_restore_database "$@" ;;
         provision-preview) cmd_provision_preview "$@" ;;
         deploy-preview) cmd_deploy_preview "$@" ;;
         remove-preview) cmd_remove_preview "$@" ;;

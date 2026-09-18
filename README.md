@@ -318,6 +318,23 @@ against a local or remote (`init-db`) database, same as `provision`. Run
 `init` installs `rclone` (once, if either backup is enabled) and the
 cron entries for whichever are turned on.
 
+### Restoring
+
+`restore-uploads <name> --yes` and `restore-database <name> [--from <file>] --yes`
+pull a backup back down — genuinely destructive (that's the point), so
+both require `--yes` to actually run; without it, they show what would
+happen (available dumps, newest first, for the database one) and do
+nothing. `restore-database` without `--from` restores the most recent
+dump.
+
+Both are preview-aware the same way `list`/`remove`/`deploy-all` are: a
+shared-mode preview has nothing of its own to restore (it was never
+separately backed up — there's no `<bucket>/<preview-name>/...`), so
+running either command against one redirects to the **parent project**
+with a loud warning, and restores the parent's actual database/uploads
+— the ones every preview of it is currently sharing. An isolated-mode
+preview restores its own, same as any normal site.
+
 ## Assumptions to verify against a real deploy
 
 - `PHP_EXTENSIONS` (`provisioner.conf`) covers what the CMS needs.

@@ -62,3 +62,29 @@ backup_site_uploads() {
     done
     [[ "$failures" -eq 0 ]]
 }
+
+# The reverse of backup_site_uploads: downloads the current backed-up
+# state of each dir, OVERWRITING whatever's on local disk now. Same
+# per-directory resilience as the backup direction — one dir failing
+# doesn't stop the others from being attempted.
+restore_site_uploads() {
+    local name="$1" dir="$2"; shift 2
+    local dirs=("$@")
+    [[ "${#dirs[@]}" -gt 0 ]] || return 0
+
+    require_rclone
+    require_backup_credentials
+    local remote; remote="$(backup_remote_spec)"
+
+    local d dest failures=0
+    for d in "${dirs[@]}"; do
+        dest="$dir/$d"
+        log_info "restore: $name: $BACKUP_BUCKET/$name/$d -> $dest"
+        mkdir -p "$dest"
+        if ! rclone sync "${remote}/$name/$d" "$dest" --checksum; then
+            log_warn "restore: $name: $d failed to restore"
+            failures=$((failures + 1))
+        fi
+    done
+    [[ "$failures" -eq 0 ]]
+}
