@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# `init` — make a bare Ubuntu 24.04 (noble) droplet ready to serve sites.
-# Idempotent: verifies and tops up rather than reinstalling blindly (§10).
+# `init` — make a bare Ubuntu 24.04 (noble) server ready to serve sites.
+# Idempotent: verifies and tops up rather than reinstalling blindly.
 #
-# Preconditions this does NOT set up for you (§2): wildcard DNS already
-# pointed at this droplet, a scoped Cloudflare API token already placed
+# Preconditions this does NOT set up for you: wildcard DNS already
+# pointed at this server, a scoped Cloudflare API token already placed
 # at $CF_CREDENTIALS, the shared git machine-user key already placed at
 # $GIT_DEPLOY_KEY, and the `deploy` service user already existing.
 
@@ -20,7 +20,7 @@ cmd_init() {
         nginx mariadb-server certbot python3-certbot-dns-cloudflare software-properties-common \
         curl ufw
 
-    log_info "== yq (must be the Go/mikefarah build, not the Python one — §4, §14) =="
+    log_info "== yq (must be the Go/mikefarah build, not the Python one) =="
     if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>&1 | grep -qi mikefarah; then
         if command -v snap >/dev/null 2>&1; then
             snap install yq
@@ -47,7 +47,7 @@ cmd_init() {
     fi
 
     log_info "== Cloudflare credentials =="
-    [[ -f "$CF_CREDENTIALS" ]] || die "$CF_CREDENTIALS not found — place the scoped Cloudflare API token there before running init (§2)"
+    [[ -f "$CF_CREDENTIALS" ]] || die "$CF_CREDENTIALS not found — place the scoped Cloudflare API token there before running init"
     chown root:root "$CF_CREDENTIALS"
     chmod 600 "$CF_CREDENTIALS"
 

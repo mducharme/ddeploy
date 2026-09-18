@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Per-site Linux user, FPM pool, and nginx vhost — the isolation boundary
-# described in §7.
+# between sites.
 
 ensure_site_user() {
     local name="$1" dir="$2"
@@ -37,7 +37,7 @@ remove_fpm_pool() {
 }
 
 # Builds the space-joined server_name list: <name>.$BASE_DOMAIN plus each
-# additional_hostname under the same base domain (§6, §11).
+# additional_hostname under the same base domain.
 build_server_names() {
     local name="$1"; shift
     local names="$name.$BASE_DOMAIN"

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Cloudflare-proxy-specific droplet setup, gated by CLOUDFLARE_PROXIED
-# (provisioner.conf): restoring the real visitor IP in nginx/PHP, and
-# firewalling the origin down to Cloudflare's own ranges (+ SSH) so the
-# proxy can't be bypassed by hitting the droplet's IP directly. Both use
-# Cloudflare's published ranges, refetched on every `init` run since they
-# change occasionally.
+# Cloudflare-proxy setup, gated by CLOUDFLARE_PROXIED (provisioner.conf):
+# restoring the real visitor IP in nginx/PHP, and firewalling the origin
+# down to Cloudflare's own ranges (+ SSH) so the proxy can't be bypassed
+# by hitting the server's IP directly. Both use Cloudflare's published
+# ranges, refetched on every `init` run since they change occasionally.
 
 fetch_cloudflare_ranges() {
     local url

@@ -5,9 +5,9 @@
 # interactive prompts / non-interactive flag gaps and land in the
 # sidecar, where they can be hand-edited afterward.
 #
-# CONFIRM AT BUILD TIME: the CLI commands below (craft migrate/all, etc.)
-# are the framework's documented defaults, not verified against a real
-# project in this repo. Treat them as a starting point.
+# The CLI commands below (craft migrate/all, etc.) are the framework's
+# documented defaults, not verified against a real project — treat them
+# as a starting point, not a guarantee.
 
 # Prints one of: craftcms, wordpress-bedrock, wordpress, charcoal, "" (unknown)
 detect_cms() {

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Two extension points beyond the .ddev/config.yaml hooks contract (§6.3):
+# Two extension points beyond .ddev/config.yaml's hooks:
 #
 #   - a per-site script committed IN THE CLIENT REPO, run as www-<name>
 #     (same trust level as any other exec/composer hook step) — for
 #     site-specific one-offs like symlinking a shared uploads path.
-#   - fleet-wide ops scripts living ON THE DROPLET under hooks/*.d/, run
-#     as root for every site — for droplet-operator concerns like
-#     registering a site with monitoring or notifying Slack on deploy.
+#   - fleet-wide ops scripts living on the server under hooks/*.d/, run
+#     as root for every site — for operator concerns like registering a
+#     site with monitoring or notifying Slack on deploy.
 #
 # Both are optional; a missing directory/file is silently a no-op.
 

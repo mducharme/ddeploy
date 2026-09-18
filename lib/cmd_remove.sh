@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # `remove <name> [--purge-db] [--purge-files]` — never destructive by
 # default: only disables the vhost/pool. Files and DB survive unless
-# explicitly told to go (§10).
+# explicitly told to go.
 
 usage_remove() {
     cat <<'EOF'

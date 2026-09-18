@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Config parsing contract (§6): resolves a site's PHP version, docroot,
-# hostnames and deploy steps from .ddev/config.yaml, a previously-written
-# sidecar, or interactive/--flag input, and normalizes all three sources
-# into the same globals + a steps file hooks.sh can replay.
+# Resolves a site's PHP version, docroot, hostnames and deploy steps from
+# .ddev/config.yaml, a previously-written sidecar, or interactive/--flag
+# input, normalizing all three into the same globals plus a steps file
+# hooks.sh can replay.
 #
 # Populates on success: PHP_VERSION DOCROOT WEBSERVER_TYPE DB_NAME DB_USER
-# ADDITIONAL_HOSTNAMES[] ADDITIONAL_FQDNS[], and writes
+# DB_ENV_SCHEME ADDITIONAL_HOSTNAMES[] ADDITIONAL_FQDNS[], and writes
 # $GENERATED_DIR/<name>.steps (TYPE<TAB>CMD per line, TYPE in
 # exec|composer|exec-host).
 
@@ -42,14 +42,8 @@ parse_config() {
     [[ "$DOCROOT" == "null" ]] && DOCROOT=""
 
     if [[ "$check_webserver" == "1" ]]; then
-        # This stack always serves via nginx + PHP-FPM regardless of what
-        # the project's DDEV container was locally — webserver_type here
-        # is just declarative metadata from that DDEV config, not a
-        # compatibility gate. In practice most projects' front-controller
-        # rewrite is the same either way; apache-fpm is nginx-fpm's most
-        # common local-dev stand-in here (real-world check: every current
-        # Charcoal project's .ddev/config.yaml says apache-fpm) and is
-        # explicitly treated as fine, not just tolerated.
+        # Sites are always served via nginx + PHP-FPM regardless of this
+        # value — it's informational only, not a compatibility gate.
         WEBSERVER_TYPE="$(yq eval '.webserver_type' "$cfg")"
         [[ "$WEBSERVER_TYPE" == "null" ]] && WEBSERVER_TYPE=""
         if [[ -n "$WEBSERVER_TYPE" && "$WEBSERVER_TYPE" != "nginx-fpm" ]]; then
@@ -61,14 +55,13 @@ parse_config() {
     mapfile -t ADDITIONAL_FQDNS    < <(yq eval '.additional_fqdns[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
 
     if [[ "${#ADDITIONAL_FQDNS[@]}" -gt 0 ]]; then
-        log_warn "additional_fqdns present (${ADDITIONAL_FQDNS[*]}) — these are full custom domains, NOT covered by the wildcard cert. Skipping them; they need their own DNS + cert (§6)."
+        log_warn "additional_fqdns present (${ADDITIONAL_FQDNS[*]}) — these are full custom domains, NOT covered by the wildcard cert. Skipping them; they need their own DNS + cert."
     fi
 
-    # DB_NAME/DB_USER default to the values recorded in the config's own
-    # database: block (only our sidecar writes those — a real ddev config
-    # only has database.type/version, which stay log-only per §6), then
+    # DB_NAME/DB_USER default to the sidecar's own database: block (a
+    # real ddev config only has database.type/version, unrelated), then
     # to <name>. DB_NAME_OVERRIDE/DB_USER_OVERRIDE (set by --db) win when
-    # present and are consumed immediately so they can't leak into a
+    # present, and are consumed immediately so they can't leak into a
     # later parse_config call in the same process (e.g. `list`'s loop).
     local cfg_db_name cfg_db_user
     cfg_db_name="$(yq eval '.database.name // ""' "$cfg" 2>/dev/null)"
@@ -80,10 +73,10 @@ parse_config() {
     DB_USER="${DB_USER_OVERRIDE:-${cfg_db_user:-$name}}"
     unset DB_NAME_OVERRIDE DB_USER_OVERRIDE
 
-    # DB_ENV_SCHEME picks which .env variable names db_ensure writes
-    # (§ CMS detection). A config that recorded one (our sidecar) wins;
-    # otherwise detect from the checked-out repo, so a real
-    # .ddev/config.yaml (which never has this field) still gets it right.
+    # DB_ENV_SCHEME picks which credential format db_ensure writes. A
+    # config that recorded one (our sidecar) wins; otherwise detect from
+    # the checked-out repo, so a real .ddev/config.yaml (which never has
+    # this field) still gets it right.
     DB_ENV_SCHEME="$(yq eval '.db_env_scheme // ""' "$cfg" 2>/dev/null)"
     [[ "$DB_ENV_SCHEME" == "null" ]] && DB_ENV_SCHEME=""
     if [[ -z "$DB_ENV_SCHEME" ]]; then
@@ -135,17 +128,16 @@ write_sidecar() {
     log_info "wrote sidecar config: $out"
 }
 
-# §6.4 — interactive prompts when no .ddev/config.yaml exists. Writes a
-# sidecar so subsequent provision/deploy runs are non-interactive.
+# Interactive prompts when no .ddev/config.yaml exists. Writes a sidecar
+# so subsequent provision/deploy runs are non-interactive.
 #
 # If a CMS is detected, shows the defaults it would use for docroot and
 # deploy steps and offers to skip those specific prompts. A "no" (or no
-# detection at all) falls through to asking everything by hand, same as
-# before CMS detection existed.
+# detection at all) falls through to asking everything by hand.
 interactive_fallback() {
     local name="$1"
     local dir; dir="$(site_dir "$name")"
-    log_warn "no .ddev/config.yaml found for '$name' — falling back to interactive setup (§6.4)"
+    log_warn "no .ddev/config.yaml found for '$name' — falling back to interactive setup"
 
     local cms="" use_detected=0
     cms="$(detect_cms "$dir")"

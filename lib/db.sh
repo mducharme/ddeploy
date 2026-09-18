@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One shared MariaDB/MySQL server; one database + user per site, scoped
-# to only that database (decision 2, §7). `database:` from the site's
-# config is informational only — never branched on for engine/version.
+# to only that database. `database:` in the site's config is
+# informational only — never branched on for engine/version.
 #
 # Which credential file/format gets written IS branched on, via
 # DB_ENV_SCHEME (set by config.sh, from CMS detection or an explicit

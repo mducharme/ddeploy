@@ -7,9 +7,9 @@
 # The initial `git clone` in `provision` runs as root/whoever invoked
 # the command, so it uses the key directly via GIT_SSH_COMMAND. Every
 # `git pull` after that, in `deploy`, runs as the site's own www-<name>
-# user (§7 isolation) — which has no populated $HOME/.ssh of its own, so
-# the key + host keys are copied into $dir/.ssh (already that user's
-# $HOME, set via useradd --home-dir) so it can authenticate on its own.
+# user, which has no populated $HOME/.ssh of its own, so the key + host
+# keys are copied into $dir/.ssh (already that user's $HOME, set via
+# useradd --home-dir) so it can authenticate on its own.
 
 GIT_KNOWN_HOSTS_SEED="github.com gitlab.com bitbucket.org"
 
@@ -28,7 +28,7 @@ git_ssh_command() {
 # Copies the shared key (under a fixed filename, not assuming a key
 # type) plus known_hosts and a matching ssh config into $dir/.ssh, owned
 # by www-<name>. Idempotent, and safe to call on every deploy — a
-# rotated key on the droplet propagates on the next call, and re-running
+# rotated key on the server propagates on the next call, and re-running
 # ssh-keyscan is cheap. Must run AFTER apply_permissions has set base
 # ownership/perms on $dir, since it applies its own (stricter, 600/700)
 # perms on top — a later whole-tree chmod would clobber them.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Hook replay (§6.3): executes a site's normalized deploy steps
+# Hook replay: executes a site's normalized deploy steps
 # ($GENERATED_DIR/<name>.steps, written by config.sh) as the site's own
 # Linux user, under its pinned PHP version.
 
@@ -36,7 +36,7 @@ replay_hooks() {
     while IFS=$'\t' read -r type cmd; do
         [[ -z "$type" ]] && continue
         if guardrail_match "$cmd"; then
-            log_warn "skipping step '$type: $cmd' — ddev/container-path reference (§6.3 guardrail)"
+            log_warn "skipping step '$type: $cmd' — ddev/container-path reference"
             site_log "$name" "deploy: SKIPPED (guardrail) $type: $cmd"
             continue
         fi

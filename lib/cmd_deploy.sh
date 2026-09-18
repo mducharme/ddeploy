@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# `deploy <name>` — pull, replay post-start hooks, reload (§10). This is
-# the CI target: the pipeline's SSH command becomes
-# `provision.sh deploy <name>`.
+# `deploy <name>` — pull, replay post-start hooks, reload. This is the
+# CI target: the pipeline's SSH command becomes `provision.sh deploy <name>`.
 
 cmd_deploy() {
     load_conf

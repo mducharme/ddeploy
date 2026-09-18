@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # PHP version management: install the FPM+CLI stack for a version on
 # demand (idempotent), and provide a PATH shim so exec/composer hook
-# steps run under the SITE's pinned PHP version rather than whatever
-# `php` on PATH happens to default to (§9).
+# steps run under the site's pinned PHP version rather than whatever
+# `php` on PATH happens to default to.
 
 SHIM_ROOT="$PROVISIONER_DIR/phpshim"
 

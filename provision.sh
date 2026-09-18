@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Staging provisioner CLI. See README.md for the full build spec this
-# implements. Fleet-ready: every per-droplet value lives in
-# provisioner.conf, never here — this script is identical across droplets.
+# Staging provisioner CLI. See README.md. Every per-server value lives
+# in provisioner.conf, never here — this script is identical across servers.
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)"
@@ -43,7 +42,7 @@ usage() {
 usage: provision.sh <command> [args]
 
 commands:
-  init                          make a bare droplet ready (packages, PHP, TLS)
+  init                          set up the server (packages, PHP, TLS, firewall)
   provision <name> [repo-url]   stand up a site (see: provision.sh provision -h)
   deploy <name>                 pull + replay deploy hooks + reload
   remove <name> [opts]          disable a site (see: provision.sh remove -h)

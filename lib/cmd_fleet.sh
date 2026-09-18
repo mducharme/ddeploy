@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# `provision-all` / `deploy-all` — iterate this droplet's manifest
-# (name -> repo-url) so onboarding a droplet's whole site list is one
-# command (§12). Always non-interactive: a missing/ambiguous site in the
-# manifest fails that one site and moves on, rather than blocking on a
-# prompt.
+# `provision-all` / `deploy-all` — iterate ./manifest (name -> repo-url)
+# so onboarding a server's whole site list is one command. Always
+# non-interactive: a failing site is logged and skipped, not a blocker
+# for the rest of the run.
 
 read_manifest() {
     grep -vE '^\s*(#|$)' "$PROVISIONER_DIR/manifest" || true

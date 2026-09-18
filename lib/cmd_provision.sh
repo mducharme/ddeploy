@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # `provision <name> [repo-url]` — clone if absent, resolve config (ddev /
 # sidecar / interactive / flags), stand up the isolated native vhost, run
-# the first deploy (§10).
+# the first deploy.
 
 usage_provision() {
     cat <<'EOF'

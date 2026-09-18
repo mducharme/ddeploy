@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # `list` — table of provisioned sites: name, PHP version, docroot, DB
-# name, last deploy (git short SHA + date) (§10, §12).
+# name, last deploy (git short SHA + date).
 
 cmd_list() {
     load_conf

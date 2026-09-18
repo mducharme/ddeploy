@@ -2,10 +2,9 @@
 # Shared helpers: config loading, logging, validation, template rendering.
 # Sourced by provision.sh; never executed directly.
 
-# name charset: filesystem path segment, Linux username suffix, DB identifier.
-# Capped at 28 chars (not the 31 a naive "32-char username limit" suggests)
-# because the username is "www-<name>", and the 4-char prefix has to fit
-# inside the same 32-char limit.
+# Site name charset: used as a filesystem path segment, Linux username
+# suffix, and DB identifier. Capped at 28 chars so "www-<name>" (the
+# Linux username) stays within the 32-char limit.
 NAME_RE='^[a-z0-9][a-z0-9-]{0,27}$'
 
 PROVISIONER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,7 +16,7 @@ log_warn()  { printf '\033[33m[warn]\033[0m  %s\n' "$*" >&2; }
 log_error() { printf '\033[31m[error]\033[0m %s\n' "$*" >&2; }
 die()       { log_error "$*"; exit 1; }
 
-# Per-site provision/deploy log, per §12.
+# Appends a timestamped line to a site's provision/deploy log.
 site_log() {
     local name="$1" msg="$2"
     mkdir -p "$LOG_DIR"
@@ -50,8 +49,8 @@ require_root() {
     [[ "$EUID" -eq 0 ]] || die "this command must be run as root (use sudo)"
 }
 
-# Confirms the Go (mikefarah) yq is on PATH, not the Python (kislyuk) one —
-# they share a binary name but have incompatible CLIs (§4, §14).
+# Confirms the Go (mikefarah) yq is on PATH, not the Python (kislyuk) one
+# — same binary name, incompatible CLI.
 require_yq() {
     command -v yq >/dev/null 2>&1 || die "yq not found — run 'init' first, or install the Go yq (mikefarah/yq)"
     if ! yq --version 2>&1 | grep -qi 'mikefarah'; then
