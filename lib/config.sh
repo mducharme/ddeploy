@@ -24,15 +24,22 @@ extract_hooks() {
     done
 }
 
-# $1 name, $2 path to a config.yaml-shaped file, $3 "check_webserver" (1/0)
+# $1 name, $2 path to a config.yaml-shaped file, $3 "check_webserver" (1/0),
+# $4 "skip_name_check" (1/0) — a preview's own .ddev/config.yaml is the
+# same file (same declared name:) as its parent's, since nobody edits
+# that field per-branch; resolve_preview_config passes 1 here so a
+# preview whose branch carries a real ddev config doesn't hard-fail on a
+# mismatch that's expected, not a sign of the wrong repo.
 parse_config() {
-    local name="$1" cfg="$2" check_webserver="${3:-0}"
+    local name="$1" cfg="$2" check_webserver="${3:-0}" skip_name_check="${4:-0}"
     require_yq
     [[ -f "$cfg" ]] || die "config not found: $cfg"
 
     local cfg_name
     cfg_name="$(yq eval '.name' "$cfg")"
-    [[ "$cfg_name" == "$name" ]] || die "'name: $cfg_name' in $cfg does not match directory name '$name'"
+    if [[ "$skip_name_check" != "1" ]]; then
+        [[ "$cfg_name" == "$name" ]] || die "'name: $cfg_name' in $cfg does not match directory name '$name'"
+    fi
 
     PHP_VERSION="$(yq eval '.php_version' "$cfg")"
     [[ "$PHP_VERSION" != "null" && -n "$PHP_VERSION" ]] || PHP_VERSION="$DEFAULT_PHP"

@@ -86,7 +86,11 @@ resolve_preview_config() {
 
     local cfg_path; cfg_path="$(resolve_config_path "$name")"
     if [[ -n "$cfg_path" ]]; then
-        parse_config "$name" "$cfg_path" 1
+        # skip_name_check=1: when this is the branch's own real
+        # .ddev/config.yaml, its name: field is the project's, not this
+        # preview's derived slug — that's expected, not a sign of the
+        # wrong repo (see parse_config).
+        parse_config "$name" "$cfg_path" 1 1
     elif [[ -n "$project_cfg" ]]; then
         log_warn "'$name' has no .ddev/config.yaml — reusing '$project's resolved php/docroot/deploy-steps as a starting point"
         cp "$GENERATED_DIR/$project.steps" "$GENERATED_DIR/$name.steps" 2>/dev/null || : > "$GENERATED_DIR/$name.steps"
