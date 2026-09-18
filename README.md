@@ -259,6 +259,17 @@ the site's own `www-<name>` user, under its pinned PHP version.
 Any step referencing `ddev` or `/var/www/html` is skipped with a
 warning.
 
+If `hooks.post-start` isn't declared at all and the repo has a
+`composer.json`, a `composer install` step is assumed by default — DDEV
+itself often installs dependencies implicitly on `ddev start` without an
+explicit hook, which this tool has no way to see since it never runs
+DDEV; without this fallback that shows up as a 500 from a missing
+`vendor/autoload.php` on first deploy. This only fills in a completely
+absent `hooks.post-start` — a config that declares some steps but skips
+composer is treated as deliberate and left alone. Add an explicit
+`hooks.post-start` (with or without a `composer` step) to `.ddev/config.yaml`
+to override either way.
+
 Two more extension points:
 
 - `.provisioner/post-provision.sh` / `.provisioner/post-deploy.sh` in

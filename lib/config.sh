@@ -173,6 +173,23 @@ parse_config() {
 
     mkdir -p "$GENERATED_DIR"
     extract_hooks "$cfg" "$GENERATED_DIR/$name.steps"
+
+    # A real .ddev/config.yaml frequently declares no hooks.post-start at
+    # all — DDEV itself often runs `composer install` implicitly on `ddev
+    # start`, which this tool never sees since it doesn't run DDEV. Left
+    # alone, a project relying on that implicit behavior silently never
+    # gets its dependencies installed (a 500 from a missing
+    # vendor/autoload.php, confirmed the hard way). Only kicks in when NO
+    # hooks.post-start is declared at all — a config that declares some
+    # steps but skips composer is a deliberate choice, not this gap, and
+    # is left as-is. Same safe default the no-config-at-all path already
+    # applies via CMS detection (config.sh's interactive/non_interactive
+    # fallbacks), just extended to also cover "config exists but declares
+    # nothing".
+    if [[ ! -s "$GENERATED_DIR/$name.steps" && -f "$SITES_ROOT/$name/composer.json" ]]; then
+        printf 'composer\tinstall\n' > "$GENERATED_DIR/$name.steps"
+        log_info "'$name': no hooks.post-start declared but composer.json exists — defaulting to 'composer install' as the deploy step (add hooks.post-start to .ddev/config.yaml to override)"
+    fi
 }
 
 # Writes a sidecar at $GENERATED_DIR/<name>.yaml in the same shape as a
