@@ -215,6 +215,22 @@ DB_GRANT_HOST="<this web server's address>"
 is granted access from — it should match one of the entries in
 `DB_ALLOWED_HOSTS` on the database server.
 
+**Accepted tradeoff:** the admin account `init-db` creates has
+`GRANT ALL ON *.* WITH GRANT OPTION` — full control of every database on
+that server, not just the ones this tool manages — scoped only by source
+IP (`DB_ALLOWED_HOSTS`), and shared across every web server that gets a
+copy of `DB_ADMIN_CREDENTIALS`. Provisioning/deploying/backing up a site
+on demand needs an account that can create databases and grant per-site
+users, and MySQL has no clean "can CREATE DATABASE and GRANT on what it
+creates, but nothing else" role — the real options are a wildcard-prefix
+grant (forces every site's DB name under one prefix, still one shared
+account, needs a naming convention + migration) or a per-web-server admin
+account (limits blast radius to one server's compromise instead of the
+whole fleet's, no schema change, but doesn't shrink the account's own
+privileges). Neither is a clean win over the other, so this stays as-is
+for now — keep `DB_ADMIN_CREDENTIALS` file permissions tight (600,
+root-owned) and `DB_ALLOWED_HOSTS` as narrow as possible.
+
 ## Database credentials
 
 Set by `db_env_scheme` (from CMS detection, or `db_env_scheme:` in the
@@ -326,6 +342,13 @@ against a local or remote (`init-db`) database, same as `provision`. Run
 
 `init` installs `rclone` (once, if either backup is enabled) and the
 cron entries for whichever are turned on.
+
+Both are preview-aware: a shared-mode preview is skipped by both (its
+uploads are a symlink into its parent's, and its database *is* its
+parent's — either would just be a redundant duplicate of the parent's
+own backup, multiplied by however many shared previews exist). An
+isolated-mode preview has real, separate uploads/database of its own
+and is backed up normally.
 
 ### Restoring
 

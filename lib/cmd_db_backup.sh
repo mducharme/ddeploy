@@ -16,9 +16,26 @@ cmd_backup_database() {
         [[ -z "$only" || "$only" == "$name" ]] || continue
         is_provisioned "$name" || continue
 
-        local cfg_path; cfg_path="$(resolve_config_path "$name")"
-        [[ -n "$cfg_path" ]] || continue
-        parse_config "$name" "$cfg_path" 0
+        if is_preview "$name"; then
+            read_preview_meta "$name"
+            if [[ "$PREVIEW_MODE" == "shared" ]]; then
+                # Shared-mode preview: its database IS $PREVIEW_PROJECT's
+                # database, not a separate one of its own — dumping it here
+                # would just be a redundant duplicate of the parent's own
+                # backup-database run (multiplied by however many shared
+                # previews the project has).
+                log_info "backup-database: skipping '$name' — shared-mode preview of '$PREVIEW_PROJECT', same database"
+                continue
+            fi
+            # Isolated mode: a real, separate database of its own —
+            # resolve_preview_config handles the preview's config.yaml
+            # still carrying $PREVIEW_PROJECT's name: field.
+            resolve_preview_config "$name" "$PREVIEW_PROJECT" "$PREVIEW_MODE"
+        else
+            local cfg_path; cfg_path="$(resolve_config_path "$name")"
+            [[ -n "$cfg_path" ]] || continue
+            parse_config "$name" "$cfg_path" 0
+        fi
         # One site's dump failing must not stop every other site from
         # being backed up this run — a bare call here would abort the
         # whole loop under set -e.

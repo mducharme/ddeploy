@@ -16,9 +16,26 @@ cmd_backup_uploads() {
         [[ -z "$only" || "$only" == "$name" ]] || continue
         is_provisioned "$name" || continue
 
-        local cfg_path; cfg_path="$(resolve_config_path "$name")"
-        [[ -n "$cfg_path" ]] || continue
-        parse_config "$name" "$cfg_path" 0
+        if is_preview "$name"; then
+            read_preview_meta "$name"
+            if [[ "$PREVIEW_MODE" == "shared" ]]; then
+                # Shared-mode preview: its upload_dirs are symlinks into
+                # $PREVIEW_PROJECT's own directories, not real files of its
+                # own — syncing it would just re-upload the parent's data
+                # again under the preview's name. The parent's own
+                # backup-uploads run already covers it.
+                log_info "backup-uploads: skipping '$name' — shared-mode preview of '$PREVIEW_PROJECT', no uploads of its own"
+                continue
+            fi
+            # Isolated mode: a real, separate site with its own uploads —
+            # resolve_preview_config handles the preview's config.yaml
+            # still carrying $PREVIEW_PROJECT's name: field.
+            resolve_preview_config "$name" "$PREVIEW_PROJECT" "$PREVIEW_MODE"
+        else
+            local cfg_path; cfg_path="$(resolve_config_path "$name")"
+            [[ -n "$cfg_path" ]] || continue
+            parse_config "$name" "$cfg_path" 0
+        fi
         # One site's failure (network blip, bad credentials, whatever)
         # must not stop every other site from being backed up this run —
         # a bare call here would abort the whole loop under set -e.
