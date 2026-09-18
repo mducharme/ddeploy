@@ -16,8 +16,10 @@ options:
   --hostnames "<a> <b>"     space-separated additional hostnames
   --custom-domains "<a> <b>"  space-separated custom domains (this site's own
                             domain, not <name>.<base domain> — see README)
-  --upload-dirs "<a> <b>"   space-separated dirs (relative to repo root) to
-                            back up to object storage, if enabled — see README
+  --upload-dirs "<a> <b>"   space-separated dirs (relative to docroot, same as
+                            DDEV's own upload_dirs — "../foo" is fine for a
+                            private dir just outside it) to back up to object
+                            storage, if enabled — see README
   --deploy-cmd <cmd>        repeatable; each becomes an exec step after composer install
   --auth                    force basic auth on for this site
   --no-auth                 force basic auth off for this site

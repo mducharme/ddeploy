@@ -26,6 +26,36 @@ validate_relative_path() {
     esac
 }
 
+# Lexically normalizes $2 (a DOCROOT-relative path — DDEV's own convention
+# for upload_dirs, the same one `ddev pull`/`ddev push` use) against $1
+# (DOCROOT, itself relative to the site root) into a single site-root-
+# relative path. Pure string manipulation, no filesystem access — the
+# target directory doesn't necessarily exist yet at provision time. Prints
+# the resolved path and returns 0, or returns 1 if it would escape above
+# the site's own root entirely (the real security boundary: a path that
+# overruns the site root could reach another site's directory — a '..'
+# that only climbs back out of the docroot, e.g. a private, non-web-
+# exposed uploads dir living next to a "web" docroot, is a normal layout,
+# not an escape).
+resolve_docroot_relative() {
+    local docroot="$1" rel="$2"
+    local -a stack=()
+    local seg parts
+    IFS='/' read -ra parts <<< "${docroot:+$docroot/}$rel"
+    for seg in "${parts[@]}"; do
+        case "$seg" in
+            ''|'.') continue ;;
+            '..')
+                [[ "${#stack[@]}" -gt 0 ]] || return 1
+                unset "stack[$((${#stack[@]}-1))]"
+                ;;
+            *) stack+=("$seg") ;;
+        esac
+    done
+    local IFS='/'
+    echo "${stack[*]}"
+}
+
 # Hostname-safety check for additional_hostnames (a single label,
 # combined with $BASE_DOMAIN) and additional_fqdns (a complete domain).
 # These get embedded into rendered nginx config (server_name) and passed
@@ -90,12 +120,25 @@ parse_config() {
 
     mapfile -t ADDITIONAL_HOSTNAMES < <(yq eval '.additional_hostnames[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
     mapfile -t ADDITIONAL_FQDNS    < <(yq eval '.additional_fqdns[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
-    mapfile -t UPLOAD_DIRS         < <(yq eval '.upload_dirs[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
 
     local v
     for v in "${ADDITIONAL_HOSTNAMES[@]}"; do validate_hostname "$v" "additional_hostnames entry for '$name'"; done
     for v in "${ADDITIONAL_FQDNS[@]}"; do validate_hostname "$v" "additional_fqdns entry for '$name'"; done
-    for v in "${UPLOAD_DIRS[@]}"; do validate_relative_path "$v" "upload_dirs entry for '$name'"; done
+
+    # upload_dirs entries are DOCROOT-relative (DDEV's own convention) —
+    # resolved here into site-root-relative paths so every consumer
+    # (backup, restore, preview uploads linking/seeding) can go on treating
+    # UPLOAD_DIRS as it always has, unchanged.
+    local raw_upload_dirs resolved
+    mapfile -t raw_upload_dirs < <(yq eval '.upload_dirs[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
+    UPLOAD_DIRS=()
+    for v in "${raw_upload_dirs[@]}"; do
+        [[ "$v" == *$'\n'* ]] && die "upload_dirs entry for '$name' contains a newline — refusing to use it ('$v')"
+        [[ "$v" == /* ]] && die "upload_dirs entry for '$name' is an absolute path ('$v') — refusing to use it"
+        resolved="$(resolve_docroot_relative "$DOCROOT" "$v")" \
+            || die "upload_dirs entry for '$name' ('$v') resolves outside the project root — refusing to use it"
+        UPLOAD_DIRS+=("$resolved")
+    done
 
     if [[ "${#ADDITIONAL_FQDNS[@]}" -gt 0 ]]; then
         log_info "custom domain(s) for '$name': ${ADDITIONAL_FQDNS[*]} — DNS for these must already point at this server; a certificate is requested via HTTP-01 on first provision"
@@ -232,7 +275,7 @@ interactive_fallback() {
     read -rp "DB user [$db_name]: " db_user; db_user="${db_user:-$db_name}"
     read -rp "additional hostnames (space-separated, under $BASE_DOMAIN) [none]: " hostnames
     read -rp "custom domain(s) (space-separated, e.g. www.client.com — DNS must already point here) [none]: " custom_domains
-    read -rp "upload/media directories to back up (space-separated, relative to repo root) [none]: " upload_dirs
+    read -rp "upload/media directories to back up (space-separated, relative to docroot) [none]: " upload_dirs
 
     if [[ "$use_detected" -eq 1 ]]; then
         [[ -n "$CMS_COMPOSER_ARGS" ]] && deploy_steps+=("composer:$CMS_COMPOSER_ARGS")

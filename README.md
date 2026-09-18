@@ -79,11 +79,15 @@ values land in the sidecar and can be edited by hand.
 are always served by nginx regardless of what it says.
 
 `docroot`, `upload_dirs`, `additional_hostnames`, and `additional_fqdns`
-are validated before use (`validate_relative_path`/`validate_hostname` in
-`lib/config.sh`) — a `.ddev/config.yaml` lives in the client's own repo,
-and these values get used in filesystem operations and rendered nginx
-config, so a `..`-traversing docroot or a hostname with an embedded
-newline is rejected outright rather than trusted.
+are validated before use (`lib/config.sh`) — a `.ddev/config.yaml` lives in
+the client's own repo, and these values get used in filesystem operations
+and rendered nginx config, so an absolute path, an embedded newline, or a
+docroot that tries to leave the repo is rejected outright rather than
+trusted. `upload_dirs` is relative to **docroot** (DDEV's own convention —
+same as `ddev pull`/`ddev push`), not the repo root, so `..` in one is
+normal (a private, non-web-exposed uploads directory living next to
+`web/`, say) — resolved against docroot and rejected only if that actually
+overruns the repo root itself.
 
 ## Custom domains
 

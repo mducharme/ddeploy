@@ -107,7 +107,7 @@ assert_contains "$out" "MARKER=preview-v2" "deploy-preview fetch+reset picked up
 # --- backup / restore, against real object storage (MinIO) -------------
 
 step "backup-uploads / backup-database (all sites)"
-echo "hello from uploads" > "$SITES_ROOT/testsite/web/uploads/marker.txt"
+echo "hello from uploads" > "$SITES_ROOT/testsite/private-uploads/marker.txt"
 
 backup_out="$(./provision.sh backup-uploads 2>&1)"
 assert_contains "$backup_out" "skipping 'testsite-feature-a'" "backup-uploads skips the shared-mode preview"
@@ -118,17 +118,17 @@ assert_contains "$db_backup_out" "skipping 'testsite-feature-a'" "backup-databas
 assert_not_contains "$db_backup_out" "backup-database failed" "backup-database succeeded for testsite"
 
 remote="$(backup_remote_spec)"
-uploads_listing="$(rclone lsf "${remote}/testsite/web/uploads/" 2>/dev/null || true)"
+uploads_listing="$(rclone lsf "${remote}/testsite/private-uploads/" 2>/dev/null || true)"
 assert_contains "$uploads_listing" "marker.txt" "uploaded marker.txt is actually in object storage"
 db_listing="$(rclone lsf "${remote}/testsite/db/" 2>/dev/null || true)"
 [[ -n "$db_listing" ]] && pass "a database dump landed in object storage" || fail "no database dump found in object storage"
 
 step "restore-uploads / restore-database"
-rm -f "$SITES_ROOT/testsite/web/uploads/marker.txt"
+rm -f "$SITES_ROOT/testsite/private-uploads/marker.txt"
 mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" testsite -e "DROP TABLE probe;"
 
 ./provision.sh restore-uploads testsite --yes
-assert_file_exists "$SITES_ROOT/testsite/web/uploads/marker.txt" "restore-uploads brought the file back"
+assert_file_exists "$SITES_ROOT/testsite/private-uploads/marker.txt" "restore-uploads brought the file back"
 
 ./provision.sh restore-database testsite --yes
 probe_count="$(mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" -N -B testsite -e "SELECT COUNT(*) FROM probe;")"

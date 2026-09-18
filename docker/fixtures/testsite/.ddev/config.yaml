@@ -11,4 +11,4 @@ additional_hostnames:
 additional_fqdns:
   - custom.ddeploy.test
 upload_dirs:
-  - web/uploads
+  - ../private-uploads
