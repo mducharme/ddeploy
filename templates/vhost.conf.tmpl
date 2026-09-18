@@ -6,8 +6,8 @@ server {
     root {{ROOT}};
     index index.php;
 {{AUTH_BLOCK}}
-    ssl_certificate     /etc/letsencrypt/live/{{BASE_DOMAIN}}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/{{BASE_DOMAIN}}/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/{{CERT_NAME}}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{CERT_NAME}}/privkey.pem;
 
     location / { try_files $uri $uri/ /index.php?$query_string; }
     location ~ \.php$ {
@@ -20,5 +20,9 @@ server {
     listen 80;
     listen [::]:80;
     server_name {{SERVER_NAMES}};
-    return 301 https://$host$request_uri;
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/acme-challenge;
+        default_type "text/plain";
+    }
+    location / { return 301 https://$host$request_uri; }
 }

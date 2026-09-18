@@ -24,6 +24,8 @@ source "$LIB_DIR/php.sh"
 source "$LIB_DIR/db.sh"
 # shellcheck source=lib/vhost.sh
 source "$LIB_DIR/vhost.sh"
+# shellcheck source=lib/custom_domain.sh
+source "$LIB_DIR/custom_domain.sh"
 # shellcheck source=lib/cmd_init.sh
 source "$LIB_DIR/cmd_init.sh"
 # shellcheck source=lib/cmd_init_db.sh

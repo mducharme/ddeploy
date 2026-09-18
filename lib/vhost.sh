@@ -48,22 +48,25 @@ build_server_names() {
     echo "$names"
 }
 
+# Prints the auth_basic block for a site (empty string if auth is off).
+build_auth_block() {
+    local name="$1" auth="$2"
+    [[ "$auth" == "true" ]] || return 0
+    local htpasswd_dir="/etc/nginx/htpasswd"
+    mkdir -p "$htpasswd_dir"
+    if [[ ! -f "$htpasswd_dir/$name" ]]; then
+        log_warn "basic auth enabled for $name but no htpasswd file at $htpasswd_dir/$name — create one with: htpasswd -c $htpasswd_dir/$name <user>"
+    fi
+    printf '    auth_basic "Restricted";\n    auth_basic_user_file %s/%s;' "$htpasswd_dir" "$name"
+}
+
 install_vhost() {
     local name="$1" root="$2" auth="$3"; shift 3
     local server_names; server_names="$(build_server_names "$name" "$@")"
-    local auth_block=""
-    if [[ "$auth" == "true" ]]; then
-        local htpasswd_dir="/etc/nginx/htpasswd"
-        mkdir -p "$htpasswd_dir"
-        if [[ ! -f "$htpasswd_dir/$name" ]]; then
-            log_warn "basic auth enabled for $name but no htpasswd file at $htpasswd_dir/$name — create one with: htpasswd -c $htpasswd_dir/$name <user>"
-        fi
-        auth_block="    auth_basic \"Restricted\";
-    auth_basic_user_file $htpasswd_dir/$name;"
-    fi
+    local auth_block; auth_block="$(build_auth_block "$name" "$auth")"
 
     render_template "$PROVISIONER_DIR/templates/vhost.conf.tmpl" "/etc/nginx/sites-available/$name.conf" \
-        "NAME=$name" "SERVER_NAMES=$server_names" "ROOT=$root" "BASE_DOMAIN=$BASE_DOMAIN" "AUTH_BLOCK=$auth_block"
+        "NAME=$name" "SERVER_NAMES=$server_names" "ROOT=$root" "CERT_NAME=$BASE_DOMAIN" "AUTH_BLOCK=$auth_block"
 
     ln -sf "/etc/nginx/sites-available/$name.conf" "/etc/nginx/sites-enabled/$name.conf"
     nginx -t

@@ -14,6 +14,8 @@ options:
   --docroot <path>          relative to repo root (non-interactive fallback field)
   --db <name>                DB name (and user, unless overridden by config)
   --hostnames "<a> <b>"     space-separated additional hostnames
+  --custom-domains "<a> <b>"  space-separated custom domains (this site's own
+                            domain, not <name>.<base domain> — see README)
   --deploy-cmd <cmd>        repeatable; each becomes an exec step after composer install
   --auth                    force basic auth on for this site
   --no-auth                 force basic auth off for this site
@@ -31,7 +33,7 @@ cmd_provision() {
     validate_name "$name"
 
     local repo_url="" non_interactive=0
-    local opt_php="" opt_docroot="" opt_db="" opt_hostnames="" opt_deploy_cmds="" auth_flag=""
+    local opt_php="" opt_docroot="" opt_db="" opt_hostnames="" opt_custom_domains="" opt_deploy_cmds="" auth_flag=""
 
     if [[ "${1:-}" != "" && "${1:-}" != --* ]]; then
         repo_url="$1"; shift
@@ -44,6 +46,7 @@ cmd_provision() {
             --docroot) opt_docroot="$2"; shift ;;
             --db) opt_db="$2"; shift ;;
             --hostnames) opt_hostnames="$2"; shift ;;
+            --custom-domains) opt_custom_domains="$2"; shift ;;
             --deploy-cmd) opt_deploy_cmds="${opt_deploy_cmds}${2}"$'\n'; shift ;;
             --auth) auth_flag="true" ;;
             --no-auth) auth_flag="false" ;;
@@ -66,7 +69,7 @@ cmd_provision() {
     if [[ -z "$cfg_path" ]]; then
         if [[ "$non_interactive" -eq 1 ]]; then
             [[ -n "$opt_php" ]] || die "--non-interactive: no config found and --php not given"
-            non_interactive_config "$name" "$opt_php" "$opt_docroot" "${opt_db:-$name}" "${opt_db:-$name}" "$opt_hostnames" "$opt_deploy_cmds"
+            non_interactive_config "$name" "$opt_php" "$opt_docroot" "${opt_db:-$name}" "${opt_db:-$name}" "$opt_hostnames" "$opt_deploy_cmds" "$opt_custom_domains"
         else
             interactive_fallback "$name"
         fi
@@ -96,6 +99,7 @@ cmd_provision() {
     [[ -n "$DOCROOT" ]] && root="$dir/$DOCROOT"
     local auth="${auth_flag:-$BASIC_AUTH_DEFAULT}"
     install_vhost "$name" "$root" "$auth" "${ADDITIONAL_HOSTNAMES[@]}"
+    install_custom_domain_vhost "$name" "$root" "$auth" "${ADDITIONAL_FQDNS[@]}"
 
     db_ensure "$name" "$dir"   # each scheme re-owns the file it writes itself
 
@@ -107,4 +111,8 @@ cmd_provision() {
     run_ops_hooks "post-provision" "$name" "$dir" "$PHP_VERSION"
 
     log_info "provisioned: https://$name.$BASE_DOMAIN"
+    local fqdn
+    for fqdn in "${ADDITIONAL_FQDNS[@]}"; do
+        log_info "  also: https://$fqdn"
+    done
 }

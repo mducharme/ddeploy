@@ -55,7 +55,7 @@ deploy steps in this order:
 2. A sidecar at `generated/<name>.yaml`, if one was written by a
    previous run.
 3. `--non-interactive` with `--php`/`--docroot`/`--db`/`--hostnames`/
-   `--deploy-cmd` flags.
+   `--custom-domains`/`--deploy-cmd` flags.
 4. Interactive prompts.
 
 Paths 3 and 4 write the result to `generated/<name>.yaml`, so later runs
@@ -70,6 +70,29 @@ values land in the sidecar and can be edited by hand.
 
 `.ddev/config.yaml`'s `webserver_type` is read but not enforced — sites
 are always served by nginx regardless of what it says.
+
+## Custom domains
+
+Every site gets `<name>.$BASE_DOMAIN` for free, covered by the shared
+wildcard cert. A site can also have its own domain(s) — `.ddev/config.yaml`'s
+`additional_fqdns`, the sidecar's own `additional_fqdns:`, or
+`--custom-domains "a.com www.a.com"` non-interactively.
+
+These aren't covered by the wildcard, so each site's custom domains get
+their own certificate, issued via HTTP-01 (not the wildcard's DNS-01,
+since a custom domain generally isn't on the same Cloudflare account as
+`$BASE_DOMAIN`, or on Cloudflare at all). Requirements:
+
+- DNS for the domain(s) must already point at this server before
+  `provision` runs — HTTP-01 fails otherwise, `provision` logs a warning
+  and leaves an HTTP-only vhost in place; re-run once DNS is live.
+- All of a site's custom domains share one certificate, named after the
+  first one listed.
+- If the server is behind Cloudflare, these domains need their own
+  orange/grey-cloud DNS record and don't inherit `$BASE_DOMAIN`'s proxy
+  setup — set that up per domain as needed.
+
+Once issued, renewal is certbot's timer, same as the wildcard.
 
 ## Database server
 

@@ -37,6 +37,7 @@ cmd_remove() {
     local dir; dir="$(site_dir "$name")"
 
     remove_vhost "$name"
+    remove_custom_domain_vhost "$name"
 
     local ver=""
     local cfg_path; cfg_path="$(resolve_config_path "$name")"
