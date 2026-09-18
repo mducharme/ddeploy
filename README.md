@@ -367,6 +367,13 @@ with a loud warning, and restores the parent's actual database/uploads
 — the ones every preview of it is currently sharing. An isolated-mode
 preview restores its own, same as any normal site.
 
+## Testing
+
+`docker/` runs the actual provisioner — init, init-db, provision, deploy,
+branch previews, backup/restore, remove — against real systemd, nginx,
+PHP-FPM, MariaDB, sshd, and object storage in disposable containers. See
+`docker/README.md`. `docker/test/run.sh` is the entry point.
+
 ## Assumptions to verify against a real deploy
 
 - `PHP_EXTENSIONS` (`provisioner.conf`) covers what the CMS needs.
@@ -376,3 +383,7 @@ preview restores its own, same as any normal site.
   frameworks' documented conventions, not verified against a real repo.
 - Craft's migrate/cache CLI commands (`lib/cms.sh`) are documented
   defaults, not verified against a real project.
+- Real ACME/DNS-01 and HTTP-01 certificate issuance, and ufw's actual
+  packet-filtering behavior — `docker/`'s test harness mocks both (see
+  its README for why) and everything else has been verified against it;
+  these two still need a real domain / real VM to check.

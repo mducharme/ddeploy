@@ -12,6 +12,16 @@ cmd_init() {
     load_conf
 
     log_info "== apt sources & base packages =="
+    # add-apt-repository itself comes from software-properties-common,
+    # which a minimal base image (a bare Docker image; some providers'
+    # "minimal" cloud images too) doesn't have preinstalled — without
+    # this, the ondrej/php PPA step below fails on the very first init
+    # with "add-apt-repository: command not found" before anything else
+    # gets installed.
+    if ! command -v add-apt-repository >/dev/null 2>&1; then
+        apt-get update -y
+        DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common
+    fi
     if ! grep -rq "ondrej/php" /etc/apt/sources.list.d/ 2>/dev/null; then
         add-apt-repository -y ppa:ondrej/php
     fi
@@ -45,6 +55,7 @@ cmd_init() {
     else
         log_warn "service user 'deploy' not found — leaving $SITES_ROOT ownership as-is"
     fi
+    ensure_traversable "$SITES_ROOT"
 
     log_info "== Cloudflare credentials =="
     [[ -f "$CF_CREDENTIALS" ]] || die "$CF_CREDENTIALS not found — place the scoped Cloudflare API token there before running init"

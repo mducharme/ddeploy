@@ -1,0 +1,14 @@
+name: testsite
+php_version: "8.3"
+docroot: web
+webserver_type: nginx-fpm
+db_env_scheme: laravel
+database:
+  name: testsite
+  user: testsite
+additional_hostnames:
+  - alt-testsite
+additional_fqdns:
+  - custom.ddeploy.test
+upload_dirs:
+  - web/uploads

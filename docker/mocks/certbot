@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Mock certbot for the docker test harness. Real ACME/DNS-01/HTTP-01
+# issuance needs a live public domain and DNS control this harness can't
+# provide in an isolated container, so this fabricates a self-signed cert
+# at the exact /etc/letsencrypt/live/<name> path the real certbot would
+# use — everything downstream (nginx config, "does a cert already exist"
+# checks, renewal-hook wiring) still runs against a real file on disk.
+# See docker/README.md for what this does and doesn't verify.
+set -euo pipefail
+
+domains=()
+value_flags=(-m --dns-cloudflare-credentials -w)
+
+is_value_flag() {
+    local f="$1" vf
+    for vf in "${value_flags[@]}"; do
+        [[ "$f" == "$vf" ]] && return 0
+    done
+    return 1
+}
+
+prev=""
+for arg in "$@"; do
+    if [[ "$prev" == "-d" ]]; then
+        domains+=("$arg")
+        prev=""
+        continue
+    fi
+    if is_value_flag "$prev"; then
+        prev=""
+        continue
+    fi
+    if [[ "$arg" == "-d" ]]; then
+        prev="-d"
+    else
+        prev="$arg"
+    fi
+done
+
+[[ "${#domains[@]}" -gt 0 ]] || { echo "mock-certbot: no -d domains found in: $*" >&2; exit 1; }
+
+# certbot names the live dir after the first non-wildcard domain in the
+# list — this codebase's own assumption (lib/cmd_init.sh checks for the
+# cert dir under $BASE_DOMAIN even though "*.$BASE_DOMAIN" is listed
+# first; lib/custom_domain.sh checks under "${fqdns[0]}", never a
+# wildcard). Fall back to stripping "*." off the first entry if every
+# domain given is somehow a wildcard.
+cert_name=""
+for d in "${domains[@]}"; do
+    if [[ "$d" != \** ]]; then
+        cert_name="$d"
+        break
+    fi
+done
+[[ -n "$cert_name" ]] || cert_name="${domains[0]#\*.}"
+
+live_dir="/etc/letsencrypt/live/$cert_name"
+mkdir -p "$live_dir"
+if [[ ! -f "$live_dir/fullchain.pem" ]]; then
+    openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+        -keyout "$live_dir/privkey.pem" -out "$live_dir/fullchain.pem" \
+        -subj "/CN=$cert_name" >/dev/null 2>&1
+fi
+echo "mock-certbot: issued self-signed cert for [${domains[*]}] at $live_dir" >&2
+exit 0

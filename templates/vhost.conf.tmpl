@@ -1,7 +1,11 @@
 server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    http2 on;
+    # Ubuntu 24.04 ships nginx 1.24, which predates the standalone
+    # "http2 on;" directive (nginx 1.25.1+) — HTTP/2 is enabled via the
+    # "ssl http2" listen-directive flag instead, or `nginx -t` rejects
+    # the whole vhost with "unknown directive http2" (confirmed against
+    # a real Ubuntu 24.04 nginx package).
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
     server_name {{SERVER_NAMES}};
     root {{ROOT}};
     index index.php;

@@ -60,7 +60,14 @@ EOF
     # highest-numbered first so earlier deletions don't shift the
     # numbers of rules still queued for removal.
     local nums n
-    nums="$(ufw status numbered 2>/dev/null | grep 'ddeploy-db' | grep -oE '^\[[0-9]+\]' | tr -d '[]' | sort -rn)"
+    # ufw pads single-digit rule numbers with a leading space (e.g. "[ 1]",
+    # not "[1]") once there are 10+ rules to align columns — match that
+    # optional space, or this never finds anything to delete below 10.
+    # Both greps are wrapped with `|| true`: on a fresh DB server (the
+    # normal first-init-db case) neither has anything to match yet, and
+    # under set -o pipefail an unwrapped no-match grep mid-pipeline aborts
+    # the rest of init-db the very first time it runs.
+    nums="$(ufw status numbered 2>/dev/null | { grep 'ddeploy-db' || true; } | { grep -oE '^\[[[:space:]]*[0-9]+\]' || true; } | tr -d '[] ' | sort -rn)"
     for n in $nums; do
         yes | ufw delete "$n" >/dev/null 2>&1 || true
     done

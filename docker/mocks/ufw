@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Mock ufw for the docker test harness. Real ufw needs kernel netfilter
+# access (NET_ADMIN + a working nf_tables backend) that's fragile to grant
+# reliably inside a throwaway test container, and firewall *enforcement*
+# isn't what this harness is trying to verify anyway — that the
+# provisioner's ufw-driving logic runs without crashing and produces the
+# rule set it thinks it does, is. This keeps just enough state (a rules
+# file, numbered like real `ufw status numbered`) for that logic —
+# including the "delete previously-added rules by comment before
+# re-adding" cleanup in lib/cloudflare.sh / lib/cmd_init_db.sh — to
+# exercise for real. See docker/README.md.
+set -euo pipefail
+
+STATE=/var/lib/ddeploy-mock-ufw/rules
+mkdir -p "$(dirname "$STATE")"
+touch "$STATE"
+
+log() { echo "[mock-ufw] $*" >> /var/log/ddeploy-mock-ufw.log; }
+
+next_n() {
+    local last
+    last="$(tail -n1 "$STATE" 2>/dev/null | cut -f1)"
+    echo $(( ${last:-0} + 1 ))
+}
+
+case "${1:-}" in
+    --force)
+        log "$*"
+        exit 0
+        ;;
+    enable|disable)
+        log "$*"
+        exit 0
+        ;;
+    allow)
+        shift
+        rule="$*"
+        comment=""
+        if [[ "$rule" == *" comment "* ]]; then
+            comment="${rule##* comment }"
+        fi
+        n="$(next_n)"
+        printf '%s\t%s\t%s\n' "$n" "$comment" "$rule" >> "$STATE"
+        log "allow $rule -> [$n]"
+        exit 0
+        ;;
+    delete)
+        n="${2:-}"
+        grep -v -P "^${n}\t" "$STATE" > "$STATE.tmp" 2>/dev/null || true
+        mv "$STATE.tmp" "$STATE" 2>/dev/null || true
+        log "delete $n"
+        exit 0
+        ;;
+    status)
+        if [[ "${2:-}" == "numbered" ]]; then
+            echo "Status: active"
+            echo
+            while IFS=$'\t' read -r n comment rule; do
+                [[ -n "$n" ]] || continue
+                printf '[%2s] %s # %s\n' "$n" "$rule" "$comment"
+            done < "$STATE"
+        else
+            echo "Status: active"
+        fi
+        exit 0
+        ;;
+    *)
+        log "unhandled: $*"
+        exit 0
+        ;;
+esac

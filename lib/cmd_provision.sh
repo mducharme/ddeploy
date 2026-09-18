@@ -66,6 +66,7 @@ cmd_provision() {
         log_info "cloning $repo_url -> $dir"
         GIT_SSH_COMMAND="$(git_ssh_command)" git clone "$repo_url" "$dir"
     fi
+    git_trust_repo "$dir"
 
     local cfg_path; cfg_path="$(resolve_config_path "$name")"
 

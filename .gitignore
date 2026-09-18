@@ -2,3 +2,4 @@
 /logs/
 /sites/
 /phpshim/
+/docker/test/generated/

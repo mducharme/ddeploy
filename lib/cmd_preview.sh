@@ -83,6 +83,7 @@ cmd_provision_preview() {
         log_info "cloning $repo_url (branch $branch) -> $dir"
         GIT_SSH_COMMAND="$(git_ssh_command)" git clone --branch "$branch" --single-branch "$repo_url" "$dir"
     fi
+    git_trust_repo "$dir"
 
     resolve_preview_config "$name" "$project" "$mode"
     log_info "resolved: mode=$mode php=$PHP_VERSION docroot='${DOCROOT}'"
@@ -272,7 +273,7 @@ cmd_prune_previews() {
         # as "branch is gone": that would purge an active preview's
         # database/files on a false positive from a transient failure.
         local ls_remote_exit
-        if git ls-remote --exit-code --heads "$remote" "$PREVIEW_BRANCH" >/dev/null 2>&1; then
+        if GIT_SSH_COMMAND="$(git_ssh_command)" git ls-remote --exit-code --heads "$remote" "$PREVIEW_BRANCH" >/dev/null 2>&1; then
             ls_remote_exit=0
         else
             ls_remote_exit=$?

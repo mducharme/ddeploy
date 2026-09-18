@@ -104,6 +104,50 @@ require_yq() {
 
 site_dir() { echo "$SITES_ROOT/$1"; }
 
+# git (2.35.2+, which Ubuntu 24.04 ships) refuses to operate in a
+# repository it doesn't own. Every site directory ends up owned by its
+# own www-<name> (apply_permissions), but a few read-only git calls
+# (deploy's/deploy-preview's SHA for logging, list's SHA/date columns,
+# provision-preview inferring a repo-url from the parent) run as root —
+# root is already fully trusted here (it's this tool's own operator), so
+# register each site's directory as an exception. safe.directory has no
+# wildcard/prefix form (confirmed: "safe.directory = $SITES_ROOT/*" is
+# NOT a glob and matches nothing) — has to be the literal path, one entry
+# per site, hence this being called per-directory at provision time
+# rather than once for the whole SITES_ROOT in `init`.
+git_trust_repo() {
+    local dir="$1"
+    git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$dir" \
+        || git config --system --add safe.directory "$dir"
+}
+
+# Grants traversal (o+x) on every ancestor directory from $1 up to (but
+# not including) / that's missing it. nginx/php-fpm run as www-data and
+# need to stat/traverse the FULL path down to a site's docroot — including
+# every directory above it, not just ones this tool itself owns. This
+# matters because SITES_ROOT commonly lives inside another user's home
+# directory (the documented default is /home/deploy/sites), and Ubuntu
+# creates new home directories as 750 by default — without this, every
+# single site 404s with "Permission denied" in nginx's error log, no
+# matter how correctly the site's own directory is permissioned
+# (confirmed against a real Ubuntu 24.04 useradd --create-home).
+ensure_traversable() {
+    local dir="$1" p mode last_digit
+    p="$(cd "$dir" 2>/dev/null && pwd)" || return 0
+    while [[ "$p" != "/" ]]; do
+        mode="$(stat -c '%a' "$p" 2>/dev/null)"
+        last_digit="${mode: -1}"
+        case "$last_digit" in
+            1|3|5|7) ;;  # other already has execute
+            *)
+                chmod o+x "$p"
+                log_info "granted traversal (o+x) on $p — nginx/php-fpm run as www-data and need to reach $dir regardless of who owns directories above it"
+                ;;
+        esac
+        p="$(dirname "$p")"
+    done
+}
+
 # Simple, safe {{KEY}} -> value substitution (literal, not regex) — avoids
 # sed delimiter collisions when values contain '/', '.', etc.
 render_template() {

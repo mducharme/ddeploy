@@ -1,0 +1,60 @@
+# Two systemd-enabled Ubuntu 24.04 containers (web server + dedicated DB
+# server, the same image playing two roles — see Dockerfile) plus a MinIO
+# instance standing in for S3-compatible object storage, so backup/restore
+# runs against a real endpoint instead of a mock. Driven by test/run.sh,
+# not meant to be `up`'d directly. See docker/README.md.
+services:
+  dbhost:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    hostname: dbhost
+    privileged: true
+    cgroup: host
+    tmpfs:
+      - /run
+      - /run/lock
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    networks:
+      - testnet
+    command: ["/sbin/init"]
+
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    hostname: web
+    privileged: true
+    cgroup: host
+    tmpfs:
+      - /run
+      - /run/lock
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    networks:
+      - testnet
+    depends_on:
+      - dbhost
+      - objectstore
+    command: ["/sbin/init"]
+
+  objectstore:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: ddeployminio
+      MINIO_ROOT_PASSWORD: ddeployminiosecret
+    command: ["server", "/data"]
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge
+    # Explicit subnet: this machine already has ~30 other bridge networks
+    # (ddev projects), which can exhaust Docker's default address-pool
+    # allocator ("all predefined address pools have been fully
+    # subnetted") — picking our own sidesteps that entirely.
+    ipam:
+      config:
+        - subnet: 10.88.90.0/24
