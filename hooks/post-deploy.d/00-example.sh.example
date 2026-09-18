@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Rename to *.sh and chmod +x to enable. Runs as root after every deploy.
+# Available: $NAME $SITE_DIR $PHP_VERSION $BASE_DOMAIN
+set -euo pipefail
+
+echo "deployed: $NAME"

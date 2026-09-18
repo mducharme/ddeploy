@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Rename to *.sh and chmod +x to enable. Runs as root after a site's
+# first deploy. Available: $NAME $SITE_DIR $PHP_VERSION $BASE_DOMAIN
+set -euo pipefail
+
+echo "provisioned: $NAME -> https://$NAME.$BASE_DOMAIN (php $PHP_VERSION)"

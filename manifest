@@ -1,0 +1,5 @@
+# Fleet manifest for this droplet: one line per site, "<name> <repo-url>".
+# Consumed by `provision-all` / `deploy-all`. Blank lines and lines
+# starting with # are ignored.
+#
+# example-client git@github.com:youragency/example-client.git
