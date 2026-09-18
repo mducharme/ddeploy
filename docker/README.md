@@ -70,10 +70,18 @@ real).
 
 **Not covered at all**, still open: real ACME/DNS-01 issuance (needs a
 live domain — verify manually against a real Cloudflare zone before
-relying on it), ufw's actual packet-filtering behavior (verify on a real
-VM/droplet), and the `snap install yq` path in `init` (the image
-pre-installs the real Go yq, so `init`'s own install step never runs,
-only its detection/version-check logic does).
+relying on it), and ufw's actual packet-filtering behavior (verify on a
+real VM/droplet).
+
+`init` no longer installs yq via `snap` at all (it downloads a pinned Go
+yq binary directly instead — see the comment in `lib/cmd_init.sh`) after
+a real deployment hit snap's strict AppArmor confinement blocking every
+`yq` call from reading anything under `SITES_ROOT`, since root doesn't
+bypass that the way it bypasses ordinary file permissions. This harness
+never caught it because the image pre-installs yq the same (now-correct)
+way `init` does, so the container never exercised the broken path either
+— confirmed and fixed against the real failure, not through this
+harness.
 
 ## Layout
 

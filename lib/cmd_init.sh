@@ -31,12 +31,26 @@ cmd_init() {
         curl ufw apache2-utils
 
     log_info "== yq (must be the Go/mikefarah build, not the Python one) =="
-    if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>&1 | grep -qi mikefarah; then
-        if command -v snap >/dev/null 2>&1; then
-            snap install yq
-        else
-            die "snap unavailable — install the Go yq (mikefarah/yq) manually before continuing: https://github.com/mikefarah/yq#install"
+    local yq_path
+    yq_path="$(command -v yq 2>/dev/null || true)"
+    if [[ -z "$yq_path" ]] || ! yq --version 2>&1 | grep -qi mikefarah || [[ "$yq_path" == /snap/* ]]; then
+        # A pinned binary, not `snap install yq` (what an earlier version
+        # of this script used) — snap packages run under strict AppArmor
+        # confinement by default, and root does NOT bypass that the way
+        # it bypasses ordinary file permissions. Under sudo (without -H),
+        # $HOME becomes /root, so a snap-confined yq can't read anything
+        # under SITES_ROOT — every yq call in this tool fails with
+        # "permission denied" on a perfectly ordinary, readable file
+        # (confirmed in production, not hypothetical). Replace a
+        # snap-installed yq left by a previous run too, not just a
+        # missing one.
+        if [[ "$yq_path" == /snap/* ]]; then
+            log_warn "found a snap-installed yq on PATH ($yq_path) — replacing it with a pinned binary; snap's confinement blocks it from reading SITES_ROOT under sudo"
+            snap remove yq >/dev/null 2>&1 || true
         fi
+        curl -fsSL -o /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_$(dpkg --print-architecture)"
+        chmod +x /usr/local/bin/yq
     fi
 
     log_info "== baseline PHP versions: $BASELINE_PHP =="
