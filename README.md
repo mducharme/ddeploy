@@ -44,6 +44,9 @@ provision-all                 provision every site in ./manifest
 deploy-all                    deploy every provisioned site
 backup-uploads [name]         sync upload_dirs to object storage (needs BACKUP_ENABLED=true)
 backup-database [name]        dump + upload each site's DB (needs DB_BACKUP_ENABLED=true)
+restore-uploads <name> --yes  overwrite local upload_dirs from the backup (see -h)
+restore-database <name> [--from <file>] --yes   overwrite the DB from a backup dump (see -h)
+import-database <name> <file> --yes   load a local .sql/.sql.gz dump into the DB (see -h)
 provision-preview <project> <branch> [repo-url] [opts]   branch preview (see -h)
 deploy-preview <project> <branch>       pull + redeploy a preview
 remove-preview <project> <branch> [opts]   remove a preview (see -h)
@@ -381,6 +384,17 @@ running either command against one redirects to the **parent project**
 with a loud warning, and restores the parent's actual database/uploads
 — the ones every preview of it is currently sharing. An isolated-mode
 preview restores its own, same as any normal site.
+
+### Importing
+
+`import-database <name> <file> --yes` loads an arbitrary local `.sql` or
+`.sql.gz` dump into a site's database, OVERWRITING it — for seeding a
+freshly-provisioned site from a client-provided export without ever
+needing direct DB access yourself (scp the file up, run one command).
+Unlike `restore-database`, the source is whatever local file you point it
+at, not a dated backup this tool made — same destructive-with-confirmation
+shape (`--yes` required, dry run otherwise) and the same preview-aware
+parent-redirect for a shared-mode preview.
 
 ## Testing
 

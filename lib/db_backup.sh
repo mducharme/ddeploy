@@ -97,11 +97,7 @@ restore_site_database() {
 
     log_info "restore: $name: restoring '$filename' into database '$db_name' (OVERWRITING it)"
     local ok=1
-    if [[ ( "$DB_HOST" == "127.0.0.1" || "$DB_HOST" == "localhost" ) && -z "$DB_ADMIN_CREDENTIALS" ]]; then
-        gunzip -c "$tmp_dir/$filename" | mysql "$db_name" || ok=0
-    else
-        gunzip -c "$tmp_dir/$filename" | mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" "$db_name" || ok=0
-    fi
+    load_sql_dump_into_db "$tmp_dir/$filename" "$db_name" || ok=0
     rm -rf "$tmp_dir"
     [[ "$ok" -eq 1 ]]
 }

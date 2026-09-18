@@ -23,6 +23,17 @@ dumps (newest first) and does nothing.
 EOF
 }
 
+usage_import_database() {
+    cat <<'EOF'
+usage: provision.sh import-database <name> <file> --yes
+
+Loads a local .sql or .sql.gz dump into <name>'s database, OVERWRITING
+it — for seeding a freshly-provisioned site from a client-provided dump
+without needing direct DB access. Without --yes, shows what would happen
+and does nothing.
+EOF
+}
+
 # Resolves which site's data a restore actually targets: itself, for a
 # normal site or an isolated-mode preview, but its PARENT for a
 # shared-mode preview — that's who actually owns the shared
@@ -140,5 +151,60 @@ cmd_restore_database() {
         log_info "restored '$db_name' for '$target'"
     else
         die "restore failed for '$target'"
+    fi
+}
+
+cmd_import_database() {
+    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage_import_database; return 0; }
+    load_conf
+    require_root
+
+    local name="${1:-}"
+    [[ -n "$name" ]] || { usage_import_database; die "site name required"; }
+    shift || true
+
+    local file="${1:-}"
+    [[ -n "$file" && "$file" != --* ]] || { usage_import_database; die "dump file required"; }
+    shift || true
+
+    local confirm=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --yes) confirm=1 ;;
+            -h|--help) usage_import_database; return 0 ;;
+            *) die "unknown option: $1" ;;
+        esac
+        shift
+    done
+
+    [[ -f "$file" ]] || die "file not found: $file"
+
+    local target; target="$(restore_target "$name")"
+    if [[ "$target" != "$name" ]]; then
+        log_warn "'$name' is a shared-mode preview of '$target' — importing into '$target's actual database (shared by every preview of it), not something scoped to '$name' alone"
+    fi
+
+    # Same resolution path as restore-database: $target only stays a
+    # preview itself when $name was isolated-mode.
+    if is_preview "$target"; then
+        read_preview_meta "$target"
+        resolve_preview_config "$target" "$PREVIEW_PROJECT" "$PREVIEW_MODE"
+    else
+        local cfg_path; cfg_path="$(resolve_config_path "$target")"
+        [[ -n "$cfg_path" ]] || die "no config for '$target' — can't resolve its database"
+        parse_config "$target" "$cfg_path" 0
+    fi
+    local db_name="$DB_NAME"
+
+    if [[ "$confirm" -ne 1 ]]; then
+        log_warn "dry run — this would load '$file' into database '$db_name', OVERWRITING it. Pass --yes to actually do it."
+        return 0
+    fi
+
+    log_info "importing '$file' into '$db_name' for '$target' (OVERWRITING it)"
+    if load_sql_dump_into_db "$file" "$db_name"; then
+        log_info "imported '$file' into '$db_name' for '$target'"
+    else
+        die "import failed for '$target'"
     fi
 }
