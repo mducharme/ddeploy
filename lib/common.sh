@@ -38,6 +38,20 @@ load_conf() {
     BASIC_AUTH_DEFAULT="${BASIC_AUTH_DEFAULT:-false}"
     PHP_EXTENSIONS="${PHP_EXTENSIONS:-cli mysql mbstring xml curl zip gd}"
     CLOUDFLARE_PROXIED="${CLOUDFLARE_PROXIED:-true}"
+    DB_HOST="${DB_HOST:-127.0.0.1}"
+    DB_ADMIN_CREDENTIALS="${DB_ADMIN_CREDENTIALS:-}"
+    DB_GRANT_HOST="${DB_GRANT_HOST:-localhost}"
+}
+
+# Lighter loader for `init-db`, run on a dedicated database server that
+# doesn't need any of the web-server config load_conf requires.
+load_db_conf() {
+    local conf="$PROVISIONER_DIR/provisioner.conf"
+    [[ -f "$conf" ]] || die "missing $conf"
+    # shellcheck source=/dev/null
+    source "$conf"
+    : "${DB_ADMIN_CREDENTIALS:?provisioner.conf: DB_ADMIN_CREDENTIALS not set}"
+    : "${DB_ALLOWED_HOSTS:?provisioner.conf: DB_ALLOWED_HOSTS not set}"
 }
 
 validate_name() {

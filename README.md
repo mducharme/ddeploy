@@ -34,7 +34,8 @@ under `$SITES_ROOT` (`provisioner.conf`, default `/home/deploy/sites`).
 ## Commands
 
 ```
-init                          set up the server (packages, PHP, TLS, firewall)
+init                          set up a web server (packages, PHP, TLS, firewall)
+init-db                       set up a dedicated database server
 provision <name> [repo-url]   add a site
 deploy <name>                 pull + run deploy steps + reload
 remove <name> [--purge-db] [--purge-files]
@@ -43,7 +44,7 @@ provision-all                 provision every site in ./manifest
 deploy-all                    deploy every provisioned site
 ```
 
-`init`, `provision`, `deploy`, `remove` need root.
+`init`, `init-db`, `provision`, `deploy`, `remove` need root.
 
 ## Site config resolution
 
@@ -69,6 +70,30 @@ values land in the sidecar and can be edited by hand.
 
 `.ddev/config.yaml`'s `webserver_type` is read but not enforced — sites
 are always served by nginx regardless of what it says.
+
+## Database server
+
+By default `DB_HOST` is `127.0.0.1`: `init` installs MariaDB on the same
+server, and `provision`/`deploy` connect as local root over the unix
+socket — no credentials file needed.
+
+To share one MariaDB instance across multiple web servers instead, run
+`init-db` on a dedicated database server (set `DB_ADMIN_CREDENTIALS` and
+`DB_ALLOWED_HOSTS` — the web servers' IPs — in its `provisioner.conf`
+first). It installs MariaDB, opens it to `DB_ALLOWED_HOSTS` only (via
+`ufw`, port 3306; SSH stays open), and writes an admin credentials file
+at `DB_ADMIN_CREDENTIALS`. Copy that file to the same path on each web
+server, then on each web server's `provisioner.conf` set:
+
+```
+DB_HOST="<database server's address>"
+DB_ADMIN_CREDENTIALS="<path to the copied credentials file>"
+DB_GRANT_HOST="<this web server's address>"
+```
+
+`DB_GRANT_HOST` (default `localhost`) is the host each site's own DB user
+is granted access from — it should match one of the entries in
+`DB_ALLOWED_HOSTS` on the database server.
 
 ## Database credentials
 

@@ -26,6 +26,8 @@ source "$LIB_DIR/db.sh"
 source "$LIB_DIR/vhost.sh"
 # shellcheck source=lib/cmd_init.sh
 source "$LIB_DIR/cmd_init.sh"
+# shellcheck source=lib/cmd_init_db.sh
+source "$LIB_DIR/cmd_init_db.sh"
 # shellcheck source=lib/cmd_provision.sh
 source "$LIB_DIR/cmd_provision.sh"
 # shellcheck source=lib/cmd_deploy.sh
@@ -42,7 +44,8 @@ usage() {
 usage: provision.sh <command> [args]
 
 commands:
-  init                          set up the server (packages, PHP, TLS, firewall)
+  init                          set up a web server (packages, PHP, TLS, firewall)
+  init-db                       set up a dedicated database server
   provision <name> [repo-url]   stand up a site (see: provision.sh provision -h)
   deploy <name>                 pull + replay deploy hooks + reload
   remove <name> [opts]          disable a site (see: provision.sh remove -h)
@@ -56,6 +59,7 @@ main() {
     local cmd="${1:-}"; [[ $# -gt 0 ]] && shift || true
     case "$cmd" in
         init)           cmd_init "$@" ;;
+        init-db)        cmd_init_db "$@" ;;
         provision)      cmd_provision "$@" ;;
         deploy)         cmd_deploy "$@" ;;
         remove)         cmd_remove "$@" ;;

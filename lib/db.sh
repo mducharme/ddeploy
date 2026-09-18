@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# One shared MariaDB/MySQL server; one database + user per site, scoped
-# to only that database. `database:` in the site's config is
-# informational only — never branched on for engine/version.
+# One MariaDB/MySQL server (local or remote, see db_admin_mysql); one
+# database + user per site, scoped to only that database. `database:` in
+# the site's config is informational only — never branched on for
+# engine/version.
 #
 # Which credential file/format gets written IS branched on, via
 # DB_ENV_SCHEME (set by config.sh, from CMS detection or an explicit
@@ -9,10 +10,24 @@
 #   laravel  - .env: DB_HOST/DB_DATABASE/DB_USERNAME/DB_PASSWORD
 #   craft    - .env: CRAFT_DB_*
 #   charcoal - config/config.local.json: databases.<default_database>.*
-#              (verified against real Charcoal projects' config.local.json)
 #   none     - CMS doesn't read DB config from .env at all (plain
 #              WordPress) — credentials saved to a root-only file instead
 #              so re-runs stay idempotent, and logged once for manual entry.
+
+# Runs an admin-level mysql command (CREATE/DROP DATABASE/USER). Uses
+# local, credential-less unix-socket root when DB_HOST is local and no
+# admin credentials are configured (the default, zero-config case);
+# otherwise connects over TCP with DB_ADMIN_CREDENTIALS, a MySQL
+# option-file (`[client]\nuser=...\npassword=...`).
+db_admin_mysql() {
+    if [[ ( "$DB_HOST" == "127.0.0.1" || "$DB_HOST" == "localhost" ) && -z "$DB_ADMIN_CREDENTIALS" ]]; then
+        mysql "$@"
+    else
+        [[ -n "$DB_ADMIN_CREDENTIALS" ]] || die "DB_HOST ($DB_HOST) is remote but DB_ADMIN_CREDENTIALS is not set in provisioner.conf"
+        [[ -f "$DB_ADMIN_CREDENTIALS" ]] || die "DB_ADMIN_CREDENTIALS file not found: $DB_ADMIN_CREDENTIALS"
+        mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" "$@"
+    fi
+}
 
 # Reads a scalar from a JSON file via yq. Unlike a YAML-sourced file
 # (where plain-mode yq strips quotes automatically), yq's plain-mode
@@ -79,18 +94,18 @@ db_ensure() {
         db_pass="$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 24)"
     fi
 
-    mysql <<SQL
+    db_admin_mysql <<SQL
 CREATE DATABASE IF NOT EXISTS \`${db_name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS '${db_user}'@'localhost' IDENTIFIED BY '${db_pass}';
-ALTER USER '${db_user}'@'localhost' IDENTIFIED BY '${db_pass}';
-GRANT ALL PRIVILEGES ON \`${db_name}\`.* TO '${db_user}'@'localhost';
+CREATE USER IF NOT EXISTS '${db_user}'@'${DB_GRANT_HOST}' IDENTIFIED BY '${db_pass}';
+ALTER USER '${db_user}'@'${DB_GRANT_HOST}' IDENTIFIED BY '${db_pass}';
+GRANT ALL PRIVILEGES ON \`${db_name}\`.* TO '${db_user}'@'${DB_GRANT_HOST}';
 FLUSH PRIVILEGES;
 SQL
 
     case "$scheme" in
         craft)
             write_env_var "$env_file" CRAFT_DB_DRIVER "mysql"
-            write_env_var "$env_file" CRAFT_DB_SERVER "127.0.0.1"
+            write_env_var "$env_file" CRAFT_DB_SERVER "$DB_HOST"
             write_env_var "$env_file" CRAFT_DB_DATABASE "$db_name"
             write_env_var "$env_file" CRAFT_DB_USER "$db_user"
             write_env_var "$env_file" CRAFT_DB_PASSWORD "$db_pass"
@@ -101,12 +116,12 @@ SQL
             mkdir -p "$GENERATED_DIR"
             printf '%s' "$db_pass" > "$cred_file"
             chmod 600 "$cred_file"
-            log_warn "db_env_scheme=none — this CMS doesn't read DB config from .env; nothing was written there. Credentials (also saved root-only at $cred_file): db=$db_name user=$db_user host=127.0.0.1 pass=$db_pass"
+            log_warn "db_env_scheme=none — this CMS doesn't read DB config from .env; nothing was written there. Credentials (also saved root-only at $cred_file): db=$db_name user=$db_user host=$DB_HOST pass=$db_pass"
             ;;
         charcoal)
             mkdir -p "$dir/config"
             json_write "$charcoal_json" '.default_database' "$charcoal_db_key"
-            json_write "$charcoal_json" ".databases.${charcoal_db_key}.hostname" "127.0.0.1"
+            json_write "$charcoal_json" ".databases.${charcoal_db_key}.hostname" "$DB_HOST"
             json_write "$charcoal_json" ".databases.${charcoal_db_key}.database" "$db_name"
             json_write "$charcoal_json" ".databases.${charcoal_db_key}.username" "$db_user"
             json_write "$charcoal_json" ".databases.${charcoal_db_key}.password" "$db_pass"
@@ -114,7 +129,7 @@ SQL
             chmod 640 "$charcoal_json"
             ;;
         *)
-            write_env_var "$env_file" DB_HOST "127.0.0.1"
+            write_env_var "$env_file" DB_HOST "$DB_HOST"
             write_env_var "$env_file" DB_DATABASE "$db_name"
             write_env_var "$env_file" DB_USERNAME "$db_user"
             write_env_var "$env_file" DB_PASSWORD "$db_pass"
@@ -123,14 +138,14 @@ SQL
             ;;
     esac
 
-    log_info "database '$db_name' ready (user '$db_user'@'localhost', scheme=$scheme)"
+    log_info "database '$db_name' ready (user '$db_user'@'$DB_GRANT_HOST', scheme=$scheme)"
 }
 
 db_drop() {
     local db_name="$1" db_user="$2"
-    mysql <<SQL
+    db_admin_mysql <<SQL
 DROP DATABASE IF EXISTS \`${db_name}\`;
-DROP USER IF EXISTS '${db_user}'@'localhost';
+DROP USER IF EXISTS '${db_user}'@'${DB_GRANT_HOST}';
 SQL
     log_info "dropped database '$db_name' and user '$db_user'"
 }
