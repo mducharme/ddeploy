@@ -126,6 +126,13 @@ branch)` pair and resolve the same name, so nothing needs to remember or
 pass around a generated name — CI just needs to know the project and
 branch it's already building.
 
+`repo-url` is normally omitted — it's read from the parent project's own
+git remote if already provisioned (the common case: shared mode, the
+default, requires the parent already be provisioned anyway), or looked
+up by project name in `./manifest` otherwise. Only needed on the CLI for
+an isolated-mode preview of a project that's neither provisioned nor
+listed in the manifest yet.
+
 **Database and uploads are shared with the parent project by default,
 not copied.** This is deliberate, not a shortcut: these sites are
 typically deployed pre-launch, while a client is actively entering real

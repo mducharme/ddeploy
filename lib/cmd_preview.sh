@@ -8,6 +8,10 @@ usage_provision_preview() {
     cat <<'EOF'
 usage: provision.sh provision-preview <project> <branch> [repo-url] [options]
 
+repo-url is only needed when it can't be inferred: it's read from the
+parent project's own git remote if already provisioned, else looked up
+by project name in ./manifest.
+
 <name> is derived deterministically from <project>+<branch> (see
 preview_slug in lib/preview.sh) — deploy-preview/remove-preview take the
 same (project, branch) pair and resolve the same name, no state to track.
@@ -77,8 +81,17 @@ cmd_provision_preview() {
 
     if [[ ! -d "$dir" ]]; then
         if [[ -z "$repo_url" ]]; then
-            [[ -d "$project_dir/.git" ]] || die "no repo at $dir, no repo-url given, and '$project' isn't cloned to infer one from"
-            repo_url="$(git -C "$project_dir" remote get-url origin)"
+            if [[ -d "$project_dir/.git" ]]; then
+                repo_url="$(git -C "$project_dir" remote get-url origin)"
+            else
+                # Not yet provisioned (no checkout to infer from, e.g. an
+                # isolated-mode preview of a brand-new project) — fall
+                # back to the same name -> repo-url manifest provision-all
+                # already uses, so this still never needs repo-url on the
+                # CLI as long as the project is listed there.
+                repo_url="$(read_manifest | awk -v p="$project" '$1 == p { print $2; exit }')"
+            fi
+            [[ -n "$repo_url" ]] || die "no repo at $dir, no repo-url given, '$project' isn't cloned to infer one from, and no entry for '$project' in ./manifest"
         fi
         log_info "cloning $repo_url (branch $branch) -> $dir"
         GIT_SSH_COMMAND="$(git_ssh_command)" git clone --branch "$branch" --single-branch "$repo_url" "$dir"
