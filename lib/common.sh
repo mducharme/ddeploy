@@ -41,6 +41,10 @@ load_conf() {
     DB_HOST="${DB_HOST:-127.0.0.1}"
     DB_ADMIN_CREDENTIALS="${DB_ADMIN_CREDENTIALS:-}"
     DB_GRANT_HOST="${DB_GRANT_HOST:-localhost}"
+    BACKUP_ENABLED="${BACKUP_ENABLED:-false}"
+    BACKUP_CREDENTIALS="${BACKUP_CREDENTIALS:-}"
+    BACKUP_BUCKET="${BACKUP_BUCKET:-}"
+    BACKUP_SCHEDULE="${BACKUP_SCHEDULE:-17 * * * *}"
 }
 
 # Lighter loader for `init-db`, run on a dedicated database server that

@@ -26,6 +26,8 @@ source "$LIB_DIR/db.sh"
 source "$LIB_DIR/vhost.sh"
 # shellcheck source=lib/custom_domain.sh
 source "$LIB_DIR/custom_domain.sh"
+# shellcheck source=lib/backup.sh
+source "$LIB_DIR/backup.sh"
 # shellcheck source=lib/cmd_init.sh
 source "$LIB_DIR/cmd_init.sh"
 # shellcheck source=lib/cmd_init_db.sh
@@ -40,6 +42,8 @@ source "$LIB_DIR/cmd_remove.sh"
 source "$LIB_DIR/cmd_list.sh"
 # shellcheck source=lib/cmd_fleet.sh
 source "$LIB_DIR/cmd_fleet.sh"
+# shellcheck source=lib/cmd_backup.sh
+source "$LIB_DIR/cmd_backup.sh"
 
 usage() {
     cat <<'EOF'
@@ -54,6 +58,7 @@ commands:
   list                          table of provisioned sites
   provision-all                 provision every site in ./manifest
   deploy-all                    deploy every provisioned site
+  backup-uploads [name]         sync upload_dirs to object storage (needs BACKUP_ENABLED=true)
 EOF
 }
 
@@ -68,6 +73,7 @@ main() {
         list)           cmd_list "$@" ;;
         provision-all)  cmd_provision_all "$@" ;;
         deploy-all)     cmd_deploy_all "$@" ;;
+        backup-uploads) cmd_backup_uploads "$@" ;;
         -h|--help|help|"") usage ;;
         *) usage; die "unknown command: $cmd" ;;
     esac

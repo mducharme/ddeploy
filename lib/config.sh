@@ -5,8 +5,8 @@
 # hooks.sh can replay.
 #
 # Populates on success: PHP_VERSION DOCROOT WEBSERVER_TYPE DB_NAME DB_USER
-# DB_ENV_SCHEME ADDITIONAL_HOSTNAMES[] ADDITIONAL_FQDNS[], and writes
-# $GENERATED_DIR/<name>.steps (TYPE<TAB>CMD per line, TYPE in
+# DB_ENV_SCHEME ADDITIONAL_HOSTNAMES[] ADDITIONAL_FQDNS[] UPLOAD_DIRS[],
+# and writes $GENERATED_DIR/<name>.steps (TYPE<TAB>CMD per line, TYPE in
 # exec|composer|exec-host).
 
 # Flattens .hooks.post-start (a list of single-key maps, e.g. "- exec: ...")
@@ -53,6 +53,7 @@ parse_config() {
 
     mapfile -t ADDITIONAL_HOSTNAMES < <(yq eval '.additional_hostnames[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
     mapfile -t ADDITIONAL_FQDNS    < <(yq eval '.additional_fqdns[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
+    mapfile -t UPLOAD_DIRS         < <(yq eval '.upload_dirs[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
 
     if [[ "${#ADDITIONAL_FQDNS[@]}" -gt 0 ]]; then
         log_info "custom domain(s) for '$name': ${ADDITIONAL_FQDNS[*]} — DNS for these must already point at this server; a certificate is requested via HTTP-01 on first provision"
@@ -135,6 +136,25 @@ write_sidecar() {
     log_info "wrote sidecar config: $out"
 }
 
+# Sets upload_dirs: on an already-written sidecar. Separate from
+# write_sidecar's positional args since it's an optional, occasional
+# addition — a real .ddev/config.yaml already has this key natively and
+# never goes through this path.
+set_sidecar_upload_dirs() {
+    local name="$1" dirs="$2"
+    [[ -n "$dirs" ]] || return 0
+    require_yq
+    local out="$GENERATED_DIR/$name.yaml"
+    local expr="[" d first=1
+    for d in $dirs; do
+        [[ "$first" -eq 1 ]] || expr+=", "
+        expr+="\"$d\""
+        first=0
+    done
+    expr+="]"
+    yq eval -i ".upload_dirs = $expr" "$out"
+}
+
 # Interactive prompts when no .ddev/config.yaml exists. Writes a sidecar
 # so subsequent provision/deploy runs are non-interactive.
 #
@@ -157,7 +177,7 @@ interactive_fallback() {
         [[ "$confirm" =~ ^[Nn] ]] || use_detected=1
     fi
 
-    local php docroot db_name db_user hostnames custom_domains deploy_steps=()
+    local php docroot db_name db_user hostnames custom_domains upload_dirs deploy_steps=()
     read -rp "PHP version [$DEFAULT_PHP]: " php; php="${php:-$DEFAULT_PHP}"
 
     if [[ "$use_detected" -eq 1 ]]; then
@@ -170,6 +190,7 @@ interactive_fallback() {
     read -rp "DB user [$db_name]: " db_user; db_user="${db_user:-$db_name}"
     read -rp "additional hostnames (space-separated, under $BASE_DOMAIN) [none]: " hostnames
     read -rp "custom domain(s) (space-separated, e.g. www.client.com — DNS must already point here) [none]: " custom_domains
+    read -rp "upload/media directories to back up (space-separated, relative to repo root) [none]: " upload_dirs
 
     if [[ "$use_detected" -eq 1 ]]; then
         [[ -n "$CMS_COMPOSER_ARGS" ]] && deploy_steps+=("composer:$CMS_COMPOSER_ARGS")
@@ -189,15 +210,17 @@ interactive_fallback() {
     [[ "$use_detected" -eq 1 ]] && db_env_scheme="$CMS_DB_ENV_SCHEME"
 
     write_sidecar "$name" "$php" "$docroot" "$db_name" "$db_user" "$hostnames" "$db_env_scheme" "$cms" "$custom_domains" "${deploy_steps[@]}"
+    set_sidecar_upload_dirs "$name" "$upload_dirs"
 }
 
 # Non-interactive equivalent of interactive_fallback, driven by CLI flags.
 # $2..$6 as write_sidecar; $7 is a newline-separated list of --deploy-cmd
 # values (each becomes an "exec" step; composer install is always first);
-# $8 is custom domains (space-separated). CMS detection only fills gaps:
-# an explicit --docroot/--deploy-cmd always wins over a detected default.
+# $8 is custom domains (space-separated), $9 is upload dirs to back up
+# (space-separated). CMS detection only fills gaps: an explicit
+# --docroot/--deploy-cmd always wins over a detected default.
 non_interactive_config() {
-    local name="$1" php="$2" docroot="$3" db_name="$4" db_user="$5" hostnames="$6" deploy_cmds="$7" custom_domains="$8"
+    local name="$1" php="$2" docroot="$3" db_name="$4" db_user="$5" hostnames="$6" deploy_cmds="$7" custom_domains="$8" upload_dirs="$9"
     local dir; dir="$(site_dir "$name")"
 
     local cms="" db_env_scheme="laravel"
@@ -227,6 +250,7 @@ non_interactive_config() {
     fi
 
     write_sidecar "$name" "$php" "$docroot" "$db_name" "$db_user" "$hostnames" "$db_env_scheme" "$cms" "$custom_domains" "${deploy_steps[@]}"
+    set_sidecar_upload_dirs "$name" "$upload_dirs"
 }
 
 # Resolves which config source to use for $name: real ddev config takes

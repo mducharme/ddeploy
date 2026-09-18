@@ -42,9 +42,10 @@ remove <name> [--purge-db] [--purge-files]
 list                          table of provisioned sites
 provision-all                 provision every site in ./manifest
 deploy-all                    deploy every provisioned site
+backup-uploads [name]         sync upload_dirs to object storage (needs BACKUP_ENABLED=true)
 ```
 
-`init`, `init-db`, `provision`, `deploy`, `remove` need root.
+`init`, `init-db`, `provision`, `deploy`, `remove`, `backup-uploads` need root.
 
 ## Site config resolution
 
@@ -55,7 +56,7 @@ deploy steps in this order:
 2. A sidecar at `generated/<name>.yaml`, if one was written by a
    previous run.
 3. `--non-interactive` with `--php`/`--docroot`/`--db`/`--hostnames`/
-   `--custom-domains`/`--deploy-cmd` flags.
+   `--custom-domains`/`--upload-dirs`/`--deploy-cmd` flags.
 4. Interactive prompts.
 
 Paths 3 and 4 write the result to `generated/<name>.yaml`, so later runs
@@ -189,6 +190,29 @@ Cloudflare API either way, independent of proxy status.
 
 Set the domain's SSL/TLS mode to "Full (strict)" in Cloudflare once
 `init` has issued the origin cert.
+
+## Uploads backup
+
+Disaster-recovery only, not shared/live storage: local disk is always
+the copy actually served. A site's upload dirs — `.ddev/config.yaml`'s
+own `upload_dirs:` key, or `--upload-dirs "a b"` for sites without one —
+get synced one-way to S3-compatible object storage on a schedule, via
+`rclone`.
+
+To enable, in `provisioner.conf` set `BACKUP_ENABLED="true"`,
+`BACKUP_BUCKET`, and `BACKUP_CREDENTIALS` to a file (`chmod 600`)
+containing:
+
+```
+BACKUP_ENDPOINT="https://nyc3.digitaloceanspaces.com"
+BACKUP_ACCESS_KEY="..."
+BACKUP_SECRET_KEY="..."
+```
+
+`init` installs `rclone` and a cron entry (`BACKUP_SCHEDULE`, default
+hourly) that runs `backup-uploads` for every site. Sites with no
+`upload_dirs` declared are skipped, not backed up as a whole. Run
+`backup-uploads <name>` directly to sync one site on demand.
 
 ## Assumptions to verify against a real deploy
 

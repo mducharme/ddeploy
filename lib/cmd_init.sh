@@ -102,5 +102,20 @@ EOF
         log_info "CLOUDFLARE_PROXIED=false — skipping Cloudflare-only firewall (SSH still allowed via ufw if you enable it yourself)"
     fi
 
+    log_info "== uploads backup =="
+    if [[ "$BACKUP_ENABLED" == "true" ]]; then
+        command -v rclone >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y rclone
+        require_backup_credentials
+        chmod 600 "$BACKUP_CREDENTIALS"
+        cat > /etc/cron.d/ddeploy-backup <<EOF
+$BACKUP_SCHEDULE root $PROVISIONER_DIR/provision.sh backup-uploads >> $LOG_DIR/backup.log 2>&1
+EOF
+        chmod 644 /etc/cron.d/ddeploy-backup
+        log_info "cron: backup-uploads runs on schedule '$BACKUP_SCHEDULE'"
+    else
+        rm -f /etc/cron.d/ddeploy-backup
+        log_info "BACKUP_ENABLED=false — skipping uploads backup setup"
+    fi
+
     log_info "init complete."
 }

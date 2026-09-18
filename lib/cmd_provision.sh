@@ -16,6 +16,8 @@ options:
   --hostnames "<a> <b>"     space-separated additional hostnames
   --custom-domains "<a> <b>"  space-separated custom domains (this site's own
                             domain, not <name>.<base domain> — see README)
+  --upload-dirs "<a> <b>"   space-separated dirs (relative to repo root) to
+                            back up to object storage, if enabled — see README
   --deploy-cmd <cmd>        repeatable; each becomes an exec step after composer install
   --auth                    force basic auth on for this site
   --no-auth                 force basic auth off for this site
@@ -33,7 +35,7 @@ cmd_provision() {
     validate_name "$name"
 
     local repo_url="" non_interactive=0
-    local opt_php="" opt_docroot="" opt_db="" opt_hostnames="" opt_custom_domains="" opt_deploy_cmds="" auth_flag=""
+    local opt_php="" opt_docroot="" opt_db="" opt_hostnames="" opt_custom_domains="" opt_upload_dirs="" opt_deploy_cmds="" auth_flag=""
 
     if [[ "${1:-}" != "" && "${1:-}" != --* ]]; then
         repo_url="$1"; shift
@@ -47,6 +49,7 @@ cmd_provision() {
             --db) opt_db="$2"; shift ;;
             --hostnames) opt_hostnames="$2"; shift ;;
             --custom-domains) opt_custom_domains="$2"; shift ;;
+            --upload-dirs) opt_upload_dirs="$2"; shift ;;
             --deploy-cmd) opt_deploy_cmds="${opt_deploy_cmds}${2}"$'\n'; shift ;;
             --auth) auth_flag="true" ;;
             --no-auth) auth_flag="false" ;;
@@ -69,7 +72,7 @@ cmd_provision() {
     if [[ -z "$cfg_path" ]]; then
         if [[ "$non_interactive" -eq 1 ]]; then
             [[ -n "$opt_php" ]] || die "--non-interactive: no config found and --php not given"
-            non_interactive_config "$name" "$opt_php" "$opt_docroot" "${opt_db:-$name}" "${opt_db:-$name}" "$opt_hostnames" "$opt_deploy_cmds" "$opt_custom_domains"
+            non_interactive_config "$name" "$opt_php" "$opt_docroot" "${opt_db:-$name}" "${opt_db:-$name}" "$opt_hostnames" "$opt_deploy_cmds" "$opt_custom_domains" "$opt_upload_dirs"
         else
             interactive_fallback "$name"
         fi
