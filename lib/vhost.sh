@@ -58,15 +58,30 @@ build_server_names() {
 }
 
 # Prints the auth_basic block for a site (empty string if auth is off).
+# nginx doesn't validate that auth_basic_user_file exists at `nginx -t`
+# time — a missing one only fails at request time, as a 500 on every
+# request. Since auth defaults on for previews, that would otherwise be
+# the out-of-the-box experience for every new one. Uses a per-site
+# htpasswd file if one exists at $htpasswd_dir/$name; otherwise falls
+# back to the shared default `init` generates (BASIC_AUTH_CREDENTIALS),
+# which always exists once init has run — so this only warns (rather
+# than silently shipping a broken vhost) in the degenerate case where
+# even that's missing.
 build_auth_block() {
     local name="$1" auth="$2"
     [[ "$auth" == "true" ]] || return 0
     local htpasswd_dir="/etc/nginx/htpasswd"
     mkdir -p "$htpasswd_dir"
-    if [[ ! -f "$htpasswd_dir/$name" ]]; then
-        log_warn "basic auth enabled for $name but no htpasswd file at $htpasswd_dir/$name — create one with: htpasswd -c $htpasswd_dir/$name <user>"
+    local htpasswd_file="$htpasswd_dir/$name"
+    if [[ ! -f "$htpasswd_file" ]]; then
+        if [[ -n "${BASIC_AUTH_CREDENTIALS:-}" && -f "$BASIC_AUTH_CREDENTIALS" ]]; then
+            htpasswd_file="$BASIC_AUTH_CREDENTIALS"
+            log_info "basic auth for $name: no per-site htpasswd file, using the shared default ($htpasswd_file)"
+        else
+            log_warn "basic auth enabled for $name but no per-site file at $htpasswd_file and no shared default available — every request will 500 until one exists; create one with: htpasswd -c $htpasswd_file <user>"
+        fi
     fi
-    printf '    auth_basic "Restricted";\n    auth_basic_user_file %s/%s;' "$htpasswd_dir" "$name"
+    printf '    auth_basic "Restricted";\n    auth_basic_user_file %s;' "$htpasswd_file"
 }
 
 install_vhost() {

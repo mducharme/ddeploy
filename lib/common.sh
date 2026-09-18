@@ -36,6 +36,7 @@ load_conf() {
     : "${DEFAULT_PHP:?provisioner.conf: DEFAULT_PHP not set}"
     : "${GIT_DEPLOY_KEY:?provisioner.conf: GIT_DEPLOY_KEY not set}"
     BASIC_AUTH_DEFAULT="${BASIC_AUTH_DEFAULT:-false}"
+    BASIC_AUTH_CREDENTIALS="${BASIC_AUTH_CREDENTIALS:-/etc/nginx/htpasswd/default}"
     PHP_EXTENSIONS="${PHP_EXTENSIONS:-cli mysql mbstring xml curl zip gd}"
     CLOUDFLARE_PROXIED="${CLOUDFLARE_PROXIED:-true}"
     DB_HOST="${DB_HOST:-127.0.0.1}"

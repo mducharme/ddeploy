@@ -18,7 +18,7 @@ cmd_init() {
     apt-get update -y
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         nginx mariadb-server certbot python3-certbot-dns-cloudflare software-properties-common \
-        curl ufw
+        curl ufw apache2-utils
 
     log_info "== yq (must be the Go/mikefarah build, not the Python one) =="
     if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>&1 | grep -qi mikefarah; then
@@ -58,6 +58,19 @@ cmd_init() {
     # shellcheck disable=SC2086 # GIT_KNOWN_HOSTS_SEED is an intentional word list
     ssh-keyscan -t ed25519,rsa $GIT_KNOWN_HOSTS_SEED >> /etc/ssh/ssh_known_hosts 2>/dev/null
     sort -u -o /etc/ssh/ssh_known_hosts /etc/ssh/ssh_known_hosts
+
+    log_info "== basic auth default credentials =="
+    mkdir -p "$(dirname "$BASIC_AUTH_CREDENTIALS")"
+    if [[ -f "$BASIC_AUTH_CREDENTIALS" ]]; then
+        log_info "default basic-auth credentials already exist at $BASIC_AUTH_CREDENTIALS — leaving as-is"
+    else
+        local auth_pass
+        auth_pass="$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 16)"
+        htpasswd -bc "$BASIC_AUTH_CREDENTIALS" preview "$auth_pass"
+        chown root:www-data "$BASIC_AUTH_CREDENTIALS"
+        chmod 640 "$BASIC_AUTH_CREDENTIALS"
+        log_info "generated default basic-auth credentials: user=preview password=$auth_pass (saved at $BASIC_AUTH_CREDENTIALS — this is logged only this once)"
+    fi
 
     log_info "== wildcard TLS cert for *.$BASE_DOMAIN =="
     if [[ -d "/etc/letsencrypt/live/$BASE_DOMAIN" ]]; then

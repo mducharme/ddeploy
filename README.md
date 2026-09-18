@@ -158,6 +158,15 @@ nothing local worth protecting on a preview. Basic auth defaults to on
 for previews (`--no-auth` to turn it off), unlike normal sites, since
 these are meant for internal/client eyes, not public or indexed.
 
+nginx doesn't validate that `auth_basic_user_file` exists at `nginx -t`
+time, only at request time — so a preview with no htpasswd file of its
+own would 500 on every request. `init` generates a shared fallback
+(`BASIC_AUTH_CREDENTIALS`, default `/etc/nginx/htpasswd/default`) once,
+with a random password logged to stdout — every site with auth on and
+no htpasswd file of its own (`htpasswd -c /etc/nginx/htpasswd/<name>
+<user>`) uses that shared one instead. Rotate it by deleting the file
+and re-running `init`.
+
 `remove-preview --purge-db` only drops a database for an isolated-mode
 preview — for shared mode it's a no-op, since that database belongs to
 the parent. `--purge-files` only ever removes the preview's own
