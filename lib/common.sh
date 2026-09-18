@@ -45,6 +45,9 @@ load_conf() {
     BACKUP_CREDENTIALS="${BACKUP_CREDENTIALS:-}"
     BACKUP_BUCKET="${BACKUP_BUCKET:-}"
     BACKUP_SCHEDULE="${BACKUP_SCHEDULE:-17 * * * *}"
+    DB_BACKUP_ENABLED="${DB_BACKUP_ENABLED:-false}"
+    DB_BACKUP_SCHEDULE="${DB_BACKUP_SCHEDULE:-23 * * * *}"
+    DB_BACKUP_RETENTION_DAYS="${DB_BACKUP_RETENTION_DAYS:-7}"
 }
 
 # Lighter loader for `init-db`, run on a dedicated database server that

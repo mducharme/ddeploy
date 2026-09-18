@@ -43,9 +43,11 @@ list                          table of provisioned sites
 provision-all                 provision every site in ./manifest
 deploy-all                    deploy every provisioned site
 backup-uploads [name]         sync upload_dirs to object storage (needs BACKUP_ENABLED=true)
+backup-database [name]        dump + upload each site's DB (needs DB_BACKUP_ENABLED=true)
 ```
 
-`init`, `init-db`, `provision`, `deploy`, `remove`, `backup-uploads` need root.
+`init`, `init-db`, `provision`, `deploy`, `remove`, `backup-uploads`,
+`backup-database` need root.
 
 ## Site config resolution
 
@@ -191,17 +193,19 @@ Cloudflare API either way, independent of proxy status.
 Set the domain's SSL/TLS mode to "Full (strict)" in Cloudflare once
 `init` has issued the origin cert.
 
-## Uploads backup
+## Backups
 
-Disaster-recovery only, not shared/live storage: local disk is always
-the copy actually served. A site's upload dirs — `.ddev/config.yaml`'s
-own `upload_dirs:` key, or `--upload-dirs "a b"` for sites without one —
-get synced one-way to S3-compatible object storage on a schedule, via
-`rclone`.
+Disaster-recovery only, not live/shared storage — local disk and the
+running database are always what's actually served; these are one-way
+copies out to S3-compatible object storage on a schedule, via `rclone`.
+Both share the same destination config in `provisioner.conf`:
 
-To enable, in `provisioner.conf` set `BACKUP_ENABLED="true"`,
-`BACKUP_BUCKET`, and `BACKUP_CREDENTIALS` to a file (`chmod 600`)
-containing:
+```
+BACKUP_CREDENTIALS="..."   # path to a file (chmod 600), see below
+BACKUP_BUCKET="..."
+```
+
+`BACKUP_CREDENTIALS` points at a file containing:
 
 ```
 BACKUP_ENDPOINT="https://nyc3.digitaloceanspaces.com"
@@ -209,10 +213,25 @@ BACKUP_ACCESS_KEY="..."
 BACKUP_SECRET_KEY="..."
 ```
 
-`init` installs `rclone` and a cron entry (`BACKUP_SCHEDULE`, default
-hourly) that runs `backup-uploads` for every site. Sites with no
-`upload_dirs` declared are skipped, not backed up as a whole. Run
-`backup-uploads <name>` directly to sync one site on demand.
+**Uploads** (`BACKUP_ENABLED`, `BACKUP_SCHEDULE`, default hourly): a
+site's upload dirs — `.ddev/config.yaml`'s own `upload_dirs:` key, or
+`--upload-dirs "a b"` for sites without one — get synced to
+`<bucket>/<name>/<dir>`. Sites with none declared are skipped, not
+backed up as a whole. Run `backup-uploads [name]` directly to sync
+on demand.
+
+**Database** (`DB_BACKUP_ENABLED`, `DB_BACKUP_SCHEDULE`, default hourly,
+offset from `BACKUP_SCHEDULE`): each site's database is dumped
+(`mysqldump --single-transaction`, gzipped) and uploaded to
+`<bucket>/<name>/db/` — a live database's data files aren't safe to sync
+directly, so this is a logical dump, not a file copy, and it accumulates
+a dated series rather than mirroring current state. Dumps older than
+`DB_BACKUP_RETENTION_DAYS` (default 7) are pruned on each run. Works
+against a local or remote (`init-db`) database, same as `provision`. Run
+`backup-database [name]` directly to dump on demand.
+
+`init` installs `rclone` (once, if either backup is enabled) and the
+cron entries for whichever are turned on.
 
 ## Assumptions to verify against a real deploy
 
