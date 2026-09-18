@@ -56,25 +56,43 @@ EOF
         ufw allow "$ssh_port/tcp" comment 'ssh' >/dev/null
     done
 
-    # Replace any previously-added rules with the current list — delete
-    # highest-numbered first so earlier deletions don't shift the
-    # numbers of rules still queued for removal.
-    local nums n
-    # ufw pads single-digit rule numbers with a leading space (e.g. "[ 1]",
-    # not "[1]") once there are 10+ rules to align columns — match that
-    # optional space, or this never finds anything to delete below 10.
-    # Both greps are wrapped with `|| true`: on a fresh DB server (the
-    # normal first-init-db case) neither has anything to match yet, and
-    # under set -o pipefail an unwrapped no-match grep mid-pipeline aborts
-    # the rest of init-db the very first time it runs.
-    nums="$(ufw status numbered 2>/dev/null | { grep 'ddeploy-db' || true; } | { grep -oE '^\[[[:space:]]*[0-9]+\]' || true; } | tr -d '[] ' | sort -rn)"
-    for n in $nums; do
-        yes | ufw delete "$n" >/dev/null 2>&1 || true
-    done
-    for host in $DB_ALLOWED_HOSTS; do
-        ufw allow from "$host" to any port 3306 proto tcp comment 'ddeploy-db' >/dev/null
-    done
+    # DB_ALLOWED_HOSTS only changes when an operator edits provisioner.conf,
+    # but every prior run rewrote all its "ddeploy-db"-tagged rules
+    # unconditionally regardless — each ufw allow/delete is its own
+    # individual iptables/nftables reload, so a no-op re-run still meant a
+    # burst of back-to-back firewall reloads on every single init-db (see
+    # the matching fix in lib/cloudflare.sh for the production lockout
+    # this pattern is suspected to have caused there). Skip the rewrite
+    # entirely when the configured hosts match what was applied last time.
+    local cache="/etc/ddeploy/db-allowed-hosts.cache"
+    local current; current="$(printf '%s\n' $DB_ALLOWED_HOSTS | sort)"
+    local action="unchanged"
+    if [[ ! -f "$cache" || "$current" != "$(cat "$cache")" ]]; then
+        action="updated"
+        # Replace any previously-added rules with the current list —
+        # delete highest-numbered first so earlier deletions don't shift
+        # the numbers of rules still queued for removal.
+        local nums n
+        # ufw pads single-digit rule numbers with a leading space (e.g.
+        # "[ 1]", not "[1]") once there are 10+ rules to align columns —
+        # match that optional space, or this never finds anything to
+        # delete below 10. Both greps are wrapped with `|| true`: on a
+        # fresh DB server (the normal first-init-db case) neither has
+        # anything to match yet, and under set -o pipefail an unwrapped
+        # no-match grep mid-pipeline aborts the rest of init-db the very
+        # first time it runs.
+        nums="$(ufw status numbered 2>/dev/null | { grep 'ddeploy-db' || true; } | { grep -oE '^\[[[:space:]]*[0-9]+\]' || true; } | tr -d '[] ' | sort -rn)"
+        for n in $nums; do
+            yes | ufw delete "$n" >/dev/null 2>&1 || true
+        done
+        for host in $DB_ALLOWED_HOSTS; do
+            ufw allow from "$host" to any port 3306 proto tcp comment 'ddeploy-db' >/dev/null
+        done
+        mkdir -p "$(dirname "$cache")"
+        printf '%s\n' "$current" > "$cache"
+    fi
     ufw --force enable >/dev/null
+    log_info "firewall: allowed hosts ($action), SSH open, default deny otherwise"
 
     log_info "init-db complete."
 }

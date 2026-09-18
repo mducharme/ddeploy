@@ -48,28 +48,48 @@ configure_cloudflare_firewall() {
         ufw allow "$ssh_port/tcp" comment 'ssh' >/dev/null
     done
 
-    # Replace any previously-added Cloudflare rules with the current
-    # list — delete highest-numbered first so earlier deletions don't
-    # shift the numbers of rules still queued for removal.
-    local nums n
-    # ufw pads single-digit rule numbers with a leading space (e.g. "[ 1]",
-    # not "[1]") once there are 10+ rules to align columns — match that
-    # optional space, or this never finds anything to delete below 10.
-    # Both greps are wrapped with `|| true`: on a fresh server (the normal
-    # first-init case) neither has anything to match yet, and under
-    # set -o pipefail an unwrapped no-match grep mid-pipeline aborts this
-    # whole function — and everything after it in `init` — the very first
-    # time it runs.
-    nums="$(ufw status numbered 2>/dev/null | { grep 'cloudflare' || true; } | { grep -oE '^\[[[:space:]]*[0-9]+\]' || true; } | tr -d '[] ' | sort -rn)"
-    for n in $nums; do
-        yes | ufw delete "$n" >/dev/null 2>&1 || true
-    done
+    # Cloudflare's ranges rarely change, but every prior run rewrote all
+    # ~20+ "cloudflare"-tagged rules unconditionally regardless — each ufw
+    # allow/delete is its own individual iptables/nftables reload, so even
+    # a no-op re-run meant ~50 back-to-back firewall reloads on every
+    # single `init`. That churn is the suspected cause of a real,
+    # recurring SSH lockout on a production box that only a full reboot
+    # cleared (rules looked correct via `ufw status`, but new connections
+    # still couldn't get through — consistent with a kernel-level
+    # netfilter hiccup during rapid rule churn, not a logical
+    # misconfiguration). Skip the rewrite entirely when the fetched
+    # ranges match what was applied last time.
+    local cache="/etc/ddeploy/cloudflare-ranges.cache"
+    local current; current="$(printf '%s\n' "${ranges[@]}" | sort)"
+    local action="unchanged"
+    if [[ ! -f "$cache" || "$current" != "$(cat "$cache")" ]]; then
+        action="updated"
+        # Replace any previously-added Cloudflare rules with the current
+        # list — delete highest-numbered first so earlier deletions don't
+        # shift the numbers of rules still queued for removal.
+        local nums n
+        # ufw pads single-digit rule numbers with a leading space (e.g.
+        # "[ 1]", not "[1]") once there are 10+ rules to align columns —
+        # match that optional space, or this never finds anything to
+        # delete below 10. Both greps are wrapped with `|| true`: on a
+        # fresh server (the normal first-init case) neither has anything
+        # to match yet, and under set -o pipefail an unwrapped no-match
+        # grep mid-pipeline aborts this whole function — and everything
+        # after it in `init` — the very first time it runs.
+        nums="$(ufw status numbered 2>/dev/null | { grep 'cloudflare' || true; } | { grep -oE '^\[[[:space:]]*[0-9]+\]' || true; } | tr -d '[] ' | sort -rn)"
+        for n in $nums; do
+            yes | ufw delete "$n" >/dev/null 2>&1 || true
+        done
 
-    local cidr
-    for cidr in "${ranges[@]}"; do
-        ufw allow from "$cidr" to any port 80,443 proto tcp comment 'cloudflare' >/dev/null
-    done
+        local cidr
+        for cidr in "${ranges[@]}"; do
+            ufw allow from "$cidr" to any port 80,443 proto tcp comment 'cloudflare' >/dev/null
+        done
+
+        mkdir -p "$(dirname "$cache")"
+        printf '%s\n' "$current" > "$cache"
+    fi
 
     ufw --force enable >/dev/null
-    log_info "firewall: ${#ranges[@]} Cloudflare ranges allowed on 80/443, SSH open, default deny otherwise"
+    log_info "firewall: ${#ranges[@]} Cloudflare ranges ($action) allowed on 80/443, SSH open, default deny otherwise"
 }
