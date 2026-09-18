@@ -172,6 +172,16 @@ cleanup path is still CI calling `remove-preview` when a PR closes —
 this only catches what that missed. Wire it into `init` via
 `PREVIEW_PRUNE_ENABLED`/`PREVIEW_PRUNE_SCHEDULE` for a periodic cron run.
 
+The general commands are preview-aware too, so a preview never needs its
+own separate mental model once it exists: `list` shows a `PREVIEW`
+column (`<project>/<branch> (<mode>)`) and resolves a shared-mode
+preview's `DB` column to the parent's actual database, not the preview's
+own unused name; `deploy-all` skips previews (they update via
+`deploy-preview`, not a fleet-wide `--ff-only` pull that would fail on
+any rebased branch); and plain `remove <name>` on a preview detects that
+and delegates to `remove-preview`, so the purge-db-belongs-to-the-parent
+safety and the symlink-safe file cleanup apply automatically.
+
 ## Database server
 
 By default `DB_HOST` is `127.0.0.1`: `init` installs MariaDB on the same

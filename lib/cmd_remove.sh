@@ -23,6 +23,13 @@ cmd_remove() {
     [[ -n "$name" ]] || { usage_remove; die "site name required"; }
     validate_name "$name"
 
+    if is_preview "$name"; then
+        read_preview_meta "$name"
+        log_info "'$name' is a preview of '$PREVIEW_PROJECT' (branch '$PREVIEW_BRANCH') — delegating to remove-preview"
+        cmd_remove_preview "$PREVIEW_PROJECT" "$PREVIEW_BRANCH" "$@"
+        return $?
+    fi
+
     local purge_db=0 purge_files=0
     while [[ $# -gt 0 ]]; do
         case "$1" in

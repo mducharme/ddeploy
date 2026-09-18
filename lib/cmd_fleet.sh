@@ -34,6 +34,7 @@ cmd_deploy_all() {
         [[ -d "$site_path" ]] || continue
         name="$(basename "$site_path")"
         is_provisioned "$name" || continue
+        is_preview "$name" && continue   # has its own update path: deploy-preview
         log_info "== deploy-all: $name =="
         if ! "$PROVISIONER_DIR/provision.sh" deploy "$name"; then
             log_error "deploy failed for $name"
