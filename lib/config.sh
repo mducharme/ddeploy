@@ -9,6 +9,35 @@
 # and writes $GENERATED_DIR/<name>.steps (TYPE<TAB>CMD per line, TYPE in
 # exec|composer|exec-host).
 
+# Path-safety check for a relative path pulled from a project's own
+# config (docroot, an upload_dirs entry). These get used in filesystem
+# operations (some of them, like a preview's `rm -rf` when relinking
+# uploads, destructive) that assume the value stays inside the site's
+# own directory — reject anything that could escape it: an absolute
+# path, a '..' segment, or an embedded newline (which could otherwise
+# inject extra lines into a rendered template).
+validate_relative_path() {
+    local val="$1" label="$2"
+    [[ -z "$val" ]] && return 0
+    [[ "$val" == *$'\n'* ]] && die "$label contains a newline — refusing to use it"
+    [[ "$val" == /* ]] && die "$label is an absolute path ('$val') — refusing to use it"
+    case "/$val/" in
+        */../*) die "$label contains a '..' segment ('$val') — refusing to use it" ;;
+    esac
+}
+
+# Hostname-safety check for additional_hostnames (a single label,
+# combined with $BASE_DOMAIN) and additional_fqdns (a complete domain).
+# These get embedded into rendered nginx config (server_name) and passed
+# as certbot -d arguments — reject anything that isn't a plain hostname,
+# so a crafted value can't inject extra nginx directives (YAML allows
+# embedded newlines in a string) or be misread as a flag by certbot.
+validate_hostname() {
+    local val="$1" label="$2"
+    local re='^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$'
+    [[ "$val" =~ $re ]] || die "$label is not a valid hostname ('$val') — refusing to use it"
+}
+
 # Flattens .hooks.post-start (a list of single-key maps, e.g. "- exec: ...")
 # into TYPE<TAB>CMD lines. Same shape is used by the sidecar, so this
 # works for both ddev configs and our own generated ones.
@@ -47,6 +76,7 @@ parse_config() {
 
     DOCROOT="$(yq eval '.docroot // ""' "$cfg")"
     [[ "$DOCROOT" == "null" ]] && DOCROOT=""
+    validate_relative_path "$DOCROOT" "docroot for '$name'"
 
     if [[ "$check_webserver" == "1" ]]; then
         # Sites are always served via nginx + PHP-FPM regardless of this
@@ -61,6 +91,11 @@ parse_config() {
     mapfile -t ADDITIONAL_HOSTNAMES < <(yq eval '.additional_hostnames[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
     mapfile -t ADDITIONAL_FQDNS    < <(yq eval '.additional_fqdns[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
     mapfile -t UPLOAD_DIRS         < <(yq eval '.upload_dirs[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
+
+    local v
+    for v in "${ADDITIONAL_HOSTNAMES[@]}"; do validate_hostname "$v" "additional_hostnames entry for '$name'"; done
+    for v in "${ADDITIONAL_FQDNS[@]}"; do validate_hostname "$v" "additional_fqdns entry for '$name'"; done
+    for v in "${UPLOAD_DIRS[@]}"; do validate_relative_path "$v" "upload_dirs entry for '$name'"; done
 
     if [[ "${#ADDITIONAL_FQDNS[@]}" -gt 0 ]]; then
         log_info "custom domain(s) for '$name': ${ADDITIONAL_FQDNS[*]} — DNS for these must already point at this server; a certificate is requested via HTTP-01 on first provision"

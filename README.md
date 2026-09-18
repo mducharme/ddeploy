@@ -78,6 +78,13 @@ values land in the sidecar and can be edited by hand.
 `.ddev/config.yaml`'s `webserver_type` is read but not enforced — sites
 are always served by nginx regardless of what it says.
 
+`docroot`, `upload_dirs`, `additional_hostnames`, and `additional_fqdns`
+are validated before use (`validate_relative_path`/`validate_hostname` in
+`lib/config.sh`) — a `.ddev/config.yaml` lives in the client's own repo,
+and these values get used in filesystem operations and rendered nginx
+config, so a `..`-traversing docroot or a hostname with an embedded
+newline is rejected outright rather than trusted.
+
 ## Custom domains
 
 Every site gets `<name>.$BASE_DOMAIN` for free, covered by the shared
