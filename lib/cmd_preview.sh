@@ -251,7 +251,7 @@ cmd_prune_previews() {
     load_conf
     require_root
 
-    local only_project="${1:-}"
+    local only_project="${1:-}" failures=0
     local f name
     for f in "$GENERATED_DIR"/*.preview; do
         [[ -e "$f" ]] || continue
@@ -264,10 +264,32 @@ cmd_prune_previews() {
         local remote; remote="$(git -C "$dir" remote get-url origin 2>/dev/null)"
         [[ -n "$remote" ]] || continue
 
+        # --exit-code returns 2 specifically for "connected fine, ref not
+        # found" — any other nonzero (network blip, auth failure, host
+        # down) means we couldn't actually check, and must NOT be treated
+        # as "branch is gone": that would purge an active preview's
+        # database/files on a false positive from a transient failure.
+        local ls_remote_exit
         if git ls-remote --exit-code --heads "$remote" "$PREVIEW_BRANCH" >/dev/null 2>&1; then
+            ls_remote_exit=0
+        else
+            ls_remote_exit=$?
+        fi
+        if [[ "$ls_remote_exit" -eq 0 ]]; then
+            continue
+        elif [[ "$ls_remote_exit" -ne 2 ]]; then
+            log_warn "prune: couldn't check '$PREVIEW_BRANCH' on $remote (git exit $ls_remote_exit) — leaving preview '$name' alone this run"
             continue
         fi
+
         log_info "prune: '$PREVIEW_BRANCH' no longer exists on $remote — removing preview '$name'"
-        cmd_remove_preview "$PREVIEW_PROJECT" "$PREVIEW_BRANCH" --purge-db --purge-files
+        # One preview failing to remove cleanly must not stop the rest
+        # from being pruned this run — a bare call here would abort the
+        # whole loop under set -e.
+        if ! cmd_remove_preview "$PREVIEW_PROJECT" "$PREVIEW_BRANCH" --purge-db --purge-files; then
+            log_error "prune: failed to remove preview '$name'"
+            failures=$((failures + 1))
+        fi
     done
+    [[ "$failures" -eq 0 ]] || die "$failures preview(s) failed to remove"
 }

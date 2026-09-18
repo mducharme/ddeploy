@@ -31,7 +31,8 @@ scan_hooks() {
 # deploy steps (a migration, notably) run as whoever actually owns the
 # database they're pointed at.
 replay_hooks() {
-    local name="$1" php="$2" dir="$3" exec_user="${4:-www-$name}" exec_home="${5:-$dir}"
+    local name="$1" php="$2" dir="$3"
+    local exec_user="${4:-www-$name}" exec_home="${5:-$dir}"
     local steps="$GENERATED_DIR/$name.steps"
     [[ -f "$steps" ]] || { log_info "no deploy steps for $name"; return 0; }
 

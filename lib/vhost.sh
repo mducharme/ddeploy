@@ -15,7 +15,8 @@ ensure_site_user() {
 # and files are owned by the same user that already owns the parent's
 # database credentials and uploads it's linking against.
 apply_permissions() {
-    local name="$1" dir="$2" owner="${3:-www-$name}"
+    local name="$1" dir="$2"
+    local owner="${3:-www-$name}"
     chown -R "$owner:www-data" "$dir"
     find "$dir" -type d -exec chmod 2750 {} +
     find "$dir" -type f -exec chmod 640 {} +
@@ -24,7 +25,8 @@ apply_permissions() {
 # $3/$4 (optional) pool user/group — default to the site's own
 # www-<name>. See apply_permissions for why a preview might override this.
 install_fpm_pool() {
-    local name="$1" ver="$2" pool_user="${3:-www-$name}" pool_group="${4:-www-$name}"
+    local name="$1" ver="$2"
+    local pool_user="${3:-www-$name}" pool_group="${4:-www-$name}"
     local pool_dir="/etc/php/$ver/fpm/pool.d"
     [[ -d "$pool_dir" ]] || die "no such PHP-FPM pool dir: $pool_dir (is php$ver-fpm installed?)"
     render_template "$PROVISIONER_DIR/templates/fpm-pool.conf.tmpl" "$pool_dir/$name.conf" \

@@ -11,7 +11,8 @@
 
 # Prints one of: craftcms, wordpress-bedrock, wordpress, charcoal, "" (unknown)
 detect_cms() {
-    local dir="$1" composer="$dir/composer.json"
+    local dir="$1"
+    local composer="$dir/composer.json"
     if [[ -f "$composer" ]]; then
         grep -q '"craftcms/cms"' "$composer" 2>/dev/null && { echo craftcms; return; }
         grep -qE '"locomotivemtl/charcoal-(app|core|cms|project-boilerplate)"' "$composer" 2>/dev/null && { echo charcoal; return; }

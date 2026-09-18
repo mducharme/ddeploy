@@ -45,8 +45,13 @@ backup_site_database() {
     fi
 
     log_info "backup: $name: uploading $(basename "$dump") -> $BACKUP_BUCKET/$name/db/"
-    rclone copy "$dump" "${remote}/$name/db/"
+    local uploaded=1
+    rclone copy "$dump" "${remote}/$name/db/" || uploaded=0
     rm -rf "$tmp_dir"
+    if [[ "$uploaded" -eq 0 ]]; then
+        log_warn "backup: $name: upload failed"
+        return 1
+    fi
 
     prune_database_backups "$name" "$remote"
 }

@@ -14,7 +14,8 @@
 # $5 label for logging, $6/$7 (optional) exec user/home — see
 # replay_hooks in lib/hooks.sh for why a shared-mode preview overrides these.
 run_repo_hook() {
-    local name="$1" php="$2" dir="$3" script_rel="$4" label="$5" exec_user="${6:-www-$name}" exec_home="${7:-$dir}"
+    local name="$1" php="$2" dir="$3" script_rel="$4" label="$5"
+    local exec_user="${6:-www-$name}" exec_home="${7:-$dir}"
     local script="$dir/$script_rel"
     [[ -f "$script" ]] || return 0
     if [[ ! -x "$script" ]]; then

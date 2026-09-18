@@ -33,7 +33,11 @@ backup_remote_spec() {
 }
 
 # $1 name, $2 site dir, remaining args: upload dirs (relative to $2).
-# No-op if the site has none declared.
+# No-op if the site has none declared. Returns nonzero if any directory
+# failed to sync — but still attempts every directory regardless, since
+# a bare `rclone sync` failing partway through would otherwise abort the
+# rest of this site's own dirs under set -e, not just move on to the
+# next site (that part's the caller's job, via its own if-wrapped call).
 backup_site_uploads() {
     local name="$1" dir="$2"; shift 2
     local dirs=("$@")
@@ -43,7 +47,7 @@ backup_site_uploads() {
     require_backup_credentials
     local remote; remote="$(backup_remote_spec)"
 
-    local d src
+    local d src failures=0
     for d in "${dirs[@]}"; do
         src="$dir/$d"
         if [[ ! -d "$src" ]]; then
@@ -51,6 +55,10 @@ backup_site_uploads() {
             continue
         fi
         log_info "backup: $name: $d -> $BACKUP_BUCKET/$name/$d"
-        rclone sync "$src" "${remote}/$name/$d" --checksum
+        if ! rclone sync "$src" "${remote}/$name/$d" --checksum; then
+            log_warn "backup: $name: $d failed to sync"
+            failures=$((failures + 1))
+        fi
     done
+    [[ "$failures" -eq 0 ]]
 }
