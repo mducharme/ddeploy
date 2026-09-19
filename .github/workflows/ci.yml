@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -x provision.sh
+      - name: bash -n (syntax check every sourced file)
+        run: |
+          set -e
+          bash -n provision.sh
+          for f in lib/*.sh; do
+            echo "checking $f"
+            bash -n "$f"
+          done
+
+  # Builds and runs the actual provisioner — init, init-db, provision,
+  # deploy (incl. rollback), branch previews, backup/restore, doctor,
+  # remove — against real systemd, nginx, PHP-FPM, MariaDB, sshd, and
+  # object storage in disposable containers. See docker/README.md for
+  # what's real vs mocked and why. Needs `--privileged` containers for
+  # systemd (docker/docker-compose.yml) — supported on GitHub-hosted
+  # runners, same pattern several other systemd-in-docker CI setups use.
+  docker-harness:
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the full provisioner test harness
+        run: docker/test/run.sh
