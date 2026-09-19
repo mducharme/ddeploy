@@ -15,22 +15,17 @@ EOF
 
 usage_restore_database() {
     cat <<'EOF'
-usage: provision.sh restore-database <name> [--from <filename>] --yes
+usage: provision.sh restore-database <name> [--from <filename> | --from-file <path>] --yes
 
-Restores a database dump, OVERWRITING the current database. Without
---from, restores the most recent dump. Without --yes, lists available
-dumps (newest first) and does nothing.
-EOF
-}
+Restores a database dump, OVERWRITING the current database.
 
-usage_import_database() {
-    cat <<'EOF'
-usage: provision.sh import-database <name> <file> --yes
+Without --from/--from-file, restores the most recent object-storage
+backup. --from <filename> picks a specific object-storage backup by
+name (without --yes, lists available ones, newest first). --from-file
+<path> instead loads a local .sql or .sql.gz dump — e.g. a client-
+provided export — with no object storage involved.
 
-Loads a local .sql or .sql.gz dump into <name>'s database, OVERWRITING
-it — for seeding a freshly-provisioned site from a client-provided dump
-without needing direct DB access. Without --yes, shows what would happen
-and does nothing.
+Without --yes, shows what would happen and does nothing.
 EOF
 }
 
@@ -104,16 +99,19 @@ cmd_restore_database() {
     [[ -n "$name" ]] || { usage_restore_database; die "site name required"; }
     shift || true
 
-    local from="" confirm=0
+    local from="" from_file="" confirm=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --from) from="$2"; shift ;;
+            --from-file) from_file="$2"; shift ;;
             --yes) confirm=1 ;;
             -h|--help) usage_restore_database; return 0 ;;
             *) die "unknown option: $1" ;;
         esac
         shift
     done
+    [[ -n "$from" && -n "$from_file" ]] && die "--from and --from-file are mutually exclusive"
+    [[ -z "$from_file" || -f "$from_file" ]] || die "file not found: $from_file"
 
     local target; target="$(restore_target "$name")"
     if [[ "$target" != "$name" ]]; then
@@ -133,6 +131,23 @@ cmd_restore_database() {
     fi
     local db_name="$DB_NAME"
 
+    # --from-file skips object storage entirely — a local dump (e.g. a
+    # client-provided export) loaded straight into the database, for
+    # seeding a freshly-provisioned site without needing direct DB access.
+    if [[ -n "$from_file" ]]; then
+        if [[ "$confirm" -ne 1 ]]; then
+            log_warn "dry run — this would load '$from_file' into database '$db_name', OVERWRITING it. Pass --yes to actually do it."
+            return 0
+        fi
+        log_info "importing '$from_file' into '$db_name' for '$target' (OVERWRITING it)"
+        if load_sql_dump_into_db "$from_file" "$db_name"; then
+            log_info "imported '$from_file' into '$db_name' for '$target'"
+        else
+            die "import failed for '$target'"
+        fi
+        return 0
+    fi
+
     require_rclone
     require_backup_credentials
     local remote; remote="$(backup_remote_spec)"
@@ -151,60 +166,5 @@ cmd_restore_database() {
         log_info "restored '$db_name' for '$target'"
     else
         die "restore failed for '$target'"
-    fi
-}
-
-cmd_import_database() {
-    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage_import_database; return 0; }
-    load_conf
-    require_root
-
-    local name="${1:-}"
-    [[ -n "$name" ]] || { usage_import_database; die "site name required"; }
-    shift || true
-
-    local file="${1:-}"
-    [[ -n "$file" && "$file" != --* ]] || { usage_import_database; die "dump file required"; }
-    shift || true
-
-    local confirm=0
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --yes) confirm=1 ;;
-            -h|--help) usage_import_database; return 0 ;;
-            *) die "unknown option: $1" ;;
-        esac
-        shift
-    done
-
-    [[ -f "$file" ]] || die "file not found: $file"
-
-    local target; target="$(restore_target "$name")"
-    if [[ "$target" != "$name" ]]; then
-        log_warn "'$name' is a shared-mode preview of '$target' — importing into '$target's actual database (shared by every preview of it), not something scoped to '$name' alone"
-    fi
-
-    # Same resolution path as restore-database: $target only stays a
-    # preview itself when $name was isolated-mode.
-    if is_preview "$target"; then
-        read_preview_meta "$target"
-        resolve_preview_config "$target" "$PREVIEW_PROJECT" "$PREVIEW_MODE"
-    else
-        local cfg_path; cfg_path="$(resolve_config_path "$target")"
-        [[ -n "$cfg_path" ]] || die "no config for '$target' — can't resolve its database"
-        parse_config "$target" "$cfg_path" 0
-    fi
-    local db_name="$DB_NAME"
-
-    if [[ "$confirm" -ne 1 ]]; then
-        log_warn "dry run — this would load '$file' into database '$db_name', OVERWRITING it. Pass --yes to actually do it."
-        return 0
-    fi
-
-    log_info "importing '$file' into '$db_name' for '$target' (OVERWRITING it)"
-    if load_sql_dump_into_db "$file" "$db_name"; then
-        log_info "imported '$file' into '$db_name' for '$target'"
-    else
-        die "import failed for '$target'"
     fi
 }

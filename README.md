@@ -45,8 +45,7 @@ deploy-all                    deploy every provisioned site
 backup-uploads [name]         sync upload_dirs to object storage (needs BACKUP_ENABLED=true)
 backup-database [name]        dump + upload each site's DB (needs DB_BACKUP_ENABLED=true)
 restore-uploads <name> --yes  overwrite local upload_dirs from the backup (see -h)
-restore-database <name> [--from <file>] --yes   overwrite the DB from a backup dump (see -h)
-import-database <name> <file> --yes   load a local .sql/.sql.gz dump into the DB (see -h)
+restore-database <name> [--from <file> | --from-file <path>] --yes   overwrite the DB from a dump (see -h)
 provision-preview <project> <branch> [repo-url] [opts]   branch preview (see -h)
 deploy-preview <project> <branch>       pull + redeploy a preview
 remove-preview <project> <branch> [opts]   remove a preview (see -h)
@@ -491,31 +490,27 @@ and is backed up normally.
 
 ### Restoring
 
-`restore-uploads <name> --yes` and `restore-database <name> [--from <file>] --yes`
+`restore-uploads <name> --yes` and
+`restore-database <name> [--from <file> | --from-file <path>] --yes`
 pull a backup back down — genuinely destructive (that's the point), so
 both require `--yes` to actually run; without it, they show what would
 happen (available dumps, newest first, for the database one) and do
-nothing. `restore-database` without `--from` restores the most recent
-dump.
+nothing. `restore-database` without `--from`/`--from-file` restores the
+most recent object-storage dump; `--from <file>` picks a specific one by
+name.
 
-Both are preview-aware the same way `list`/`remove`/`deploy-all` are: a
-shared-mode preview has nothing of its own to restore (it was never
-separately backed up — there's no `<bucket>/<preview-name>/...`), so
-running either command against one redirects to the **parent project**
-with a loud warning, and restores the parent's actual database/uploads
-— the ones every preview of it is currently sharing. An isolated-mode
-preview restores its own, same as any normal site.
+`--from-file <path>` instead loads an arbitrary local `.sql` or `.sql.gz`
+dump — no object storage involved — for seeding a freshly-provisioned
+site from a client-provided export without ever needing direct DB access
+yourself (scp the file up, run one command).
 
-### Importing
-
-`import-database <name> <file> --yes` loads an arbitrary local `.sql` or
-`.sql.gz` dump into a site's database, OVERWRITING it — for seeding a
-freshly-provisioned site from a client-provided export without ever
-needing direct DB access yourself (scp the file up, run one command).
-Unlike `restore-database`, the source is whatever local file you point it
-at, not a dated backup this tool made — same destructive-with-confirmation
-shape (`--yes` required, dry run otherwise) and the same preview-aware
-parent-redirect for a shared-mode preview.
+Both commands are preview-aware the same way `list`/`remove`/`deploy-all`
+are: a shared-mode preview has nothing of its own to restore (it was
+never separately backed up — there's no `<bucket>/<preview-name>/...`),
+so running either against one redirects to the **parent project** with a
+loud warning, and restores the parent's actual database/uploads — the
+ones every preview of it is currently sharing. An isolated-mode preview
+restores its own, same as any normal site.
 
 ## Testing
 

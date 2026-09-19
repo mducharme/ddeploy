@@ -155,6 +155,18 @@ assert_file_exists "$SITES_ROOT/testsite/private-uploads/marker.txt" "restore-up
 probe_count="$(mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" -N -B testsite -e "SELECT COUNT(*) FROM probe;")"
 [[ "$probe_count" == "1" ]] && pass "restore-database brought the probe row back" || fail "probe table missing/empty after restore (got: $probe_count)"
 
+step "restore-database --from-file (local dump, e.g. a client-provided export)"
+DUMP="$(mktemp)"
+cat > "$DUMP" <<'SQL'
+DROP TABLE IF EXISTS probe;
+CREATE TABLE probe (id INT);
+INSERT INTO probe VALUES (42);
+SQL
+./provision.sh restore-database testsite --from-file "$DUMP" --yes
+rm -f "$DUMP"
+probe_val="$(mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" -N -B testsite -e "SELECT id FROM probe;")"
+[[ "$probe_val" == "42" ]] && pass "restore-database --from-file loaded the local dump" || fail "probe table wrong/missing after --from-file (got: $probe_val)"
+
 # --- prune-previews: real git-ls-remote-exit-code path ------------------
 
 step "prune-previews (feature-a branch deleted upstream)"

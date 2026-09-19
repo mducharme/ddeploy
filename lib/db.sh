@@ -174,11 +174,11 @@ SQL
 
 # Pipes $1 (a .sql or .sql.gz file already on local disk) into database
 # $2, OVERWRITING it — the shared "load a dump into a database" mechanics
-# behind both restore_site_database (lib/db_backup.sh, from an
-# object-storage backup) and cmd_import_database (lib/cmd_restore.sh,
-# from an arbitrary local file) — same local-vs-remote connection logic
-# as db_admin_mysql, so it works whether the database is co-located or on
-# a dedicated init-db server.
+# behind both restore_site_database (lib/db_backup.sh, from a downloaded
+# object-storage backup) and cmd_restore_database's --from-file path
+# (lib/cmd_restore.sh, from an arbitrary local file) — same local-vs-
+# remote connection logic as db_admin_mysql, so it works whether the
+# database is co-located or on a dedicated init-db server.
 load_sql_dump_into_db() {
     local file="$1" db_name="$2"
     local -a reader
