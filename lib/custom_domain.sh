@@ -46,10 +46,17 @@ install_custom_domain_vhost() {
         fi
     fi
 
-    local auth_block; auth_block="$(build_auth_block "$name" "$auth")"
+    # "_custom" suffix: this vhost is a SEPARATE included file for the
+    # same site name as the main vhost — without disambiguating, both
+    # would declare the identical `map $uri $auth_realm_<name>`
+    # variable in the same http context and nginx -t would fail on the
+    # duplicate.
+    local auth_map_block; auth_map_block="$(build_auth_map_block "$name" "_custom" "${AUTH_EXEMPT_PATHS[@]}")"
+    local auth_block; auth_block="$(build_auth_block "$name" "$auth" "_custom")"
     render_template "$PROVISIONER_DIR/templates/vhost.conf.tmpl" "$out" \
         "NAME=$name" "SERVER_NAMES=$server_names" "ROOT=$root" "CERT_NAME=$cert_name" \
-        "AUTH_BLOCK=$auth_block" "MAX_BODY_SIZE=${max_body_size:-$CLIENT_MAX_BODY_SIZE}"
+        "AUTH_BLOCK=$auth_block" "MAX_BODY_SIZE=${max_body_size:-$CLIENT_MAX_BODY_SIZE}" \
+        "AUTH_MAP_BLOCK=$auth_map_block"
     ln -sf "$out" "/etc/nginx/sites-enabled/$name-custom.conf"
     nginx -t
     systemctl reload nginx

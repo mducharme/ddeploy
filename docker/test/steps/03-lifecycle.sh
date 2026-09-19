@@ -55,6 +55,9 @@ echo "important client note" > "$SITES_ROOT/testsite/shared-notes.txt"
 step "per-site config overrides (.ddeploy/config.yaml)"
 assert_cmd_ok "vhost has the overridden client_max_body_size" grep -q "client_max_body_size 256m;" /etc/nginx/sites-available/testsite.conf
 assert_cmd_ok "FPM pool has the overridden pm.max_children" grep -q "pm.max_children = 20" /etc/php/8.3/fpm/pool.d/testsite.conf
+assert_cmd_ok "FPM pool has the php_ini override" grep -q "php_admin_value\[max_execution_time\] = 45" /etc/php/8.3/fpm/pool.d/testsite.conf
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "MAX_EXEC=45" "php_ini override actually applies at runtime, not just written to the pool file"
 
 # --- probe row for backup/restore-database verification ---------------
 
@@ -91,6 +94,7 @@ assert_cmd_fails "shared-mode preview has NO Linux user of its own" id -u "www-$
 assert_file_exists "/etc/nginx/sites-enabled/$PREVIEW.conf" "preview vhost enabled"
 
 assert_cmd_fails "preview requires auth (no credentials -> non-2xx)" curl -fsSk --resolve "$PREVIEW.staging.ddeploy.test:443:127.0.0.1" "https://$PREVIEW.staging.ddeploy.test/"
+assert_cmd_ok "auth_exempt_paths entry (/health) bypasses auth, no credentials needed" curl -fsSk --resolve "$PREVIEW.staging.ddeploy.test:443:127.0.0.1" "https://$PREVIEW.staging.ddeploy.test/health"
 if [[ -n "$AUTH_PASS" ]]; then
     out="$(curl -fsSk -u "preview:$AUTH_PASS" --resolve "$PREVIEW.staging.ddeploy.test:443:127.0.0.1" "https://$PREVIEW.staging.ddeploy.test/")"
     assert_contains "$out" "MARKER=preview-v1" "preview serves the feature-a branch"
@@ -121,6 +125,8 @@ assert_contains "$out" "MARKER=preview-v2" "deploy-preview fetch+reset picked up
 
 step "backup-uploads / backup-database (all sites)"
 echo "hello from uploads" > "$SITES_ROOT/testsite/private-uploads/marker.txt"
+mkdir -p "$SITES_ROOT/testsite/private-uploads/exclude-me"
+echo "should never leave this box" > "$SITES_ROOT/testsite/private-uploads/exclude-me/secret.txt"
 
 backup_out="$(./provision.sh backup-uploads 2>&1)"
 assert_contains "$backup_out" "skipping 'testsite-feature-a'" "backup-uploads skips the shared-mode preview"
@@ -133,6 +139,8 @@ assert_not_contains "$db_backup_out" "backup-database failed" "backup-database s
 remote="$(backup_remote_spec)"
 uploads_listing="$(rclone lsf "${remote}/testsite/private-uploads/" 2>/dev/null || true)"
 assert_contains "$uploads_listing" "marker.txt" "uploaded marker.txt is actually in object storage"
+exclude_listing="$(rclone lsf "${remote}/testsite/private-uploads/exclude-me/" 2>/dev/null || true)"
+assert_not_contains "$exclude_listing" "secret.txt" "backup_exclude kept the excluded file out of object storage"
 db_listing="$(rclone lsf "${remote}/testsite/db/" 2>/dev/null || true)"
 [[ -n "$db_listing" ]] && pass "a database dump landed in object storage" || fail "no database dump found in object storage"
 

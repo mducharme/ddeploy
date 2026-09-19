@@ -38,6 +38,13 @@ backup_remote_spec() {
 # a bare `rclone sync` failing partway through would otherwise abort the
 # rest of this site's own dirs under set -e, not just move on to the
 # next site (that part's the caller's job, via its own if-wrapped call).
+# Excludes are read from the BACKUP_EXCLUDE[] global (set by parse_config
+# from .ddeploy/config.yaml's backup_exclude: — the caller always runs
+# parse_config/resolve_preview_config immediately before this, same
+# pattern UPLOAD_DIRS/PERSISTENT_FILES already use). Not applied to
+# restore_site_uploads below — a restore only ever pulls back what
+# actually made it to object storage, so excluded content was never
+# there to restore in the first place.
 backup_site_uploads() {
     local name="$1" dir="$2"; shift 2
     local dirs=("$@")
@@ -47,6 +54,12 @@ backup_site_uploads() {
     require_backup_credentials
     local remote; remote="$(backup_remote_spec)"
 
+    local -a exclude_args=()
+    local pattern
+    for pattern in "${BACKUP_EXCLUDE[@]}"; do
+        exclude_args+=(--exclude "$pattern")
+    done
+
     local d src failures=0
     for d in "${dirs[@]}"; do
         src="$dir/$d"
@@ -55,7 +68,7 @@ backup_site_uploads() {
             continue
         fi
         log_info "backup: $name: $d -> $BACKUP_BUCKET/$name/$d"
-        if ! rclone sync "$src" "${remote}/$name/$d" --checksum; then
+        if ! rclone sync "$src" "${remote}/$name/$d" --checksum "${exclude_args[@]}"; then
             log_warn "backup: $name: $d failed to sync"
             failures=$((failures + 1))
         fi

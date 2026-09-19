@@ -7,3 +7,10 @@ persistent_files:
   - shared-notes.txt
 client_max_body_size: 256m
 fpm_max_children: 20
+auth_exempt_paths:
+  - /health
+backup_exclude:
+  - exclude-me/**
+db_backup_retention_days: 14
+php_ini:
+  max_execution_time: 45

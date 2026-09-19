@@ -4,6 +4,7 @@
 // above this docroot, and proves the credentials actually work by
 // running a real query — not just that the file exists.
 echo "MARKER=v1\n";
+echo "MAX_EXEC=" . ini_get('max_execution_time') . "\n";
 
 $envFile = dirname(__DIR__) . '/.env';
 $vars = [];

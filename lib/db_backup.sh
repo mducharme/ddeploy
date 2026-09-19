@@ -53,13 +53,17 @@ backup_site_database() {
         return 1
     fi
 
-    prune_database_backups "$name" "$remote"
+    # DB_BACKUP_RETENTION_DAYS_CONFIG is set by parse_config from
+    # .ddeploy/config.yaml's db_backup_retention_days: — a per-site
+    # override of the server-wide DB_BACKUP_RETENTION_DAYS default.
+    prune_database_backups "$name" "$remote" "${DB_BACKUP_RETENTION_DAYS_CONFIG:-$DB_BACKUP_RETENTION_DAYS}"
 }
 
-# Deletes dumps older than DB_BACKUP_RETENTION_DAYS from object storage.
+# Deletes dumps older than $3 (days, defaults to the server-wide
+# DB_BACKUP_RETENTION_DAYS) from object storage.
 prune_database_backups() {
     local name="$1" remote="$2"
-    local days="${DB_BACKUP_RETENTION_DAYS:-7}"
+    local days="${3:-${DB_BACKUP_RETENTION_DAYS:-7}}"
     rclone delete "${remote}/$name/db/" --min-age "${days}d" 2>/dev/null || true
 }
 

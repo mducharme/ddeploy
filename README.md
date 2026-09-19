@@ -114,6 +114,14 @@ persistent_files:
 basic_auth: true
 client_max_body_size: 256m
 fpm_max_children: 20
+auth_exempt_paths:
+  - /webhook
+backup_exclude:
+  - cache/**
+db_backup_retention_days: 30
+php_ini:
+  memory_limit: 256M
+  upload_max_filesize: 64M
 ```
 
 If it's absent, or doesn't declare a given key, that key falls back to
@@ -134,6 +142,31 @@ default, for a project that needs something different from the fleet:
 - `fpm_max_children` — overrides `FPM_MAX_CHILDREN` (PHP-FPM pool
   concurrency ceiling, default `5`) for a site that needs more (or less)
   headroom than the rest of the fleet.
+
+Three more with no server-wide equivalent — off by default, only active
+when declared:
+
+- `auth_exempt_paths` — URL path prefixes that bypass basic auth even
+  when it's on (a webhook or health-check endpoint on an otherwise-gated
+  preview, say). Absolute paths only (`/webhook`, not `webhook`).
+  Implemented as an nginx `map` on `$uri` feeding `auth_basic` a variable
+  rather than a location-block trick — the app is a front-controller
+  that rewrites everything to `index.php` via `try_files`, and that
+  internal rewrite re-runs nginx's location search from scratch, so a
+  nested location inside an exempt-path location never actually gets
+  used. `auth_basic` is evaluated against the real, pre-rewrite `$uri`,
+  which is what makes this work.
+- `backup_exclude` — `rclone --exclude` glob patterns (e.g. `cache/**`),
+  applied to `backup-uploads` only; `restore-uploads` naturally only
+  pulls back what actually made it to object storage, so nothing extra
+  is needed on that side.
+- `db_backup_retention_days` — per-site override of the server-wide
+  `DB_BACKUP_RETENTION_DAYS`.
+- `php_ini` — a map of PHP directive → value, rendered as
+  `php_admin_value[]` lines in the site's own FPM pool — never touches
+  the shared `php.ini`, so one site's override can't affect any other.
+  `php_admin_value`, not `php_value`: the app itself can't override
+  these back at runtime via `ini_set`, so the ceiling actually holds.
 
 ## Custom domains
 
@@ -504,3 +537,20 @@ PHP-FPM, MariaDB, sshd, and object storage in disposable containers. See
   packet-filtering behavior — `docker/`'s test harness mocks both (see
   its README for why) and everything else has been verified against it;
   these two still need a real domain / real VM to check.
+
+## Planned
+
+Not built yet, roughly in priority order:
+
+- **`doctor`/`status <name>`** — a fleet-wide or per-site health check
+  (DB reachable, cert validity/expiry, disk space, nginx/PHP-FPM up) in
+  one command, instead of chasing each of those down by hand mid-incident.
+- **Notification routing** — backup/deploy failures currently only show
+  up in logs; nothing pings anyone. Likely per-project override (a
+  specific client's failures paging someone specific) over a purely
+  server-wide setting.
+- **Custom nginx snippet injection** — an escape hatch for a project
+  that needs nginx config the standard template doesn't cover. Bigger
+  security-review lift than the other `.ddeploy/config.yaml` keys, since
+  it'd be raw server config sourced from a client repo, not a scoped
+  value substituted into one — deliberately not rushed.

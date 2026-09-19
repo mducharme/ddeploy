@@ -6,10 +6,12 @@
 #
 # Populates on success: PHP_VERSION DOCROOT WEBSERVER_TYPE DB_NAME DB_USER
 # DB_ENV_SCHEME ADDITIONAL_HOSTNAMES[] ADDITIONAL_FQDNS[] UPLOAD_DIRS[]
-# PERSISTENT_FILES[] BASIC_AUTH_CONFIG CLIENT_MAX_BODY_SIZE_CONFIG
-# FPM_MAX_CHILDREN_CONFIG (the last three empty unless overridden — see
-# "Per-site overrides" below), and writes $GENERATED_DIR/<name>.steps
-# (TYPE<TAB>CMD per line, TYPE in exec|composer|exec-host).
+# PERSISTENT_FILES[] AUTH_EXEMPT_PATHS[] BACKUP_EXCLUDE[]
+# PHP_INI_OVERRIDES[] BASIC_AUTH_CONFIG CLIENT_MAX_BODY_SIZE_CONFIG
+# FPM_MAX_CHILDREN_CONFIG DB_BACKUP_RETENTION_DAYS_CONFIG (the scalar
+# _CONFIG ones empty unless overridden — see README ".ddeploy/config.yaml"),
+# and writes $GENERATED_DIR/<name>.steps (TYPE<TAB>CMD per line, TYPE in
+# exec|composer|exec-host).
 
 # Path-safety check for a relative path pulled from a project's own
 # config (docroot, an upload_dirs entry). These get used in filesystem
@@ -204,6 +206,47 @@ parse_config() {
     # A trailing '/' marks a directory; without one, a file.
     mapfile -t PERSISTENT_FILES < <(read_ext_array "$ext_cfg" "$cfg" '.persistent_files[]')
     for v in "${PERSISTENT_FILES[@]}"; do validate_relative_path "${v%/}" "persistent_files entry for '$name'"; done
+
+    # auth_exempt_paths: URL path prefixes (e.g. a webhook endpoint) that
+    # bypass basic auth even when it's otherwise on for this site — see
+    # build_auth_exempt_block in lib/vhost.sh. Each gets embedded into a
+    # rendered nginx location block, so it's constrained to a safe URL-path
+    # charset rather than just banning newlines.
+    mapfile -t AUTH_EXEMPT_PATHS < <(read_ext_array "$ext_cfg" "$cfg" '.auth_exempt_paths[]')
+    local path_re='^/[A-Za-z0-9/_.~-]*$'
+    for v in "${AUTH_EXEMPT_PATHS[@]}"; do
+        [[ "$v" =~ $path_re ]] || die "auth_exempt_paths entry for '$name' ('$v') is not a plain absolute URL path — refusing to use it"
+    done
+
+    # backup_exclude: rclone --exclude glob patterns (e.g. "cache/**"),
+    # applied to backup-uploads only — restore naturally only ever pulls
+    # back what was actually uploaded, so nothing extra is needed there.
+    # Passed to rclone as real argv array elements (lib/backup.sh), never
+    # shell-interpolated, so only a newline sanity check is needed, not
+    # full path validation — these are glob patterns, not paths.
+    mapfile -t BACKUP_EXCLUDE < <(read_ext_array "$ext_cfg" "$cfg" '.backup_exclude[]')
+    for v in "${BACKUP_EXCLUDE[@]}"; do
+        [[ "$v" == *$'\n'* ]] && die "backup_exclude entry for '$name' contains a newline — refusing to use it ('$v')"
+    done
+
+    # db_backup_retention_days: per-site override of DB_BACKUP_RETENTION_DAYS.
+    DB_BACKUP_RETENTION_DAYS_CONFIG="$(read_ext_scalar "$ext_cfg" "$cfg" '.db_backup_retention_days // ""')"
+    [[ "$DB_BACKUP_RETENTION_DAYS_CONFIG" == "null" ]] && DB_BACKUP_RETENTION_DAYS_CONFIG=""
+
+    # php_ini: a map of PHP directive -> value, rendered as php_admin_value
+    # lines in the site's own FPM pool (lib/vhost.sh) — never touches the
+    # shared php.ini, so one site's override can't affect any other.
+    # Flattened to "key=value" strings; both sides validated since they're
+    # interpolated into a rendered ini-style config file PHP-FPM parses —
+    # an unconstrained key/value could inject an unrelated directive.
+    mapfile -t PHP_INI_OVERRIDES < <(
+        [[ -f "$ext_cfg" ]] && yq eval '(.php_ini // {}) | to_entries | .[] | .key + "=" + (.value | tostring)' "$ext_cfg" 2>/dev/null
+    )
+    local ini_key_re='^[A-Za-z_][A-Za-z0-9_.]*$'
+    for v in "${PHP_INI_OVERRIDES[@]}"; do
+        [[ "${v%%=*}" =~ $ini_key_re ]] || die "php_ini key for '$name' ('${v%%=*}') is not a plain directive name — refusing to use it"
+        [[ "${v#*=}" == *$'\n'* ]] && die "php_ini value for '$name' (key '${v%%=*}') contains a newline — refusing to use it"
+    done
 
     if [[ "${#ADDITIONAL_FQDNS[@]}" -gt 0 ]]; then
         log_info "custom domain(s) for '$name': ${ADDITIONAL_FQDNS[*]} — DNS for these must already point at this server; a certificate is requested via HTTP-01 on first provision"
