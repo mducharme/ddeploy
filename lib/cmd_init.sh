@@ -71,6 +71,15 @@ cmd_init() {
     fi
     ensure_traversable "$SITES_ROOT"
 
+    log_info "== persistent store =="
+    mkdir -p "$PERSISTENT_ROOT"
+    if id -u deploy >/dev/null 2>&1; then
+        chown deploy:deploy "$PERSISTENT_ROOT"
+    else
+        log_warn "service user 'deploy' not found — leaving $PERSISTENT_ROOT ownership as-is"
+    fi
+    ensure_traversable "$PERSISTENT_ROOT"
+
     log_info "== Cloudflare credentials =="
     [[ -f "$CF_CREDENTIALS" ]] || die "$CF_CREDENTIALS not found — place the scoped Cloudflare API token there before running init"
     chown root:root "$CF_CREDENTIALS"

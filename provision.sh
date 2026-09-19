@@ -30,6 +30,8 @@ source "$LIB_DIR/custom_domain.sh"
 source "$LIB_DIR/backup.sh"
 # shellcheck source=lib/db_backup.sh
 source "$LIB_DIR/db_backup.sh"
+# shellcheck source=lib/persistent.sh
+source "$LIB_DIR/persistent.sh"
 # shellcheck source=lib/preview.sh
 source "$LIB_DIR/preview.sh"
 # shellcheck source=lib/cmd_init.sh

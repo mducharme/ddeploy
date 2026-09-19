@@ -35,6 +35,7 @@ load_conf() {
     : "${BASELINE_PHP:?provisioner.conf: BASELINE_PHP not set}"
     : "${DEFAULT_PHP:?provisioner.conf: DEFAULT_PHP not set}"
     : "${GIT_DEPLOY_KEY:?provisioner.conf: GIT_DEPLOY_KEY not set}"
+    PERSISTENT_ROOT="${PERSISTENT_ROOT:-/home/deploy/persistent}"
     BASIC_AUTH_DEFAULT="${BASIC_AUTH_DEFAULT:-false}"
     BASIC_AUTH_CREDENTIALS="${BASIC_AUTH_CREDENTIALS:-/etc/nginx/htpasswd/default}"
     PHP_EXTENSIONS="${PHP_EXTENSIONS:-cli mysql mbstring xml curl zip gd}"

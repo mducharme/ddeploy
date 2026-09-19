@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# `remove <name> [--purge-db] [--purge-files]` — never destructive by
-# default: only disables the vhost/pool. Files and DB survive unless
-# explicitly told to go.
+# `remove <name> [--purge-db] [--purge-files] [--purge-persistent]` —
+# never destructive by default: only disables the vhost/pool. Files, DB,
+# and persistent store all survive unless explicitly told to go.
 
 usage_remove() {
     cat <<'EOF'
-usage: provision.sh remove <name> [--purge-db] [--purge-files]
+usage: provision.sh remove <name> [--purge-db] [--purge-files] [--purge-persistent]
 
 By default only disables/removes the vhost and FPM pool. Add --purge-db
 to drop the database and DB user, --purge-files to delete the site
-directory and its Linux user. Neither is implied by the other.
+directory and its Linux user, --purge-persistent to also delete its
+persistent store (upload_dirs, DB credentials, persistent_files — see
+README "Persistent files"). None of the three is implied by the others —
+a plain --purge-files leaves the persistent store in place, so a later
+`provision` on the same name picks its data back up automatically.
 EOF
 }
 
@@ -30,11 +34,12 @@ cmd_remove() {
         return $?
     fi
 
-    local purge_db=0 purge_files=0
+    local purge_db=0 purge_files=0 purge_persistent=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --purge-db) purge_db=1 ;;
             --purge-files) purge_files=1 ;;
+            --purge-persistent) purge_persistent=1 ;;
             -h|--help) usage_remove; return 0 ;;
             *) die "unknown option: $1" ;;
         esac
@@ -75,5 +80,12 @@ cmd_remove() {
         log_info "leaving site files in place (pass --purge-files to delete them)"
     fi
 
-    site_log "$name" "removed (purge_db=$purge_db purge_files=$purge_files)"
+    if [[ "$purge_persistent" -eq 1 ]]; then
+        rm -rf "${PERSISTENT_ROOT:?}/$name"
+        log_info "removed persistent store for $name"
+    else
+        log_info "leaving persistent store in place (pass --purge-persistent to delete it) — a later provision picks its data back up"
+    fi
+
+    site_log "$name" "removed (purge_db=$purge_db purge_files=$purge_files purge_persistent=$purge_persistent)"
 }

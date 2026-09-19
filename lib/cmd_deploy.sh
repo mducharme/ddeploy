@@ -24,6 +24,11 @@ cmd_deploy() {
     sudo -u "www-$name" env HOME="$dir" git -C "$dir" pull --ff-only 2>&1 | tee -a "$LOG_DIR/$name.log"
 
     parse_config "$name" "$cfg_path" 1
+    # Idempotent and cheap — re-links anything new in upload_dirs/
+    # persistent_files since the last deploy, same reasoning as
+    # sync_site_ssh re-running on every deploy rather than only at
+    # provision time.
+    link_persistent_files "$name" "$dir"
     scan_hooks "$name"
     replay_hooks "$name" "$PHP_VERSION" "$dir"
     run_repo_hook "$name" "$PHP_VERSION" "$dir" ".provisioner/post-deploy.sh" "post-deploy script"

@@ -38,7 +38,7 @@ init                          set up a web server (packages, PHP, TLS, firewall)
 init-db                       set up a dedicated database server
 provision <name> [repo-url]   add a site
 deploy <name>                 pull + run deploy steps + reload
-remove <name> [--purge-db] [--purge-files]
+remove <name> [--purge-db] [--purge-files] [--purge-persistent]
 list                          table of provisioned sites
 provision-all                 provision every site in ./manifest
 deploy-all                    deploy every provisioned site
@@ -288,6 +288,43 @@ Two more extension points:
   runs every deploy.
 - `hooks/post-provision.d/*.sh` / `hooks/post-deploy.d/*.sh` in this
   repo — run as root, for every site. See `hooks/README.md`.
+
+## Persistent files
+
+A site's own git checkout is disposable by design — `provision`/`deploy`
+clone and pull it freely, and `remove --purge-files` deletes it outright.
+Some of what lives under that checkout isn't disposable at all, though:
+`upload_dirs` (client-uploaded files, genuinely irreplaceable) and the DB
+credential file (`.env` for laravel/craft, `config/config.local.json` for
+charcoal) are content, not code. Those — plus anything declared in a new
+`persistent_files:` key — actually live under `PERSISTENT_ROOT`
+(`provisioner.conf`, default `/home/deploy/persistent`), at
+`$PERSISTENT_ROOT/<name>/<path>`; the checkout only ever holds a symlink
+at that path. `remove --purge-files` deletes the checkout (code) but
+never touches this (content) unless `--purge-persistent` is also given —
+and a later `provision` on the same name re-links to whatever's still
+there automatically, so bringing a removed project back is just
+re-provisioning it, no separate restore step. The DB user's existing
+password is picked up the same way (`read_db_password` finds it already
+in the persistent store), so this isn't just "the files survive" — the
+site reconnects with zero credential churn.
+
+`persistent_files:` (in `.ddev/config.yaml` or the sidecar, not a real
+DDEV key) declares arbitrary extra paths beyond `upload_dirs` and the DB
+credential file — a custom `.env.local`, a `storage/app` directory, etc.
+— relative to the repo root, not the docroot. A trailing `/` marks a
+directory; without one, a file:
+
+```yaml
+persistent_files:
+  - storage/app/
+  - .env.local
+```
+
+This only applies to normal sites — isolated-mode previews stay exactly
+as disposable as before (shared-mode previews already point at the
+parent's persistent store transitively, through the parent's own
+symlink, with no changes needed).
 
 ## Isolation
 

@@ -12,3 +12,5 @@ additional_fqdns:
   - custom.ddeploy.test
 upload_dirs:
   - ../private-uploads
+persistent_files:
+  - shared-notes.txt

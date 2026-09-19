@@ -43,6 +43,15 @@ assert_contains "$out_custom" "MARKER=v1" "custom-domain vhost reaches the same 
 list_out="$(./provision.sh list)"
 assert_contains "$list_out" "testsite" "list shows testsite"
 
+step "persistent files: linked into the persistent store"
+assert_cmd_ok "uploads dir is a symlink" test -L "$SITES_ROOT/testsite/private-uploads"
+assert_contains "$(readlink "$SITES_ROOT/testsite/private-uploads")" "$PERSISTENT_ROOT/testsite/private-uploads" "uploads symlinked into PERSISTENT_ROOT"
+assert_cmd_ok ".env is a symlink" test -L "$SITES_ROOT/testsite/.env"
+assert_contains "$(readlink "$SITES_ROOT/testsite/.env")" "$PERSISTENT_ROOT/testsite/.env" ".env symlinked into PERSISTENT_ROOT"
+assert_cmd_ok "persistent_files entry (shared-notes.txt) is a symlink" test -L "$SITES_ROOT/testsite/shared-notes.txt"
+assert_contains "$(readlink "$SITES_ROOT/testsite/shared-notes.txt")" "$PERSISTENT_ROOT/testsite/shared-notes.txt" "persistent_files entry symlinked into PERSISTENT_ROOT"
+echo "important client note" > "$SITES_ROOT/testsite/shared-notes.txt"
+
 # --- probe row for backup/restore-database verification ---------------
 
 mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" testsite \
@@ -141,15 +150,40 @@ git -C "$BARE" branch -D feature-a >/dev/null
 ./provision.sh prune-previews
 assert_file_absent "/etc/nginx/sites-enabled/$PREVIEW.conf" "prune-previews removed the preview whose branch is gone"
 
-# --- remove --------------------------------------------------------------
+# --- persistent files: survive removal, restore automatically ----------
 
-step "remove testsite --purge-db --purge-files"
-./provision.sh remove testsite --purge-db --purge-files
+step "persistent files: survive --purge-files without --purge-persistent"
+db_pass_before="$(grep '^DB_PASSWORD=' "$SITES_ROOT/testsite/.env" | cut -d= -f2-)"
+[[ -n "$db_pass_before" ]] || fail "couldn't read DB_PASSWORD from testsite's .env before removal"
+
+./provision.sh remove testsite --purge-files
+assert_file_absent "/etc/nginx/sites-enabled/testsite.conf" "vhost removed"
+assert_file_absent "$SITES_ROOT/testsite" "checkout removed"
+assert_file_exists "$PERSISTENT_ROOT/testsite/private-uploads/marker.txt" "uploads survived the purge (no --purge-persistent)"
+assert_file_exists "$PERSISTENT_ROOT/testsite/.env" "DB credential file survived the purge"
+assert_contains "$(cat "$PERSISTENT_ROOT/testsite/shared-notes.txt")" "important client note" "persistent_files entry's content survived the purge"
+db_exists="$(mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" -N -B -e "SHOW DATABASES LIKE 'testsite';")"
+[[ -n "$db_exists" ]] && pass "database untouched (no --purge-db)" || fail "database was dropped without --purge-db"
+
+step "provision re-links and restores automatically"
+./provision.sh provision testsite "$REPO_URL"
+sleep 1
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "DB_OK" "re-provisioned site reconnects to its DB"
+assert_file_exists "$SITES_ROOT/testsite/private-uploads/marker.txt" "uploads immediately present again, no restore step needed"
+db_pass_after="$(grep '^DB_PASSWORD=' "$SITES_ROOT/testsite/.env" | cut -d= -f2-)"
+[[ "$db_pass_before" == "$db_pass_after" ]] && pass "same DB password reused — zero credential churn" || fail "DB password changed across remove/re-provision (before='$db_pass_before' after='$db_pass_after')"
+
+# --- final cleanup, everything purged ------------------------------------
+
+step "remove testsite --purge-db --purge-files --purge-persistent"
+./provision.sh remove testsite --purge-db --purge-files --purge-persistent
 
 assert_file_absent "/etc/nginx/sites-enabled/testsite.conf" "vhost removed"
 assert_file_absent "/etc/php/8.3/fpm/pool.d/testsite.conf" "FPM pool removed"
 assert_cmd_fails "www-testsite Linux user removed" id -u www-testsite
 assert_file_absent "$SITES_ROOT/testsite" "site directory removed"
+assert_file_absent "$PERSISTENT_ROOT/testsite" "persistent store removed (--purge-persistent)"
 db_exists="$(mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" -N -B -e "SHOW DATABASES LIKE 'testsite';")"
 [[ -z "$db_exists" ]] && pass "database dropped" || fail "database 'testsite' still exists after --purge-db"
 assert_cmd_ok "nginx config still valid after removal" nginx -t

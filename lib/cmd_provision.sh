@@ -94,6 +94,14 @@ cmd_provision() {
     ensure_php_installed "$PHP_VERSION"
     ensure_site_user "$name" "$dir"
     apply_permissions "$name" "$dir"
+    # Must run after apply_permissions (its chown/chmod would otherwise
+    # walk right past the persistent store, which lives outside $dir —
+    # not a problem, but ensure_persistent_link's own chown needs to run
+    # after apply_permissions has settled ownership on $dir, not race it)
+    # and before db_ensure below, so write_db_credentials writes through
+    # an already-established symlink into the persistent store from the
+    # very first write, not into a real file that then needs migrating.
+    link_persistent_files "$name" "$dir"
     # Must come after apply_permissions (its 600/700 perms would
     # otherwise get clobbered by a later whole-tree chmod) and before
     # anything that might need repo access (hook replay, below, may run

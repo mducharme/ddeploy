@@ -5,9 +5,9 @@
 # hooks.sh can replay.
 #
 # Populates on success: PHP_VERSION DOCROOT WEBSERVER_TYPE DB_NAME DB_USER
-# DB_ENV_SCHEME ADDITIONAL_HOSTNAMES[] ADDITIONAL_FQDNS[] UPLOAD_DIRS[],
-# and writes $GENERATED_DIR/<name>.steps (TYPE<TAB>CMD per line, TYPE in
-# exec|composer|exec-host).
+# DB_ENV_SCHEME ADDITIONAL_HOSTNAMES[] ADDITIONAL_FQDNS[] UPLOAD_DIRS[]
+# PERSISTENT_FILES[], and writes $GENERATED_DIR/<name>.steps (TYPE<TAB>CMD
+# per line, TYPE in exec|composer|exec-host).
 
 # Path-safety check for a relative path pulled from a project's own
 # config (docroot, an upload_dirs entry). These get used in filesystem
@@ -139,6 +139,16 @@ parse_config() {
             || die "upload_dirs entry for '$name' ('$v') resolves outside the project root — refusing to use it"
         UPLOAD_DIRS+=("$resolved")
     done
+
+    # persistent_files: is a ddeploy-only key (not a real DDEV field) —
+    # arbitrary extra paths, beyond upload_dirs and the DB credential
+    # file, that should survive `remove --purge-files` (see
+    # lib/persistent.sh). Repo-root-relative, so the plain (blind '..'
+    # ban) validator is right here, unlike upload_dirs' docroot-relative
+    # one — no external convention to honor for a key this tool invented.
+    # A trailing '/' marks a directory; without one, a file.
+    mapfile -t PERSISTENT_FILES < <(yq eval '.persistent_files[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
+    for v in "${PERSISTENT_FILES[@]}"; do validate_relative_path "${v%/}" "persistent_files entry for '$name'"; done
 
     if [[ "${#ADDITIONAL_FQDNS[@]}" -gt 0 ]]; then
         log_info "custom domain(s) for '$name': ${ADDITIONAL_FQDNS[*]} — DNS for these must already point at this server; a certificate is requested via HTTP-01 on first provision"
