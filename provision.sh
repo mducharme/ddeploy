@@ -58,6 +58,8 @@ source "$LIB_DIR/cmd_db_backup.sh"
 source "$LIB_DIR/cmd_preview.sh"
 # shellcheck source=lib/cmd_restore.sh
 source "$LIB_DIR/cmd_restore.sh"
+# shellcheck source=lib/cmd_doctor.sh
+source "$LIB_DIR/cmd_doctor.sh"
 
 usage() {
     cat <<'EOF'
@@ -80,6 +82,7 @@ commands:
   deploy-preview <project> <branch>       pull + redeploy a preview
   remove-preview <project> <branch> [opts]   remove a preview (see -h)
   prune-previews [project]      remove previews whose branch no longer exists
+  doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
 EOF
 }
 
@@ -102,6 +105,7 @@ main() {
         deploy-preview) cmd_deploy_preview "$@" ;;
         remove-preview) cmd_remove_preview "$@" ;;
         prune-previews) cmd_prune_previews "$@" ;;
+        doctor)         cmd_doctor "$@" ;;
         -h|--help|help|"") usage ;;
         *) usage; die "unknown command: $cmd" ;;
     esac

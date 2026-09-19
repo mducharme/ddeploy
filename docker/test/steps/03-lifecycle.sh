@@ -222,6 +222,30 @@ assert_file_exists "$SITES_ROOT/testsite/private-uploads/marker.txt" "uploads im
 db_pass_after="$(grep '^DB_PASSWORD=' "$SITES_ROOT/testsite/.env" | cut -d= -f2-)"
 [[ "$db_pass_before" == "$db_pass_after" ]] && pass "same DB password reused — zero credential churn" || fail "DB password changed across remove/re-provision (before='$db_pass_before' after='$db_pass_after')"
 
+# --- doctor (health check) ----------------------------------------------
+
+step "doctor testsite"
+doctor_out="$(./provision.sh doctor testsite)" && doctor_exit=0 || doctor_exit=$?
+echo "$doctor_out"
+if [[ "$doctor_exit" -eq 0 ]]; then
+    pass "doctor exits 0 for a healthy site (no failed checks)"
+else
+    fail "doctor exited $doctor_exit for a healthy site"
+fi
+assert_contains "$doctor_out" "nginx config" "doctor: checks nginx config"
+assert_contains "$doctor_out" "database server" "doctor: checks the database server itself (admin connection)"
+assert_contains "$doctor_out" "testsite: vhost" "doctor: checks testsite's vhost"
+assert_contains "$doctor_out" "testsite: php8.3-fpm" "doctor: checks testsite's PHP-FPM pool"
+assert_contains "$doctor_out" "reachable as 'testsite'" "doctor: testsite database check succeeds with its OWN credentials, not the admin ones"
+assert_contains "$doctor_out" "testsite: last deploy" "doctor: reports last deploy info"
+assert_contains "$doctor_out" "testsite: cert (custom domain)" "doctor: checks the custom-domain cert too"
+
+step "doctor (fleet-wide, no name)"
+fleet_out="$(./provision.sh doctor)" || true
+assert_contains "$fleet_out" "testsite: vhost" "doctor (fleet-wide): includes testsite among every provisioned site"
+
+assert_cmd_fails "doctor errors cleanly on an unknown site name" ./provision.sh doctor not-a-real-site
+
 # --- final cleanup, everything purged ------------------------------------
 
 step "remove testsite --purge-db --purge-files --purge-persistent"

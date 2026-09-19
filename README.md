@@ -50,6 +50,7 @@ provision-preview <project> <branch> [repo-url] [opts]   branch preview (see -h)
 deploy-preview <project> <branch>       pull + redeploy a preview
 remove-preview <project> <branch> [opts]   remove a preview (see -h)
 prune-previews [project]      remove previews whose branch no longer exists
+doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
 ```
 
 `init`, `init-db`, `provision`, `deploy`, `remove`, `backup-uploads`,
@@ -537,6 +538,24 @@ loud warning, and restores the parent's actual database/uploads — the
 ones every preview of it is currently sharing. An isolated-mode preview
 restores its own, same as any normal site.
 
+## Health check
+
+`doctor [name]` runs a set of read-only checks — nginx config/service,
+disk space, the database server itself, certificate expiry, and (per
+site) vhost enabled, PHP-FPM pool running, last deploy, and a connection
+test using that **site's own** database credentials, not the admin
+connection the server-wide check already covers, so a revoked grant or a
+drifted credential file shows up here even when the DB server itself is
+fine. Without a name, every provisioned site is checked (previews
+included); with one, just that site.
+
+Each line prints `[ok]`/`[warn]`/`[fail]`; the command exits nonzero if
+anything failed — wire it into cron/monitoring rather than only running
+it by hand mid-incident. A malformed config for one site can't take the
+whole run down: each site's checks run in their own subshell, so a `die`
+there just becomes one `[fail]` row instead of aborting `doctor` for
+every other site.
+
 ## Testing
 
 `docker/` runs the actual provisioner — init, init-db, provision, deploy,
@@ -562,9 +581,6 @@ PHP-FPM, MariaDB, sshd, and object storage in disposable containers. See
 
 Not built yet, roughly in priority order:
 
-- **`doctor`/`status <name>`** — a fleet-wide or per-site health check
-  (DB reachable, cert validity/expiry, disk space, nginx/PHP-FPM up) in
-  one command, instead of chasing each of those down by hand mid-incident.
 - **Notification routing** — backup/deploy failures currently only show
   up in logs; nothing pings anyone. Likely per-project override (a
   specific client's failures paging someone specific) over a purely
