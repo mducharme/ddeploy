@@ -68,6 +68,7 @@ pass "seeded a probe row directly in the real database (for the restore check be
 # --- deploy ------------------------------------------------------------
 
 step "deploy testsite (git pull --ff-only)"
+V1_SHA="$(git -C "$SITES_ROOT/testsite" log -1 --format=%H)"
 WORK="$(mktemp -d)"
 git clone -q "$BARE" "$WORK"
 git -C "$WORK" config user.email 'test@ddeploy.test'
@@ -82,6 +83,29 @@ sleep 1
 
 out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "MARKER=v2" "deploy pulled the new commit (git_deploy_key + sync_site_ssh work end to end)"
+
+step "deploy --rollback / --history"
+history_out="$(./provision.sh deploy testsite --history)"
+assert_contains "$history_out" "v2" "deploy history lists the v2 commit"
+
+./provision.sh deploy testsite --rollback
+sleep 1
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "MARKER=v1" "deploy --rollback (implicit, no sha) moved the code back to v1"
+
+./provision.sh deploy testsite --rollback "$V1_SHA"
+sleep 1
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "MARKER=v1" "deploy --rollback <sha> (explicit) works too"
+
+# Roll forward again with a plain deploy — proves a rollback doesn't
+# strand the site: origin/main is still at v2, and a normal
+# `git pull --ff-only` fast-forwards right back up to it. Also leaves
+# testsite at v2 for every later step in this script, which expects it.
+./provision.sh deploy testsite
+sleep 1
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "MARKER=v2" "a plain deploy after a rollback pulls forward again"
 
 # --- branch preview (shared mode, the default) -------------------------
 

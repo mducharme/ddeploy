@@ -37,7 +37,7 @@ under `$SITES_ROOT` (`provisioner.conf`, default `/home/deploy/sites`).
 init                          set up a web server (packages, PHP, TLS, firewall)
 init-db                       set up a dedicated database server
 provision <name> [repo-url]   add a site
-deploy <name>                 pull + run deploy steps + reload
+deploy <name> [--rollback [<sha>]] [--history]   pull + run deploy steps + reload (see -h)
 remove <name> [--purge-db] [--purge-files] [--purge-persistent]
 list                          table of provisioned sites
 provision-all                 provision every site in ./manifest
@@ -364,6 +364,31 @@ Two more extension points:
   runs every deploy.
 - `hooks/post-provision.d/*.sh` / `hooks/post-deploy.d/*.sh` in this
   repo — run as root, for every site. See `hooks/README.md`.
+
+## Rolling back
+
+`deploy <name> --rollback [<sha>]` moves a site's code backward instead
+of pulling forward. Without `<sha>`, it rolls back to the most recent
+commit this tool has itself deployed that differs from what's live now —
+`deploy <name> --history` lists that record (newest last) if you want to
+pick a specific, earlier `<sha>` instead.
+
+Mechanically this is a `git reset --hard` to that commit (every site is
+cloned in full, so its own history is always available locally — no
+separate release directory to manage) followed by the exact same hook
+replay + reload a normal deploy runs. A rollback is itself recorded as a
+new deploy, so it composes normally: a plain `deploy` afterward fast-
+forwards right back to where you rolled back from (origin hasn't moved),
+and a second `--rollback` walks one step further back, or forward again
+to undo the rollback, whichever you ask for.
+
+**What this does not do:** undo a database migration. If a deploy you're
+rolling back past ran `migrate` (or any other forward-only step) against
+the database, rolling the code back does not reverse it — you'll have
+older code pointed at newer schema. For a rollback driven by a bad
+migration, restore the database too (see "Restoring") or fix forward
+instead. This also doesn't apply to branch previews — they're meant to
+be disposable, not rolled back.
 
 ## Persistent files
 

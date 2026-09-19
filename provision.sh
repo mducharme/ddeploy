@@ -32,6 +32,8 @@ source "$LIB_DIR/backup.sh"
 source "$LIB_DIR/db_backup.sh"
 # shellcheck source=lib/persistent.sh
 source "$LIB_DIR/persistent.sh"
+# shellcheck source=lib/deploy_history.sh
+source "$LIB_DIR/deploy_history.sh"
 # shellcheck source=lib/preview.sh
 source "$LIB_DIR/preview.sh"
 # shellcheck source=lib/cmd_init.sh
@@ -65,7 +67,7 @@ commands:
   init                          set up a web server (packages, PHP, TLS, firewall)
   init-db                       set up a dedicated database server
   provision <name> [repo-url]   stand up a site (see: provision.sh provision -h)
-  deploy <name>                 pull + replay deploy hooks + reload
+  deploy <name> [opts]          pull + replay deploy hooks + reload (see -h)
   remove <name> [opts]          disable a site (see: provision.sh remove -h)
   list                          table of provisioned sites
   provision-all                 provision every site in ./manifest

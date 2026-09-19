@@ -141,6 +141,9 @@ cmd_provision() {
     replay_hooks "$name" "$PHP_VERSION" "$dir"
     run_repo_hook "$name" "$PHP_VERSION" "$dir" ".provisioner/post-provision.sh" "post-provision script"
     run_ops_hooks "post-provision" "$name" "$dir" "$PHP_VERSION"
+    # So `deploy --rollback` has something to walk back to even before a
+    # single ordinary `deploy` has ever run against this site.
+    record_deploy "$name" "$(git -C "$dir" log -1 --format=%H)"
 
     log_info "provisioned: https://$name.$BASE_DOMAIN"
     local fqdn

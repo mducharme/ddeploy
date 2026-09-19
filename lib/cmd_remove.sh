@@ -73,7 +73,7 @@ cmd_remove() {
 
     if [[ "$purge_files" -eq 1 ]]; then
         rm -rf "$dir"
-        rm -f "$GENERATED_DIR/$name.yaml" "$GENERATED_DIR/$name.steps"
+        rm -f "$GENERATED_DIR/$name.yaml" "$GENERATED_DIR/$name.steps" "$(deploy_history_path "$name")"
         id -u "www-$name" >/dev/null 2>&1 && userdel "www-$name" 2>/dev/null || true
         log_info "removed site directory and user for $name"
     else
