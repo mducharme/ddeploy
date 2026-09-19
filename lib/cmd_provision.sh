@@ -12,15 +12,21 @@ options:
                             and no .ddev/config.yaml / sidecar exists
   --php <version>           e.g. 8.2 (non-interactive fallback field)
   --docroot <path>          relative to repo root (non-interactive fallback field)
-  --db <name>                DB name (and user, unless overridden by config)
-  --hostnames "<a> <b>"     space-separated additional hostnames
+  --db <name>                DB name and user; always overrides config
+  --hostnames "<a> <b>"     space-separated additional hostnames; always
+                            overrides config
   --custom-domains "<a> <b>"  space-separated custom domains (this site's own
-                            domain, not <name>.<base domain> — see README)
+                            domain, not <name>.<base domain> — see README);
+                            always overrides config
   --upload-dirs "<a> <b>"   space-separated dirs (relative to docroot, same as
                             DDEV's own upload_dirs — "../foo" is fine for a
                             private dir just outside it) to back up to object
-                            storage, if enabled — see README
-  --deploy-cmd <cmd>        repeatable; each becomes an exec step after composer install
+                            storage, if enabled — see README; always
+                            overrides config
+  --deploy-cmd <cmd>        repeatable; each becomes an exec step after
+                            composer install; always overrides config
+                            (replaces any hooks.post-start from config, not
+                            merged with them)
   --auth                    force basic auth on for this site
   --no-auth                 force basic auth off for this site
 EOF
@@ -86,6 +92,10 @@ cmd_provision() {
         DB_NAME_OVERRIDE="$opt_db"
         DB_USER_OVERRIDE="$opt_db"
     fi
+    [[ -n "$opt_hostnames" ]] && ADDITIONAL_HOSTNAMES_OVERRIDE="$opt_hostnames"
+    [[ -n "$opt_custom_domains" ]] && ADDITIONAL_FQDNS_OVERRIDE="$opt_custom_domains"
+    [[ -n "$opt_upload_dirs" ]] && UPLOAD_DIRS_OVERRIDE="$opt_upload_dirs"
+    [[ -n "$opt_deploy_cmds" ]] && DEPLOY_CMDS_OVERRIDE="$opt_deploy_cmds"
     parse_config "$name" "$cfg_path" 1
 
     log_info "resolved: php=$PHP_VERSION docroot='${DOCROOT}' hostnames=[${ADDITIONAL_HOSTNAMES[*]:-}]"

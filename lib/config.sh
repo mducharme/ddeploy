@@ -12,6 +12,14 @@
 # _CONFIG ones empty unless overridden — see README ".ddeploy/config.yaml"),
 # and writes $GENERATED_DIR/<name>.steps (TYPE<TAB>CMD per line, TYPE in
 # exec|composer|exec-host).
+#
+# DB_NAME_OVERRIDE DB_USER_OVERRIDE ADDITIONAL_HOSTNAMES_OVERRIDE
+# ADDITIONAL_FQDNS_OVERRIDE UPLOAD_DIRS_OVERRIDE DEPLOY_CMDS_OVERRIDE, set
+# by the caller before invoking parse_config (cmd_provision.sh's --db/
+# --hostnames/--custom-domains/--upload-dirs/--deploy-cmd), win over
+# whatever config declared regardless of whether that config already
+# existed — consumed and unset here, so they never leak into a later
+# parse_config call in the same process.
 
 # Path-safety check for a relative path pulled from a project's own
 # config (docroot, an upload_dirs entry). These get used in filesystem
@@ -166,6 +174,20 @@ parse_config() {
     mapfile -t ADDITIONAL_HOSTNAMES < <(read_ext_array "$ext_cfg" "$cfg" '.additional_hostnames[]')
     mapfile -t ADDITIONAL_FQDNS    < <(read_ext_array "$ext_cfg" "$cfg" '.additional_fqdns[]')
 
+    # ADDITIONAL_HOSTNAMES_OVERRIDE/ADDITIONAL_FQDNS_OVERRIDE (set by
+    # cmd_provision.sh's --hostnames/--custom-domains) win over whatever
+    # config declared, the same way DB_NAME_OVERRIDE already does below —
+    # unlike the old behavior, where these flags only had any effect the
+    # very first time a site was provisioned (before a config existed),
+    # then silently stopped applying once one did.
+    if [[ -n "${ADDITIONAL_HOSTNAMES_OVERRIDE:-}" ]]; then
+        read -ra ADDITIONAL_HOSTNAMES <<< "$ADDITIONAL_HOSTNAMES_OVERRIDE"
+    fi
+    if [[ -n "${ADDITIONAL_FQDNS_OVERRIDE:-}" ]]; then
+        read -ra ADDITIONAL_FQDNS <<< "$ADDITIONAL_FQDNS_OVERRIDE"
+    fi
+    unset ADDITIONAL_HOSTNAMES_OVERRIDE ADDITIONAL_FQDNS_OVERRIDE
+
     # Per-site overrides of server-wide provisioner.conf defaults — empty
     # here means "use the server default", resolved by the caller
     # (cmd_provision.sh/cmd_preview.sh), not here, since the default
@@ -188,6 +210,15 @@ parse_config() {
     # UPLOAD_DIRS as it always has, unchanged.
     local raw_upload_dirs resolved
     mapfile -t raw_upload_dirs < <(yq eval '.upload_dirs[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
+    # UPLOAD_DIRS_OVERRIDE (--upload-dirs): same win-over-config treatment
+    # as the hostnames/fqdns overrides above — replaces the raw, still-
+    # docroot-relative list before it goes through the same resolution
+    # loop below, so an override is subject to the exact same escape
+    # check as a config-declared value.
+    if [[ -n "${UPLOAD_DIRS_OVERRIDE:-}" ]]; then
+        read -ra raw_upload_dirs <<< "$UPLOAD_DIRS_OVERRIDE"
+    fi
+    unset UPLOAD_DIRS_OVERRIDE
     UPLOAD_DIRS=()
     for v in "${raw_upload_dirs[@]}"; do
         [[ "$v" == *$'\n'* ]] && die "upload_dirs entry for '$name' contains a newline — refusing to use it ('$v')"
@@ -280,7 +311,25 @@ parse_config() {
     fi
 
     mkdir -p "$GENERATED_DIR"
-    extract_hooks "$cfg" "$GENERATED_DIR/$name.steps"
+    # DEPLOY_CMDS_OVERRIDE (--deploy-cmd): same win-over-config treatment
+    # as the overrides above. Unlike those, there's no array to replace —
+    # deploy steps live in the .steps file extract_hooks would otherwise
+    # write — so this skips extract_hooks entirely and writes the same
+    # shape non_interactive_config's fresh-sidecar path already does
+    # (composer install, then one exec step per --deploy-cmd value).
+    if [[ -n "${DEPLOY_CMDS_OVERRIDE:-}" ]]; then
+        {
+            printf 'composer\tinstall\n'
+            local cmd
+            while IFS= read -r cmd; do
+                [[ -n "$cmd" ]] && printf 'exec\t%s\n' "$cmd"
+            done <<< "$DEPLOY_CMDS_OVERRIDE"
+        } > "$GENERATED_DIR/$name.steps"
+        log_info "'$name': deploy steps overridden via --deploy-cmd"
+        unset DEPLOY_CMDS_OVERRIDE
+    else
+        extract_hooks "$cfg" "$GENERATED_DIR/$name.steps"
+    fi
 
     # A real .ddev/config.yaml frequently declares no hooks.post-start at
     # all — DDEV itself often runs `composer install` implicitly on `ddev
