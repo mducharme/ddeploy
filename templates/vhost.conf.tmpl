@@ -9,6 +9,7 @@ server {
     server_name {{SERVER_NAMES}};
     root {{ROOT}};
     index index.php;
+    client_max_body_size {{MAX_BODY_SIZE}};
 {{AUTH_BLOCK}}
     ssl_certificate     /etc/letsencrypt/live/{{CERT_NAME}}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/{{CERT_NAME}}/privkey.pem;

@@ -107,18 +107,19 @@ cmd_provision() {
     # anything that might need repo access (hook replay, below, may run
     # `composer install` against a private VCS dependency).
     sync_site_ssh "$name" "$dir"
-    install_fpm_pool "$name" "$PHP_VERSION"
+    install_fpm_pool "$name" "$PHP_VERSION" "" "" "${FPM_MAX_CHILDREN_CONFIG:-$FPM_MAX_CHILDREN}"
 
     local root="$dir"
     [[ -n "$DOCROOT" ]] && root="$dir/$DOCROOT"
-    local auth="${auth_flag:-$BASIC_AUTH_DEFAULT}"
-    install_vhost "$name" "$root" "$auth" "${ADDITIONAL_HOSTNAMES[@]}"
+    local auth="${auth_flag:-${BASIC_AUTH_CONFIG:-$BASIC_AUTH_DEFAULT}}"
+    local max_body_size="${CLIENT_MAX_BODY_SIZE_CONFIG:-$CLIENT_MAX_BODY_SIZE}"
+    install_vhost "$name" "$root" "$auth" "$max_body_size" "${ADDITIONAL_HOSTNAMES[@]}"
     # A custom domain's HTTP-01 request routinely fails on first
     # provision (DNS not propagated yet) — that must not abort the rest
     # of setup: the site is already reachable at the wildcard domain
     # above, and a bare call here would otherwise kill the whole
     # provision run under set -e before db_ensure/hooks ever ran.
-    if ! install_custom_domain_vhost "$name" "$root" "$auth" "${ADDITIONAL_FQDNS[@]}"; then
+    if ! install_custom_domain_vhost "$name" "$root" "$auth" "$max_body_size" "${ADDITIONAL_FQDNS[@]}"; then
         log_warn "custom domain setup failed for '$name' — continuing with the rest of provisioning; re-run provision once DNS is ready to retry it"
     fi
 

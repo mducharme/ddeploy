@@ -52,6 +52,10 @@ assert_cmd_ok "persistent_files entry (shared-notes.txt) is a symlink" test -L "
 assert_contains "$(readlink "$SITES_ROOT/testsite/shared-notes.txt")" "$PERSISTENT_ROOT/testsite/shared-notes.txt" "persistent_files entry symlinked into PERSISTENT_ROOT"
 echo "important client note" > "$SITES_ROOT/testsite/shared-notes.txt"
 
+step "per-site config overrides (.ddeploy/config.yaml)"
+assert_cmd_ok "vhost has the overridden client_max_body_size" grep -q "client_max_body_size 256m;" /etc/nginx/sites-available/testsite.conf
+assert_cmd_ok "FPM pool has the overridden pm.max_children" grep -q "pm.max_children = 20" /etc/php/8.3/fpm/pool.d/testsite.conf
+
 # --- probe row for backup/restore-database verification ---------------
 
 mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" testsite \

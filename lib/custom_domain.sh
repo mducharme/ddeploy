@@ -14,10 +14,11 @@
 
 ACME_WEBROOT=/var/www/acme-challenge
 
-# $1 name, $2 root, $3 auth ("true"/"false"), remaining args: FQDNs.
-# With no FQDNs, removes any existing custom-domain vhost for the site.
+# $1 name, $2 root, $3 auth ("true"/"false"), $4 client_max_body_size,
+# remaining args: FQDNs. With no FQDNs, removes any existing
+# custom-domain vhost for the site.
 install_custom_domain_vhost() {
-    local name="$1" root="$2" auth="$3"; shift 3
+    local name="$1" root="$2" auth="$3" max_body_size="$4"; shift 4
     local fqdns=("$@")
     if [[ "${#fqdns[@]}" -eq 0 ]]; then
         remove_custom_domain_vhost "$name"
@@ -47,7 +48,8 @@ install_custom_domain_vhost() {
 
     local auth_block; auth_block="$(build_auth_block "$name" "$auth")"
     render_template "$PROVISIONER_DIR/templates/vhost.conf.tmpl" "$out" \
-        "NAME=$name" "SERVER_NAMES=$server_names" "ROOT=$root" "CERT_NAME=$cert_name" "AUTH_BLOCK=$auth_block"
+        "NAME=$name" "SERVER_NAMES=$server_names" "ROOT=$root" "CERT_NAME=$cert_name" \
+        "AUTH_BLOCK=$auth_block" "MAX_BODY_SIZE=${max_body_size:-$CLIENT_MAX_BODY_SIZE}"
     ln -sf "$out" "/etc/nginx/sites-enabled/$name-custom.conf"
     nginx -t
     systemctl reload nginx

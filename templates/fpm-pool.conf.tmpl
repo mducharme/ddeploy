@@ -5,6 +5,6 @@ listen = /run/php/{{NAME}}.sock
 listen.owner = www-data
 listen.group = www-data
 pm = ondemand
-pm.max_children = 5
+pm.max_children = {{MAX_CHILDREN}}
 pm.process_idle_timeout = 10s
 pm.max_requests = 500

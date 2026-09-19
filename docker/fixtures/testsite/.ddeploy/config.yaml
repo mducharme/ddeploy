@@ -1,0 +1,9 @@
+db_env_scheme: laravel
+additional_hostnames:
+  - alt-testsite
+additional_fqdns:
+  - custom.ddeploy.test
+persistent_files:
+  - shared-notes.txt
+client_max_body_size: 256m
+fpm_max_children: 20

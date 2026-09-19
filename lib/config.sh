@@ -6,8 +6,10 @@
 #
 # Populates on success: PHP_VERSION DOCROOT WEBSERVER_TYPE DB_NAME DB_USER
 # DB_ENV_SCHEME ADDITIONAL_HOSTNAMES[] ADDITIONAL_FQDNS[] UPLOAD_DIRS[]
-# PERSISTENT_FILES[], and writes $GENERATED_DIR/<name>.steps (TYPE<TAB>CMD
-# per line, TYPE in exec|composer|exec-host).
+# PERSISTENT_FILES[] BASIC_AUTH_CONFIG CLIENT_MAX_BODY_SIZE_CONFIG
+# FPM_MAX_CHILDREN_CONFIG (the last three empty unless overridden — see
+# "Per-site overrides" below), and writes $GENERATED_DIR/<name>.steps
+# (TYPE<TAB>CMD per line, TYPE in exec|composer|exec-host).
 
 # Path-safety check for a relative path pulled from a project's own
 # config (docroot, an upload_dirs entry). These get used in filesystem
@@ -68,6 +70,46 @@ validate_hostname() {
     [[ "$val" =~ $re ]] || die "$label is not a valid hostname ('$val') — refusing to use it"
 }
 
+# .ddeploy/config.yaml (git-tracked, sibling to .ddev/) is where ddeploy-
+# only keys belong — additional_hostnames, additional_fqdns,
+# persistent_files, db_env_scheme are not real DDEV fields, and stuffing
+# them into a real .ddev/config.yaml risks a future DDEV schema
+# validation pass (or `ddev config` regenerating the file) silently
+# dropping them. If present, it wins for these keys; if absent, they're
+# still read from $cfg (a real .ddev/config.yaml with one of these set by
+# hand, or the sidecar, which is ddeploy's own file and never at risk
+# from DDEV's tooling) — so nothing already relying on that breaks.
+ext_config_path() { echo "$SITES_ROOT/$1/.ddeploy/config.yaml"; }
+
+# Reads array expression $3 from $1 (extension config, may not exist) if
+# it declares the key, else from $2 (the site's primary config).
+read_ext_array() {
+    local ext="$1" cfg="$2" expr="$3"
+    if [[ -f "$ext" ]]; then
+        local vals; vals="$(yq eval "$expr" "$ext" 2>/dev/null | grep -vx 'null' || true)"
+        if [[ -n "$vals" ]]; then
+            printf '%s\n' "$vals"
+            return
+        fi
+    fi
+    yq eval "$expr" "$cfg" 2>/dev/null | grep -vx 'null' || true
+}
+
+# Same precedence as read_ext_array, for a scalar expression.
+read_ext_scalar() {
+    local ext="$1" cfg="$2" expr="$3"
+    local val=""
+    if [[ -f "$ext" ]]; then
+        val="$(yq eval "$expr" "$ext" 2>/dev/null)"
+        [[ "$val" == "null" ]] && val=""
+    fi
+    if [[ -z "$val" ]]; then
+        val="$(yq eval "$expr" "$cfg" 2>/dev/null)"
+        [[ "$val" == "null" ]] && val=""
+    fi
+    printf '%s' "$val"
+}
+
 # Flattens .hooks.post-start (a list of single-key maps, e.g. "- exec: ...")
 # into TYPE<TAB>CMD lines. Same shape is used by the sidecar, so this
 # works for both ddev configs and our own generated ones.
@@ -118,8 +160,21 @@ parse_config() {
         fi
     fi
 
-    mapfile -t ADDITIONAL_HOSTNAMES < <(yq eval '.additional_hostnames[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
-    mapfile -t ADDITIONAL_FQDNS    < <(yq eval '.additional_fqdns[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
+    local ext_cfg; ext_cfg="$(ext_config_path "$name")"
+    mapfile -t ADDITIONAL_HOSTNAMES < <(read_ext_array "$ext_cfg" "$cfg" '.additional_hostnames[]')
+    mapfile -t ADDITIONAL_FQDNS    < <(read_ext_array "$ext_cfg" "$cfg" '.additional_fqdns[]')
+
+    # Per-site overrides of server-wide provisioner.conf defaults — empty
+    # here means "use the server default", resolved by the caller
+    # (cmd_provision.sh/cmd_preview.sh), not here, since the default
+    # itself (BASIC_AUTH_DEFAULT vs. previews' own true-by-default, say)
+    # varies by caller.
+    BASIC_AUTH_CONFIG="$(read_ext_scalar "$ext_cfg" "$cfg" '.basic_auth // ""')"
+    [[ "$BASIC_AUTH_CONFIG" == "null" ]] && BASIC_AUTH_CONFIG=""
+    CLIENT_MAX_BODY_SIZE_CONFIG="$(read_ext_scalar "$ext_cfg" "$cfg" '.client_max_body_size // ""')"
+    [[ "$CLIENT_MAX_BODY_SIZE_CONFIG" == "null" ]] && CLIENT_MAX_BODY_SIZE_CONFIG=""
+    FPM_MAX_CHILDREN_CONFIG="$(read_ext_scalar "$ext_cfg" "$cfg" '.fpm_max_children // ""')"
+    [[ "$FPM_MAX_CHILDREN_CONFIG" == "null" ]] && FPM_MAX_CHILDREN_CONFIG=""
 
     local v
     for v in "${ADDITIONAL_HOSTNAMES[@]}"; do validate_hostname "$v" "additional_hostnames entry for '$name'"; done
@@ -147,7 +202,7 @@ parse_config() {
     # ban) validator is right here, unlike upload_dirs' docroot-relative
     # one — no external convention to honor for a key this tool invented.
     # A trailing '/' marks a directory; without one, a file.
-    mapfile -t PERSISTENT_FILES < <(yq eval '.persistent_files[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
+    mapfile -t PERSISTENT_FILES < <(read_ext_array "$ext_cfg" "$cfg" '.persistent_files[]')
     for v in "${PERSISTENT_FILES[@]}"; do validate_relative_path "${v%/}" "persistent_files entry for '$name'"; done
 
     if [[ "${#ADDITIONAL_FQDNS[@]}" -gt 0 ]]; then
@@ -170,10 +225,10 @@ parse_config() {
     unset DB_NAME_OVERRIDE DB_USER_OVERRIDE
 
     # DB_ENV_SCHEME picks which credential format db_ensure writes. A
-    # config that recorded one (our sidecar) wins; otherwise detect from
-    # the checked-out repo, so a real .ddev/config.yaml (which never has
-    # this field) still gets it right.
-    DB_ENV_SCHEME="$(yq eval '.db_env_scheme // ""' "$cfg" 2>/dev/null)"
+    # config that recorded one (.ddeploy/config.yaml, or our sidecar)
+    # wins; otherwise detect from the checked-out repo, so a real
+    # .ddev/config.yaml (which never has this field) still gets it right.
+    DB_ENV_SCHEME="$(read_ext_scalar "$ext_cfg" "$cfg" '.db_env_scheme // ""')"
     [[ "$DB_ENV_SCHEME" == "null" ]] && DB_ENV_SCHEME=""
     if [[ -z "$DB_ENV_SCHEME" ]]; then
         local detected_cms; detected_cms="$(detect_cms "$SITES_ROOT/$name")"

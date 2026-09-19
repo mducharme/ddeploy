@@ -117,12 +117,12 @@ cmd_provision_preview() {
         sync_site_ssh "$name" "$dir"
     fi
 
-    install_fpm_pool "$name" "$PHP_VERSION" "$pool_user" "$pool_group"
+    install_fpm_pool "$name" "$PHP_VERSION" "$pool_user" "$pool_group" "${FPM_MAX_CHILDREN_CONFIG:-$FPM_MAX_CHILDREN}"
 
     local root="$dir"
     [[ -n "$DOCROOT" ]] && root="$dir/$DOCROOT"
-    local auth="${auth_flag:-true}"
-    install_vhost "$name" "$root" "$auth" "${ADDITIONAL_HOSTNAMES[@]}"
+    local auth="${auth_flag:-${BASIC_AUTH_CONFIG:-true}}"
+    install_vhost "$name" "$root" "$auth" "${CLIENT_MAX_BODY_SIZE_CONFIG:-$CLIENT_MAX_BODY_SIZE}" "${ADDITIONAL_HOSTNAMES[@]}"
 
     if [[ "$mode" == "shared" ]]; then
         link_shared_database "$name" "$dir" "$project" "$project_dir" "$DB_ENV_SCHEME"

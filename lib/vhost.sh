@@ -24,15 +24,19 @@ apply_permissions() {
 
 # $3/$4 (optional) pool user/group — default to the site's own
 # www-<name>. See apply_permissions for why a preview might override this.
+# $5 (optional) pm.max_children — defaults to the server-wide
+# FPM_MAX_CHILDREN (provisioner.conf); callers pass the site's own
+# FPM_MAX_CHILDREN_CONFIG override (.ddeploy/config.yaml) when set.
 install_fpm_pool() {
     local name="$1" ver="$2"
     local pool_user="${3:-www-$name}" pool_group="${4:-www-$name}"
+    local max_children="${5:-$FPM_MAX_CHILDREN}"
     local pool_dir="/etc/php/$ver/fpm/pool.d"
     [[ -d "$pool_dir" ]] || die "no such PHP-FPM pool dir: $pool_dir (is php$ver-fpm installed?)"
     render_template "$PROVISIONER_DIR/templates/fpm-pool.conf.tmpl" "$pool_dir/$name.conf" \
-        "NAME=$name" "POOL_USER=$pool_user" "POOL_GROUP=$pool_group"
+        "NAME=$name" "POOL_USER=$pool_user" "POOL_GROUP=$pool_group" "MAX_CHILDREN=$max_children"
     systemctl reload "php${ver}-fpm" 2>/dev/null || systemctl restart "php${ver}-fpm"
-    log_info "installed FPM pool for $name (php$ver, user=$pool_user)"
+    log_info "installed FPM pool for $name (php$ver, user=$pool_user, pm.max_children=$max_children)"
 }
 
 remove_fpm_pool() {
@@ -84,13 +88,17 @@ build_auth_block() {
     printf '    auth_basic "Restricted";\n    auth_basic_user_file %s;' "$htpasswd_file"
 }
 
+# $4 (optional) client_max_body_size — defaults to the server-wide
+# CLIENT_MAX_BODY_SIZE (provisioner.conf); callers pass the site's own
+# CLIENT_MAX_BODY_SIZE_CONFIG override (.ddeploy/config.yaml) when set.
 install_vhost() {
-    local name="$1" root="$2" auth="$3"; shift 3
+    local name="$1" root="$2" auth="$3" max_body_size="${4:-$CLIENT_MAX_BODY_SIZE}"; shift 4
     local server_names; server_names="$(build_server_names "$name" "$@")"
     local auth_block; auth_block="$(build_auth_block "$name" "$auth")"
 
     render_template "$PROVISIONER_DIR/templates/vhost.conf.tmpl" "/etc/nginx/sites-available/$name.conf" \
-        "NAME=$name" "SERVER_NAMES=$server_names" "ROOT=$root" "CERT_NAME=$BASE_DOMAIN" "AUTH_BLOCK=$auth_block"
+        "NAME=$name" "SERVER_NAMES=$server_names" "ROOT=$root" "CERT_NAME=$BASE_DOMAIN" \
+        "AUTH_BLOCK=$auth_block" "MAX_BODY_SIZE=$max_body_size"
 
     ln -sf "/etc/nginx/sites-available/$name.conf" "/etc/nginx/sites-enabled/$name.conf"
     nginx -t

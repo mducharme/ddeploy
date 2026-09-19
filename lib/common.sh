@@ -38,6 +38,8 @@ load_conf() {
     PERSISTENT_ROOT="${PERSISTENT_ROOT:-/home/deploy/persistent}"
     BASIC_AUTH_DEFAULT="${BASIC_AUTH_DEFAULT:-false}"
     BASIC_AUTH_CREDENTIALS="${BASIC_AUTH_CREDENTIALS:-/etc/nginx/htpasswd/default}"
+    CLIENT_MAX_BODY_SIZE="${CLIENT_MAX_BODY_SIZE:-64m}"
+    FPM_MAX_CHILDREN="${FPM_MAX_CHILDREN:-5}"
     PHP_EXTENSIONS="${PHP_EXTENSIONS:-cli mysql mbstring xml curl zip gd}"
     CLOUDFLARE_PROXIED="${CLOUDFLARE_PROXIED:-true}"
     DB_HOST="${DB_HOST:-127.0.0.1}"

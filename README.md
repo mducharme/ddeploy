@@ -92,11 +92,55 @@ normal (a private, non-web-exposed uploads directory living next to
 `web/`, say) — resolved against docroot and rejected only if that actually
 overruns the repo root itself.
 
+### `.ddeploy/config.yaml`
+
+`additional_hostnames`, `additional_fqdns`, `persistent_files`, and
+`db_env_scheme` aren't real DDEV fields — putting them in a real
+`.ddev/config.yaml` risks a future DDEV schema-validation pass (or
+`ddev config` regenerating the file) silently dropping them, and it's a
+layering smell regardless: that file is DDEV's own, shared with the
+client's dev team, not this tool's. Declare them instead in
+`.ddeploy/config.yaml`, git-tracked, sitting next to `.ddev/config.yaml`:
+
+```yaml
+db_env_scheme: charcoal
+additional_hostnames:
+  - alt-name
+additional_fqdns:
+  - www.client.com
+persistent_files:
+  - storage/app/
+  - .env.local
+basic_auth: true
+client_max_body_size: 256m
+fpm_max_children: 20
+```
+
+If it's absent, or doesn't declare a given key, that key falls back to
+`.ddev/config.yaml` (or the sidecar) exactly as before — a project with
+one of these already set by hand in a real `.ddev/config.yaml` keeps
+working unchanged; `.ddeploy/config.yaml` is additive, not a required
+migration.
+
+Three of these are per-site overrides of a server-wide `provisioner.conf`
+default, for a project that needs something different from the fleet:
+
+- `basic_auth` — overrides `BASIC_AUTH_DEFAULT` for a normal site, or the
+  on-by-default for a preview (still beaten by `--auth`/`--no-auth` on
+  the CLI, which wins over both).
+- `client_max_body_size` — overrides `CLIENT_MAX_BODY_SIZE` (nginx's
+  upload-size ceiling, default `64m` — nginx's own stock default is a
+  restrictive `1m`, which breaks most real media uploads out of the box).
+- `fpm_max_children` — overrides `FPM_MAX_CHILDREN` (PHP-FPM pool
+  concurrency ceiling, default `5`) for a site that needs more (or less)
+  headroom than the rest of the fleet.
+
 ## Custom domains
 
 Every site gets `<name>.$BASE_DOMAIN` for free, covered by the shared
-wildcard cert. A site can also have its own domain(s) — `.ddev/config.yaml`'s
-`additional_fqdns`, the sidecar's own `additional_fqdns:`, or
+wildcard cert. A site can also have its own domain(s) — `additional_fqdns`
+in `.ddeploy/config.yaml` (see "Site config resolution"; a real
+`.ddev/config.yaml` and the sidecar both still work too) or
 `--custom-domains "a.com www.a.com"` non-interactively.
 
 These aren't covered by the wildcard, so each site's custom domains get
@@ -247,8 +291,8 @@ root-owned) and `DB_ALLOWED_HOSTS` as narrow as possible.
 
 ## Database credentials
 
-Set by `db_env_scheme` (from CMS detection, or `db_env_scheme:` in the
-sidecar):
+Set by `db_env_scheme` (from CMS detection, or an explicit `db_env_scheme:`
+in `.ddeploy/config.yaml` or the sidecar):
 
 | scheme     | written to                        | vars |
 |------------|------------------------------------|------|
@@ -309,11 +353,11 @@ password is picked up the same way (`read_db_password` finds it already
 in the persistent store), so this isn't just "the files survive" — the
 site reconnects with zero credential churn.
 
-`persistent_files:` (in `.ddev/config.yaml` or the sidecar, not a real
-DDEV key) declares arbitrary extra paths beyond `upload_dirs` and the DB
-credential file — a custom `.env.local`, a `storage/app` directory, etc.
-— relative to the repo root, not the docroot. A trailing `/` marks a
-directory; without one, a file:
+`persistent_files:` (in `.ddeploy/config.yaml` — see "Site config
+resolution" — not a real DDEV key) declares arbitrary extra paths beyond
+`upload_dirs` and the DB credential file — a custom `.env.local`, a
+`storage/app` directory, etc. — relative to the repo root, not the
+docroot. A trailing `/` marks a directory; without one, a file:
 
 ```yaml
 persistent_files:
