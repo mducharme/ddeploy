@@ -3,3 +3,4 @@
 /sites/
 /phpshim/
 /docker/test/generated/
+__pycache__/

@@ -11,8 +11,9 @@ site, a shared wildcard TLS cert. No containers. Each site's
 provision.sh       entrypoint
 provisioner.conf   per-server config, edit after cloning
 manifest           name -> repo-url, used by provision-all / deploy-all
-templates/         nginx vhost + FPM pool templates
+templates/         nginx vhost + FPM pool + webhook vhost templates
 lib/               implementation
+hook/              unprivileged git-forge webhook listener (Python)
 hooks/             ops scripts run for every site (see hooks/README.md)
 generated/         sidecar configs + DB credentials (created at runtime)
 logs/              per-site provision/deploy logs (created at runtime)
@@ -281,6 +282,42 @@ own unused name; `deploy-all` skips previews (they update via
 any rebased branch); and plain `remove <name>` on a preview detects that
 and delegates to `remove-preview`, so the purge-db-belongs-to-the-parent
 safety and the symlink-safe file cleanup apply automatically.
+
+## Deploy on git push
+
+Set `WEBHOOK_ENABLED=true` in `provisioner.conf` and re-run `init`. That
+stands up `https://hooks.$BASE_DOMAIN` (wildcard cert) proxying to an
+unprivileged listener on localhost. A root systemd worker then runs the
+existing CLI — nothing in the HTTP request is executed as a command.
+
+| Forge | URL | Events |
+|---|---|---|
+| GitHub | `https://hooks.$BASE_DOMAIN/github` | `push`, `pull_request` |
+| Bitbucket Cloud | `https://hooks.$BASE_DOMAIN/bitbucket` | `repo:push`, `pullrequest:created`, `updated`, `fulfilled`, `rejected` |
+
+HMAC secret is generated at `$WEBHOOK_SECRET` (default
+`/etc/ddeploy/webhook.secret`, chmod 640). Paste it into the GitHub org
+webhook and/or the Bitbucket workspace webhook. Optional
+`WEBHOOK_SECRET_BITBUCKET` if the two forges should not share a secret.
+
+What actually runs:
+
+- Push to the branch a provisioned (non-preview) site currently has
+  checked out → `deploy <name>`. Other branches are ignored on push.
+- PR opened / synced (same-repo only) → `provision-preview` or
+  `deploy-preview` of that parent site.
+- PR closed / merged / declined → `remove-preview --purge-files`
+  (`--purge-db` too if the preview was isolated).
+- Fork PRs are refused (shared-mode previews would run untrusted code
+  against the parent's live database).
+- A repo that isn't provisioned on this box is a 202 no-op, so one org
+  or workspace hook can cover every client repo.
+
+`provision.sh deploy` over SSH is still valid. For repos that cannot use
+an org/workspace webhook, copy
+[`examples/ci/github-action`](examples/ci/github-action/action.yml) or
+[`examples/ci/bitbucket-pipelines.yml`](examples/ci/bitbucket-pipelines.yml).
+Do not have CI fake a forge payload.
 
 ## Database server
 

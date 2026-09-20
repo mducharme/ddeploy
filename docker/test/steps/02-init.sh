@@ -24,6 +24,11 @@ assert_cmd_ok "composer installed" command -v composer
 assert_file_exists "/etc/nginx/htpasswd/default" "default basic-auth htpasswd generated"
 assert_cmd_ok "default htpasswd has 'preview' user" grep -q '^preview:' /etc/nginx/htpasswd/default
 assert_cmd_ok "mock ufw recorded ssh allow rule" grep -q 'comment .ssh.\|comment ssh' /var/lib/ddeploy-mock-ufw/rules
+assert_cmd_ok "webhook listener is running" systemctl is-active --quiet ddeploy-hook
+assert_file_exists "/etc/ddeploy/webhook.secret" "webhook HMAC secret generated"
+assert_file_exists "/etc/nginx/sites-enabled/ddeploy-hook.conf" "webhook vhost enabled"
+hook_health="$(curl -fsSk --resolve "hooks.staging.ddeploy.test:443:127.0.0.1" "https://hooks.staging.ddeploy.test/health")"
+assert_contains "$hook_health" "ok" "webhook /health through the vhost"
 
 step "init: idempotent re-run"
 before="$(md5sum /etc/nginx/htpasswd/default | cut -d' ' -f1)"

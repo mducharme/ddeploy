@@ -103,6 +103,7 @@ DB_BACKUP_RETENTION_DAYS="7"
 PREVIEW_DB_MODE="shared"
 PREVIEW_SEED="true"
 PREVIEW_PRUNE_ENABLED="false"
+WEBHOOK_ENABLED="true"
 EOF
 
 cat > "$GEN_DIR/backup-credentials.env" <<'EOF'

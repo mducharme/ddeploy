@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         systemd systemd-sysv dbus \
         openssh-server openssh-client \
-        git curl ca-certificates openssl sudo \
+        git curl ca-certificates openssl sudo python3 \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && systemctl mask systemd-udev-trigger systemd-udevd
 

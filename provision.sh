@@ -36,6 +36,8 @@ source "$LIB_DIR/persistent.sh"
 source "$LIB_DIR/deploy_history.sh"
 # shellcheck source=lib/preview.sh
 source "$LIB_DIR/preview.sh"
+# shellcheck source=lib/hook.sh
+source "$LIB_DIR/hook.sh"
 # shellcheck source=lib/cmd_init.sh
 source "$LIB_DIR/cmd_init.sh"
 # shellcheck source=lib/cmd_init_db.sh
@@ -60,6 +62,8 @@ source "$LIB_DIR/cmd_preview.sh"
 source "$LIB_DIR/cmd_restore.sh"
 # shellcheck source=lib/cmd_doctor.sh
 source "$LIB_DIR/cmd_doctor.sh"
+# shellcheck source=lib/cmd_hook.sh
+source "$LIB_DIR/cmd_hook.sh"
 
 usage() {
     cat <<'EOF'
@@ -83,6 +87,7 @@ commands:
   remove-preview <project> <branch> [opts]   remove a preview (see -h)
   prune-previews [project]      remove previews whose branch no longer exists
   doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
+  hook-worker                   drain the git-push webhook queue (systemd; not an operator command)
 EOF
 }
 
@@ -106,6 +111,7 @@ main() {
         remove-preview) cmd_remove_preview "$@" ;;
         prune-previews) cmd_prune_previews "$@" ;;
         doctor)         cmd_doctor "$@" ;;
+        hook-worker)    cmd_hook_worker "$@" ;;
         -h|--help|help|"") usage ;;
         *) usage; die "unknown command: $cmd" ;;
     esac

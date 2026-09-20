@@ -15,6 +15,115 @@ load_conf
 REPO_URL="ssh://gitfixture@127.0.0.1/srv/git/testsite.git"
 BARE=/srv/git/testsite.git
 AUTH_PASS="$(cat /etc/ddeploy/basic-auth-password 2>/dev/null || true)"
+HOOK_HOST="hooks.staging.ddeploy.test"
+HOOK_CLONE="https://127.0.0.1/srv/git/testsite.git"
+
+hmac_sha256_file() {
+    python3 -c '
+import hmac, hashlib, pathlib, sys
+secret = pathlib.Path(sys.argv[1]).read_bytes().strip()
+body = pathlib.Path(sys.argv[2]).read_bytes()
+print("sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest())
+' /etc/ddeploy/webhook.secret "$1"
+}
+
+# $1 path (/github or /bitbucket) $2 signature header name $3 event header name
+# $4 event value $5 body file. Prints HTTP status code.
+post_hook() {
+    local path="$1" sig_hdr="$2" ev_hdr="$3" event="$4" body="$5"
+    local sig
+    sig="$(hmac_sha256_file "$body")"
+    curl -sS -o /tmp/hook-body -w "%{http_code}" -k \
+        --resolve "${HOOK_HOST}:443:127.0.0.1" \
+        -X POST "https://${HOOK_HOST}${path}" \
+        -H "Content-Type: application/json" \
+        -H "${sig_hdr}: ${sig}" \
+        -H "${ev_hdr}: ${event}" \
+        --data-binary @"$body"
+}
+
+write_github_push() {
+    local branch="$1" out="$2"
+    python3 -c '
+import json, sys
+branch, clone = sys.argv[1], sys.argv[2]
+print(json.dumps({
+    "ref": "refs/heads/" + branch,
+    "after": "0" * 40,
+    "deleted": False,
+    "repository": {
+        "clone_url": clone,
+        "ssh_url": "ssh://gitfixture@127.0.0.1/srv/git/testsite.git",
+    },
+}))
+' "$branch" "$HOOK_CLONE" > "$out"
+}
+
+write_github_pr() {
+    local action="$1" branch="$2" head_repo="$3" out="$4"
+    python3 -c '
+import json, sys
+action, branch, head_repo, clone = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+print(json.dumps({
+    "action": action,
+    "pull_request": {
+        "head": {"ref": branch, "sha": "0"*40, "repo": {"full_name": head_repo}},
+        "base": {"repo": {"full_name": "gitfixture/testsite"}},
+    },
+    "repository": {
+        "clone_url": clone,
+        "ssh_url": "ssh://gitfixture@127.0.0.1/srv/git/testsite.git",
+    },
+}))
+' "$action" "$branch" "$head_repo" "$HOOK_CLONE" > "$out"
+}
+
+# Drain the spool, then wait until the systemd path worker (if it also
+# picked the job up) has finished. A second hook-worker against an empty
+# queue is a no-op; returning before provision-preview finishes is what
+# flakes the preview asserts.
+flush_hooks() {
+    local i=0
+    ./provision.sh hook-worker
+    while (( i < 60 )); do
+        if ! compgen -G /var/lib/ddeploy/queue/new/job-*.json >/dev/null \
+            && ! systemctl is-active --quiet ddeploy-hook-worker.service; then
+            ./provision.sh hook-worker
+            return 0
+        fi
+        sleep 0.5
+        i=$((i + 1))
+        ./provision.sh hook-worker || true
+    done
+    fail "webhook queue did not drain"
+}
+
+write_bitbucket_pr() {
+    local event="$1" branch="$2" src_uuid="$3" dst_uuid="$4" out="$5"
+    python3 -c '
+import json, sys
+event, branch, src, dst, clone = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+print(json.dumps({
+    "pullrequest": {
+        "source": {
+            "branch": {"name": branch},
+            "commit": {"hash": "0"*40},
+            "repository": {"uuid": src, "full_name": "gitfixture/testsite",
+                           "links": {"clone": [{"name": "https", "href": clone}]}},
+        },
+        "destination": {
+            "repository": {"uuid": dst, "full_name": "gitfixture/testsite",
+                           "links": {"clone": [{"name": "https", "href": clone}]}},
+        },
+    },
+    "repository": {
+        "full_name": "gitfixture/testsite",
+        "links": {"clone": [{"name": "https", "href": clone},
+                            {"name": "ssh", "href": "ssh://gitfixture@127.0.0.1/srv/git/testsite.git"}]},
+    },
+}))
+' "$event" "$branch" "$src_uuid" "$dst_uuid" "$HOOK_CLONE" > "$out"
+}
 
 # --- provision -------------------------------------------------------
 
@@ -65,9 +174,95 @@ mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" testsite \
     -e "CREATE TABLE probe (id INT); INSERT INTO probe VALUES (1);"
 pass "seeded a probe row directly in the real database (for the restore check below)"
 
-# --- deploy ------------------------------------------------------------
+# --- deploy (via GitHub webhook, then CLI rollback) --------------------
 
-step "deploy testsite (git pull --ff-only)"
+step "webhook: HMAC and routing guards"
+BODY="$(mktemp)"
+write_github_push main "$BODY"
+code="$(curl -sS -o /tmp/hook-body -w "%{http_code}" -k \
+    --resolve "${HOOK_HOST}:443:127.0.0.1" \
+    -X POST "https://${HOOK_HOST}/github" \
+    -H "Content-Type: application/json" \
+    --data-binary @"$BODY")"
+[[ "$code" == "401" ]] && pass "unsigned POST /github is 401" || fail "unsigned POST /github returned $code, expected 401"
+
+sig="$(hmac_sha256_file "$BODY")"
+code="$(curl -sS -o /tmp/hook-body -w "%{http_code}" -k \
+    --resolve "${HOOK_HOST}:443:127.0.0.1" \
+    -X POST "https://${HOOK_HOST}/bitbucket" \
+    -H "Content-Type: application/json" \
+    -H "X-Hub-Signature-256: $sig" \
+    -H "X-Event-Key: repo:push" \
+    --data-binary @"$BODY")"
+[[ "$code" == "401" ]] && pass "GitHub HMAC header on POST /bitbucket is 401" || fail "wrong-path HMAC returned $code, expected 401"
+
+python3 -c 'import json,sys; json.dump({"zen":"ok"}, sys.stdout)' > "$BODY"
+code="$(post_hook /github X-Hub-Signature-256 X-GitHub-Event ping "$BODY")"
+[[ "$code" == "202" ]] && pass "GitHub ping is 202" || fail "GitHub ping returned $code, expected 202"
+
+python3 -c '
+import json, sys
+json.dump({"ref":"refs/heads/main","deleted":False,"after":"0"*40,
+           "repository":{"clone_url":"https://github.com/other/nope.git"}}, sys.stdout)
+' > "$BODY"
+code="$(post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY")"
+[[ "$code" == "202" ]] && pass "unknown repo push is 202" || fail "unknown repo returned $code"
+flush_hooks
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "MARKER=v1" "unknown-repo webhook did not deploy testsite"
+
+write_github_pr opened feature-a "attacker/fork" "$BODY"
+code="$(post_hook /github X-Hub-Signature-256 X-GitHub-Event pull_request "$BODY")"
+[[ "$code" == "202" ]] && pass "fork pull_request is 202 (ignored)" || fail "fork PR returned $code"
+flush_hooks
+assert_file_absent "/etc/nginx/sites-enabled/testsite-feature-a.conf" "fork PR did not provision a preview"
+
+write_bitbucket_pr pullrequest:created feature-a "{fork}" "{src}" "$BODY"
+code="$(post_hook /bitbucket X-Hub-Signature X-Event-Key pullrequest:created "$BODY")"
+[[ "$code" == "202" ]] && pass "Bitbucket fork PR is 202 (ignored)" || fail "Bitbucket fork PR returned $code"
+flush_hooks
+assert_file_absent "/etc/nginx/sites-enabled/testsite-feature-a.conf" "Bitbucket fork PR did not provision a preview"
+rm -f "$BODY"
+
+# Only the Bitbucket path exercises a successful (same-repo) PR above —
+# this covers the GitHub side of parse_github's pull_request handling
+# end to end, not just the fork-rejection branch.
+step "provision-preview via GitHub webhook (same-repo PR, success path)"
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+git -C "$WORK" checkout -q -b feature-gh
+sed -i 's/MARKER=v1/MARKER=preview-gh-v1/' "$WORK/web/index.php"
+git -C "$WORK" commit -q -am 'gh preview branch'
+git -C "$WORK" push -q origin feature-gh
+rm -rf "$WORK"
+
+BODY="$(mktemp)"
+write_github_pr opened feature-gh "gitfixture/testsite" "$BODY"
+code="$(post_hook /github X-Hub-Signature-256 X-GitHub-Event pull_request "$BODY")"
+[[ "$code" == "202" ]] && pass "same-repo GitHub pull_request accepted" || fail "same-repo GitHub PR returned $code"
+flush_hooks
+sleep 1
+rm -f "$BODY"
+
+GH_PREVIEW=testsite-feature-gh
+assert_file_exists "/etc/nginx/sites-enabled/$GH_PREVIEW.conf" "GitHub-webhook provision-preview created the preview vhost"
+if [[ -n "$AUTH_PASS" ]]; then
+    out="$(curl -fsSk -u "preview:$AUTH_PASS" --resolve "$GH_PREVIEW.staging.ddeploy.test:443:127.0.0.1" "https://$GH_PREVIEW.staging.ddeploy.test/")"
+    assert_contains "$out" "MARKER=preview-gh-v1" "GitHub-webhook preview serves the feature-gh branch"
+else
+    fail "never captured the generated basic-auth password from init's output"
+fi
+
+# Self-contained: this branch/preview isn't touched by anything else in
+# this script, so clean both up rather than leaving them for the rest of
+# the run (which only manages testsite and testsite-feature-a).
+./provision.sh remove-preview testsite feature-gh --purge-files
+git -C "$BARE" branch -D feature-gh >/dev/null
+assert_file_absent "/etc/nginx/sites-enabled/$GH_PREVIEW.conf" "GitHub-webhook preview cleaned up"
+
+step "deploy testsite via GitHub webhook (git pull --ff-only)"
 V1_SHA="$(git -C "$SITES_ROOT/testsite" log -1 --format=%H)"
 WORK="$(mktemp -d)"
 git clone -q "$BARE" "$WORK"
@@ -78,11 +273,15 @@ git -C "$WORK" commit -q -am 'v2'
 git -C "$WORK" push -q origin main
 rm -rf "$WORK"
 
-./provision.sh deploy testsite
+write_github_push main "$BODY"
+code="$(post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY")"
+[[ "$code" == "202" ]] && pass "GitHub push webhook accepted" || fail "GitHub push returned $code, expected 202"
+flush_hooks
 sleep 1
 
 out="$(curl_site testsite.staging.ddeploy.test)"
-assert_contains "$out" "MARKER=v2" "deploy pulled the new commit (git_deploy_key + sync_site_ssh work end to end)"
+assert_contains "$out" "MARKER=v2" "webhook deploy pulled the new commit (git_deploy_key + sync_site_ssh work end to end)"
+rm -f "$BODY"
 
 step "deploy --rollback / --history"
 history_out="$(./provision.sh deploy testsite --history)"
@@ -109,9 +308,14 @@ assert_contains "$out" "MARKER=v2" "a plain deploy after a rollback pulls forwar
 
 # --- branch preview (shared mode, the default) -------------------------
 
-step "provision-preview testsite feature-a"
-./provision.sh provision-preview testsite feature-a
-sleep 1  # same nginx-reload settling reason as above
+step "provision-preview testsite feature-a via Bitbucket webhook"
+BODY="$(mktemp)"
+write_bitbucket_pr pullrequest:created feature-a "{src}" "{src}" "$BODY"
+code="$(post_hook /bitbucket X-Hub-Signature X-Event-Key pullrequest:created "$BODY")"
+[[ "$code" == "202" ]] && pass "Bitbucket pullrequest:created accepted" || fail "Bitbucket PR created returned $code"
+flush_hooks
+sleep 1
+rm -f "$BODY"
 
 PREVIEW=testsite-feature-a
 assert_cmd_fails "shared-mode preview has NO Linux user of its own" id -u "www-$PREVIEW"
@@ -130,7 +334,7 @@ fi
 list_out="$(./provision.sh list)"
 assert_contains "$list_out" "testsite/feature-a (shared)" "list shows the preview, shared mode, resolved to its parent"
 
-step "deploy-preview testsite feature-a"
+step "deploy-preview testsite feature-a via Bitbucket webhook"
 WORK="$(mktemp -d)"
 git clone -q --branch feature-a "$BARE" "$WORK"
 git -C "$WORK" config user.email 'test@ddeploy.test'
@@ -140,10 +344,15 @@ git -C "$WORK" commit -q -am 'preview v2'
 git -C "$WORK" push -q origin feature-a
 rm -rf "$WORK"
 
-./provision.sh deploy-preview testsite feature-a
+BODY="$(mktemp)"
+write_bitbucket_pr pullrequest:updated feature-a "{src}" "{src}" "$BODY"
+code="$(post_hook /bitbucket X-Hub-Signature X-Event-Key pullrequest:updated "$BODY")"
+[[ "$code" == "202" ]] && pass "Bitbucket pullrequest:updated accepted" || fail "Bitbucket PR updated returned $code"
+flush_hooks
 sleep 1
 out="$(curl -fsSk -u "preview:$AUTH_PASS" --resolve "$PREVIEW.staging.ddeploy.test:443:127.0.0.1" "https://$PREVIEW.staging.ddeploy.test/")"
-assert_contains "$out" "MARKER=preview-v2" "deploy-preview fetch+reset picked up the new commit"
+assert_contains "$out" "MARKER=preview-v2" "webhook deploy-preview fetch+reset picked up the new commit"
+rm -f "$BODY"
 
 # --- backup / restore, against real object storage (MinIO) -------------
 
@@ -239,6 +448,7 @@ assert_contains "$doctor_out" "testsite: php8.3-fpm" "doctor: checks testsite's 
 assert_contains "$doctor_out" "reachable as 'testsite'" "doctor: testsite database check succeeds with its OWN credentials, not the admin ones"
 assert_contains "$doctor_out" "testsite: last deploy" "doctor: reports last deploy info"
 assert_contains "$doctor_out" "testsite: cert (custom domain)" "doctor: checks the custom-domain cert too"
+assert_contains "$doctor_out" "webhook listener" "doctor: checks the git webhook listener when WEBHOOK_ENABLED=true"
 
 step "doctor (fleet-wide, no name)"
 fleet_out="$(./provision.sh doctor)" || true

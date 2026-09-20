@@ -1,0 +1,70 @@
+# Escape hatch — the happy path is a Bitbucket workspace webhook (see
+# README "Deploy on git push"). Workspace variables: DDEPLOY_SSH_KEY,
+# DDEPLOY_HOST. Optional: DDEPLOY_USER (default deploy),
+# DDEPLOY_PROVISIONER (default /home/deploy/provisioner/provision.sh).
+#
+# Copy the relevant step into the client repo's bitbucket-pipelines.yml.
+#
+# BITBUCKET_REPO_SLUG/BITBUCKET_BRANCH are validated against a strict
+# charset before use, then shell-quoted into a single remote command
+# string — ssh joins ALL of its trailing arguments into one string for
+# the remote shell to re-parse, so passing them as separate words on the
+# ssh command line does NOT stop a branch name containing shell
+# metacharacters (which git ref names are legally allowed to contain)
+# from running arbitrary commands on the ddeploy server. Do not remove
+# either safeguard, and do not pass additional untrusted variables
+# (PR titles, commit messages, etc.) into these steps without the same
+# treatment.
+
+image: atlassian/default-image:4
+
+definitions:
+  steps:
+    - step: &ddeploy-deploy
+        name: ddeploy deploy
+        script:
+          - umask 077
+          - printf '%s\n' "$DDEPLOY_SSH_KEY" > /tmp/ddeploy_key
+          - chmod 600 /tmp/ddeploy_key
+          - |
+            safe_re='^[A-Za-z0-9._/-]+$'
+            [[ "$BITBUCKET_REPO_SLUG" =~ $safe_re ]] || { echo "refusing unsafe BITBUCKET_REPO_SLUG: '$BITBUCKET_REPO_SLUG'" >&2; exit 1; }
+            remote_cmd="sudo -n $(printf '%q' "${DDEPLOY_PROVISIONER:-/home/deploy/provisioner/provision.sh}") deploy $(printf '%q' "$BITBUCKET_REPO_SLUG")"
+            ssh -i /tmp/ddeploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+              "${DDEPLOY_USER:-deploy}@$DDEPLOY_HOST" "$remote_cmd"
+    - step: &ddeploy-preview
+        name: ddeploy preview
+        script:
+          - umask 077
+          - printf '%s\n' "$DDEPLOY_SSH_KEY" > /tmp/ddeploy_key
+          - chmod 600 /tmp/ddeploy_key
+          - |
+            safe_re='^[A-Za-z0-9._/-]+$'
+            for v in "$BITBUCKET_REPO_SLUG" "$BITBUCKET_BRANCH"; do
+              [[ "$v" =~ $safe_re ]] || { echo "refusing unsafe input: '$v'" >&2; exit 1; }
+            done
+            remote_cmd="sudo -n $(printf '%q' "${DDEPLOY_PROVISIONER:-/home/deploy/provisioner/provision.sh}") provision-preview $(printf '%q' "$BITBUCKET_REPO_SLUG") $(printf '%q' "$BITBUCKET_BRANCH")"
+            ssh -i /tmp/ddeploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+              "${DDEPLOY_USER:-deploy}@$DDEPLOY_HOST" "$remote_cmd"
+    - step: &ddeploy-remove-preview
+        name: ddeploy remove preview
+        script:
+          - umask 077
+          - printf '%s\n' "$DDEPLOY_SSH_KEY" > /tmp/ddeploy_key
+          - chmod 600 /tmp/ddeploy_key
+          - |
+            safe_re='^[A-Za-z0-9._/-]+$'
+            for v in "$BITBUCKET_REPO_SLUG" "$BITBUCKET_BRANCH"; do
+              [[ "$v" =~ $safe_re ]] || { echo "refusing unsafe input: '$v'" >&2; exit 1; }
+            done
+            remote_cmd="sudo -n $(printf '%q' "${DDEPLOY_PROVISIONER:-/home/deploy/provisioner/provision.sh}") remove-preview $(printf '%q' "$BITBUCKET_REPO_SLUG") $(printf '%q' "$BITBUCKET_BRANCH") --purge-files"
+            ssh -i /tmp/ddeploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+              "${DDEPLOY_USER:-deploy}@$DDEPLOY_HOST" "$remote_cmd"
+
+pipelines:
+  branches:
+    main:
+      - step: *ddeploy-deploy
+  pull-requests:
+    "**":
+      - step: *ddeploy-preview

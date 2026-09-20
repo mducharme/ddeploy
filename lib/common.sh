@@ -56,6 +56,11 @@ load_conf() {
     PREVIEW_SEED="${PREVIEW_SEED:-true}"
     PREVIEW_PRUNE_ENABLED="${PREVIEW_PRUNE_ENABLED:-false}"
     PREVIEW_PRUNE_SCHEDULE="${PREVIEW_PRUNE_SCHEDULE:-37 3 * * *}"
+    WEBHOOK_ENABLED="${WEBHOOK_ENABLED:-false}"
+    WEBHOOK_HOSTNAME="${WEBHOOK_HOSTNAME:-hooks.$BASE_DOMAIN}"
+    WEBHOOK_SECRET="${WEBHOOK_SECRET:-/etc/ddeploy/webhook.secret}"
+    WEBHOOK_SECRET_BITBUCKET="${WEBHOOK_SECRET_BITBUCKET:-}"
+    WEBHOOK_LISTEN="${WEBHOOK_LISTEN:-127.0.0.1:8787}"
 }
 
 # Lighter loader for `init-db`, run on a dedicated database server that

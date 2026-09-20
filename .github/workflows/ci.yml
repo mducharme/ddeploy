@@ -20,18 +20,30 @@ jobs:
         run: |
           set -e
           bash -n provision.sh
-          for f in lib/*.sh; do
+          for f in lib/*.sh docker/test/run.sh docker/test/lib.sh docker/test/steps/*.sh; do
             echo "checking $f"
             bash -n "$f"
           done
+      - name: python syntax (webhook listener)
+        run: python3 -m py_compile hook/listener.py
+      - name: python lint (webhook listener)
+        run: |
+          pip install --quiet ruff
+          # Correctness/bug rules only (pyflakes, pycodestyle, bugbear,
+          # bandit-equivalent security) — not ruff's full default set,
+          # which includes purely stylistic/modernization rules (percent-
+          # formatting vs f-strings, str.removesuffix, etc.) that aren't
+          # worth gating CI on for this file.
+          ruff check --select E,F,B,S hook/listener.py
 
   # Builds and runs the actual provisioner — init, init-db, provision,
-  # deploy (incl. rollback), branch previews, backup/restore, doctor,
-  # remove — against real systemd, nginx, PHP-FPM, MariaDB, sshd, and
-  # object storage in disposable containers. See docker/README.md for
-  # what's real vs mocked and why. Needs `--privileged` containers for
-  # systemd (docker/docker-compose.yml) — supported on GitHub-hosted
-  # runners, same pattern several other systemd-in-docker CI setups use.
+  # deploy (incl. rollback), git-push webhooks, branch previews,
+  # backup/restore, doctor, remove — against real systemd, nginx, PHP-FPM,
+  # MariaDB, sshd, and object storage in disposable containers. See
+  # docker/README.md for what's real vs mocked and why. Needs
+  # `--privileged` containers for systemd (docker/docker-compose.yml) —
+  # supported on GitHub-hosted runners, same pattern several other
+  # systemd-in-docker CI setups use.
   docker-harness:
     needs: lint
     runs-on: ubuntu-latest

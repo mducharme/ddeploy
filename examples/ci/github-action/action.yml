@@ -1,0 +1,87 @@
+name: Deploy via ddeploy SSH
+description: SSH to a ddeploy server and run provision.sh. Escape hatch — the happy path is the org/workspace webhook (see README "Deploy on git push").
+
+inputs:
+  host:
+    description: SSH host (the web server)
+    required: true
+  user:
+    description: SSH user
+    required: false
+    default: deploy
+  ssh_key:
+    description: Private key with sudo rights to provision.sh
+    required: true
+  command:
+    description: "deploy, provision-preview, deploy-preview, or remove-preview"
+    required: true
+  name:
+    description: Site name (for deploy)
+    required: false
+  project:
+    description: Parent project (for *-preview)
+    required: false
+  branch:
+    description: Branch (for *-preview)
+    required: false
+  provisioner:
+    description: Path to provision.sh on the server
+    required: false
+    default: /home/deploy/provisioner/provision.sh
+
+runs:
+  using: composite
+  steps:
+    - name: Run provision.sh over SSH
+      shell: bash
+      env:
+        SSH_KEY: ${{ inputs.ssh_key }}
+        HOST: ${{ inputs.host }}
+        USER: ${{ inputs.user }}
+        CMD: ${{ inputs.command }}
+        NAME: ${{ inputs.name }}
+        PROJECT: ${{ inputs.project }}
+        BRANCH: ${{ inputs.branch }}
+        PROVISIONER: ${{ inputs.provisioner }}
+      run: |
+        set -euo pipefail
+        key="$(mktemp)"
+        printf '%s\n' "$SSH_KEY" > "$key"
+        chmod 600 "$key"
+
+        # NAME/PROJECT/BRANCH end up on a remote command line. ssh joins
+        # all of its trailing arguments into ONE string and hands that to
+        # the remote shell to re-parse — passing them as separate local
+        # argv elements (a bash array, "$@", etc.) does NOT protect
+        # against that, and git branch names are legally allowed to
+        # contain shell metacharacters ($, `, ;, &, |, (, ) are all valid
+        # in a ref name), so an attacker-controlled branch (e.g. a fork
+        # PR, if this ever gets wired to one) could otherwise run
+        # arbitrary commands on the ddeploy server. Reject anything
+        # outside a safe charset before it's used at all, on top of
+        # quoting below — either alone would be enough, both is cheap.
+        safe_re='^[A-Za-z0-9._/-]+$'
+        for v in "$NAME" "$PROJECT" "$BRANCH"; do
+          [[ -z "$v" || "$v" =~ $safe_re ]] || { echo "refusing unsafe character in input: '$v'" >&2; exit 1; }
+        done
+
+        case "$CMD" in
+          deploy)
+            [[ -n "$NAME" ]] || { echo "name is required for deploy" >&2; exit 1; }
+            remote_cmd="sudo -n $(printf '%q' "$PROVISIONER") deploy $(printf '%q' "$NAME")"
+            ;;
+          provision-preview|deploy-preview|remove-preview)
+            [[ -n "$PROJECT" && -n "$BRANCH" ]] || { echo "project and branch are required for $CMD" >&2; exit 1; }
+            remote_cmd="sudo -n $(printf '%q' "$PROVISIONER") $(printf '%q' "$CMD") $(printf '%q' "$PROJECT") $(printf '%q' "$BRANCH")"
+            [[ "$CMD" == "remove-preview" ]] && remote_cmd+=" --purge-files"
+            ;;
+          *)
+            echo "unknown command: $CMD" >&2
+            exit 1
+            ;;
+        esac
+        # A single trailing argument to ssh — not several — so there's no
+        # rejoining ambiguity on top of the quoting already done above.
+        ssh -i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+          "$USER@$HOST" "$remote_cmd"
+        rm -f "$key"

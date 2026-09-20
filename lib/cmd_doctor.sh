@@ -80,6 +80,14 @@ doctor_check_infra() {
         doctor_result fail "database server ($DB_HOST)" "admin connection failed — check DB_HOST/DB_ADMIN_CREDENTIALS in provisioner.conf"
     fi
 
+    if [[ "$WEBHOOK_ENABLED" == "true" ]]; then
+        if systemctl is-active --quiet ddeploy-hook; then
+            doctor_result ok "webhook listener" "running"
+        else
+            doctor_result fail "webhook listener" "WEBHOOK_ENABLED=true but ddeploy-hook is not running"
+        fi
+    fi
+
     doctor_check_cert "$BASE_DOMAIN" "cert (wildcard, $BASE_DOMAIN)"
 
     if systemctl is-active --quiet certbot.timer; then

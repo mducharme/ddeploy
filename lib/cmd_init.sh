@@ -28,7 +28,7 @@ cmd_init() {
     apt-get update -y
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         nginx mariadb-server certbot python3-certbot-dns-cloudflare software-properties-common \
-        curl ufw apache2-utils
+        curl ufw apache2-utils python3
 
     log_info "== yq (must be the Go/mikefarah build, not the Python one) =="
     local yq_path
@@ -140,6 +140,15 @@ EOF
         systemctl enable --now "php${ver}-fpm"
     done
     systemctl enable --now certbot.timer 2>/dev/null || log_warn "no certbot.timer unit found — confirm renewal is scheduled some other way"
+
+    log_info "== git webhook =="
+    if [[ "$WEBHOOK_ENABLED" == "true" ]]; then
+        command -v python3 >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y python3
+        install_webhook
+    else
+        disable_webhook
+        log_info "WEBHOOK_ENABLED=false — skipping git webhook listener"
+    fi
 
     nginx -t && systemctl reload nginx
 
