@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# `deploy <name>` — pull, replay post-start hooks, reload. This is the
-# CI target: the pipeline's SSH command becomes `provision.sh deploy <name>`.
+# `deploy <name>` — pull, re-apply vhost/FPM config, replay post-start
+# hooks, reload. This is the CI target: the pipeline's SSH command
+# becomes `provision.sh deploy <name>`.
 # `deploy <name> --rollback [<sha>]` moves the code backward instead — see
 # lib/deploy_history.sh and usage_deploy below for what that does and
 # doesn't cover.
@@ -91,13 +92,34 @@ cmd_deploy() {
     # sync_site_ssh re-running on every deploy rather than only at
     # provision time.
     link_persistent_files "$name" "$dir"
+
+    # Re-applied on every deploy, not just provision — php_version,
+    # basic_auth, client_max_body_size, fpm_max_children, php_ini, and
+    # additional_hostnames/additional_fqdns are all config an operator
+    # reasonably expects a deploy to pick up, not something that only
+    # takes effect on the next full re-provision. Cheap and idempotent
+    # when nothing changed: same content re-rendered, same reload
+    # install_fpm_pool/install_vhost/install_custom_domain_vhost already
+    # do themselves — no separate reload needed after this block.
+    ensure_php_installed "$PHP_VERSION"
+    install_fpm_pool "$name" "$PHP_VERSION" "" "" "${FPM_MAX_CHILDREN_CONFIG:-$FPM_MAX_CHILDREN}"
+    local root="$dir"
+    [[ -n "$DOCROOT" ]] && root="$dir/$DOCROOT"
+    local auth="${BASIC_AUTH_CONFIG:-$BASIC_AUTH_DEFAULT}"
+    local max_body_size="${CLIENT_MAX_BODY_SIZE_CONFIG:-$CLIENT_MAX_BODY_SIZE}"
+    install_vhost "$name" "$root" "$auth" "$max_body_size" "${ADDITIONAL_HOSTNAMES[@]}"
+    # Same reasoning as cmd_provision.sh: a custom domain's HTTP-01
+    # request can fail (DNS not live yet) without that being fatal to
+    # the rest of the deploy — the site's still reachable at the
+    # wildcard domain, and hooks/reload below still need to run.
+    if ! install_custom_domain_vhost "$name" "$root" "$auth" "$max_body_size" "${ADDITIONAL_FQDNS[@]}"; then
+        log_warn "custom domain setup failed for '$name' during deploy — continuing; re-run deploy once DNS is ready to retry it"
+    fi
+
     scan_hooks "$name"
     replay_hooks "$name" "$PHP_VERSION" "$dir"
     run_repo_hook "$name" "$PHP_VERSION" "$dir" ".provisioner/post-deploy.sh" "post-deploy script"
     run_ops_hooks "post-deploy" "$name" "$dir" "$PHP_VERSION"
-
-    systemctl reload "php${PHP_VERSION}-fpm" 2>/dev/null || true
-    nginx -t && systemctl reload nginx
 
     local full_sha; full_sha="$(git -C "$dir" log -1 --format=%H)"
     local sha; sha="$(git -C "$dir" log -1 --format=%h)"

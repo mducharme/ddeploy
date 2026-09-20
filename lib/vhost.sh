@@ -38,6 +38,27 @@ build_php_ini_block() {
     printf '%s' "$out"
 }
 
+# A pool's listen socket is keyed by site name only
+# (/run/php/<name>.sock — see templates/fpm-pool.conf.tmpl), not by PHP
+# version, so a site whose php_version changed (re-provisioned, or now
+# also on every `deploy` — see cmd_deploy.sh) would otherwise leave the
+# OLD version's pool file behind, still running and still bound to that
+# same socket path the NEW pool also wants. $1 name, $2 the version to
+# KEEP — every other version's pool file for this site is removed.
+remove_stale_fpm_pools() {
+    local name="$1" keep_ver="$2"
+    local pool_conf ver
+    for pool_conf in /etc/php/*/fpm/pool.d/"$name".conf; do
+        [[ -f "$pool_conf" ]] || continue
+        ver="${pool_conf#/etc/php/}"
+        ver="${ver%%/*}"
+        [[ "$ver" == "$keep_ver" ]] && continue
+        rm -f "$pool_conf"
+        systemctl reload "php${ver}-fpm" 2>/dev/null || true
+        log_info "removed stale FPM pool for $name under php$ver (now php$keep_ver)"
+    done
+}
+
 # $3/$4 (optional) pool user/group — default to the site's own
 # www-<name>. See apply_permissions for why a preview might override this.
 # $5 (optional) pm.max_children — defaults to the server-wide
@@ -49,6 +70,7 @@ install_fpm_pool() {
     local max_children="${5:-$FPM_MAX_CHILDREN}"
     local pool_dir="/etc/php/$ver/fpm/pool.d"
     [[ -d "$pool_dir" ]] || die "no such PHP-FPM pool dir: $pool_dir (is php$ver-fpm installed?)"
+    remove_stale_fpm_pools "$name" "$ver"
     local php_ini_block; php_ini_block="$(build_php_ini_block)"
     render_template "$PROVISIONER_DIR/templates/fpm-pool.conf.tmpl" "$pool_dir/$name.conf" \
         "NAME=$name" "POOL_USER=$pool_user" "POOL_GROUP=$pool_group" "MAX_CHILDREN=$max_children" \

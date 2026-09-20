@@ -75,7 +75,7 @@ commands:
   init                          set up a web server (packages, PHP, TLS, firewall)
   init-db                       set up a dedicated database server
   provision <name> [repo-url]   stand up a site (see: provision.sh provision -h)
-  deploy <name> [opts]          pull + replay deploy hooks + reload (see -h)
+  deploy <name> [opts]          pull + re-apply vhost/FPM config + replay hooks (see -h)
   remove <name> [opts]          disable a site (see: provision.sh remove -h)
   list                          table of provisioned sites
   provision-all                 provision every site in ./manifest

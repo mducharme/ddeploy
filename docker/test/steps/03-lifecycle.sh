@@ -168,6 +168,82 @@ assert_cmd_ok "FPM pool has the php_ini override" grep -q "php_admin_value\[max_
 out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "MAX_EXEC=45" "php_ini override actually applies at runtime, not just written to the pool file"
 
+# --- deploy re-applies vhost/FPM config, not just provision -------------
+
+step "deploy re-applies vhost/FPM config (not just provision)"
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+sed -i 's/client_max_body_size: 256m/client_max_body_size: 512m/' "$WORK/.ddeploy/config.yaml"
+sed -i 's/max_execution_time: 45/max_execution_time: 77/' "$WORK/.ddeploy/config.yaml"
+printf 'basic_auth: true\n' >> "$WORK/.ddeploy/config.yaml"
+git -C "$WORK" commit -q -am 'config change: body size, php_ini, basic_auth'
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+
+./provision.sh deploy testsite
+sleep 1
+
+assert_cmd_ok "vhost picked up the NEW client_max_body_size from a deploy alone" grep -q "client_max_body_size 512m;" /etc/nginx/sites-available/testsite.conf
+assert_cmd_ok "FPM pool picked up the NEW php_ini value from a deploy alone" grep -q "php_admin_value\[max_execution_time\] = 77" /etc/php/8.3/fpm/pool.d/testsite.conf
+assert_cmd_fails "testsite now requires auth (basic_auth: true took effect via deploy alone)" curl -fsSk --resolve "testsite.staging.ddeploy.test:443:127.0.0.1" "https://testsite.staging.ddeploy.test/"
+if [[ -n "$AUTH_PASS" ]]; then
+    out="$(curl -fsSk -u "preview:$AUTH_PASS" --resolve "testsite.staging.ddeploy.test:443:127.0.0.1" "https://testsite.staging.ddeploy.test/")"
+    assert_contains "$out" "MAX_EXEC=77" "authenticated request confirms the new php_ini value is live"
+else
+    fail "never captured AUTH_PASS"
+fi
+
+# Revert basic_auth (every later step in this script curls testsite
+# without credentials) — leave body-size/php_ini at their new values,
+# nothing downstream checks those specific numbers again.
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+sed -i '/^basic_auth: true$/d' "$WORK/.ddeploy/config.yaml"
+git -C "$WORK" commit -q -am 'revert basic_auth'
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+./provision.sh deploy testsite
+sleep 1
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "DB_OK" "basic_auth reverted, testsite reachable without credentials again"
+
+step "deploy re-applies FPM pool on a PHP-version bump, and cleans up the stale one"
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+sed -i 's/php_version: "8.3"/php_version: "8.2"/' "$WORK/.ddev/config.yaml"
+git -C "$WORK" commit -q -am 'bump php_version to 8.2'
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+
+./provision.sh deploy testsite
+sleep 1
+
+assert_file_exists "/etc/php/8.2/fpm/pool.d/testsite.conf" "new php8.2 FPM pool installed from a deploy alone"
+assert_file_absent "/etc/php/8.3/fpm/pool.d/testsite.conf" "stale php8.3 pool cleaned up (same /run/php/testsite.sock path would otherwise conflict)"
+assert_cmd_ok "php8.2-fpm is active" systemctl is-active --quiet php8.2-fpm
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "DB_OK" "site still serves correctly after the PHP-version bump"
+
+# Revert to 8.3 — every later assertion in this script assumes that pool path.
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+sed -i 's/php_version: "8.2"/php_version: "8.3"/' "$WORK/.ddev/config.yaml"
+git -C "$WORK" commit -q -am 'revert php_version to 8.3'
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+./provision.sh deploy testsite
+sleep 1
+assert_file_exists "/etc/php/8.3/fpm/pool.d/testsite.conf" "reverted back to a php8.3 FPM pool"
+assert_file_absent "/etc/php/8.2/fpm/pool.d/testsite.conf" "php8.2 pool cleaned up again on revert"
+
 # --- probe row for backup/restore-database verification ---------------
 
 mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" testsite \

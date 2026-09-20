@@ -82,7 +82,7 @@ check on it.
 init                          set up a web server (packages, PHP, TLS, firewall)
 init-db                       set up a dedicated database server
 provision <name> [repo-url]   add a site
-deploy <name> [--rollback [<sha>]] [--history]   pull + run deploy steps + reload (see -h)
+deploy <name> [--rollback [<sha>]] [--history]   pull + re-apply vhost/FPM config + run deploy steps (see -h)
 remove <name> [--purge-db] [--purge-files] [--purge-persistent]
 list                          table of provisioned sites
 provision-all                 provision every site in ./manifest
@@ -122,6 +122,18 @@ provisioned," they override every run they're passed on (see `provision -h`). Sh
 it declares; otherwise whichever of `.ddev/config.yaml` or the sidecar
 was actually used (`.ddev/config.yaml` if the repo has one, else the
 sidecar ddeploy already wrote for it).
+
+**When does a config change actually take effect?** `php_version`,
+`docroot`, `basic_auth`, `client_max_body_size`, `fpm_max_children`,
+`php_ini`, `additional_hostnames`, and `additional_fqdns` are all
+re-applied on every `deploy`, not just `provision` — push a commit that
+changes one in `.ddev/config.yaml`/`.ddeploy/config.yaml`, and the next
+deploy (however it's triggered: SSH, CI, or a git-push webhook) picks it
+up, same as code. `provision`-only flags (`--db`, `--upload-dirs`,
+`--deploy-cmd`, `--custom-domains`, and the non-interactive/interactive
+fallback fields) still only apply at provision time — those are either
+one-off overrides or determine what config gets written in the first
+place, not values `deploy` re-reads from a source that could change.
 
 ### Resolving a new site
 
