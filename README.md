@@ -778,9 +778,20 @@ object storage in disposable containers. See `docker/README.md`.
 
 Not built yet, roughly in priority order:
 
+- **App-level cron/queue-worker management** — a project's `artisan
+  schedule:run` or a supervised queue worker needs its own hand-rolled
+  systemd unit today, entirely outside this tool. Likely a
+  `.ddeploy/config.yaml` key generating a systemd unit + timer per site,
+  the same per-site-generated-config pattern the FPM pool and vhost
+  already use.
 - **Custom nginx snippet injection** — an escape hatch for a project
   that needs nginx config the standard template doesn't cover. Bigger
   security-review lift than the other `.ddeploy/config.yaml` keys, since
   it'd be raw server config sourced from a client repo, not a scoped
   value substituted into one — deliberately not rushed.
+- **Secrets/credential rotation** — a site's DB password, once
+  generated, lives in plaintext on disk indefinitely, protected only by
+  Unix file permissions, with no command to rotate it. The shared
+  basic-auth password already has a rotation path (delete the htpasswd
+  file, re-run `init`); per-site DB credentials don't.
 

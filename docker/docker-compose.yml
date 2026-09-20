@@ -40,7 +40,13 @@ services:
     command: ["/sbin/init"]
 
   objectstore:
-    image: minio/minio:latest
+    # quay.io, not Docker Hub's minio/minio — that repository stopped
+    # allowing anonymous/unauthenticated pulls ("pull access denied...
+    # repository does not exist"), confirmed by reproducing it directly
+    # (docker pull minio/minio:latest) rather than assuming a local/CI
+    # config problem. quay.io/minio/minio:latest resolves to the exact
+    # same image (identical digest) and pulls fine.
+    image: quay.io/minio/minio:latest
     environment:
       MINIO_ROOT_USER: ddeployminio
       MINIO_ROOT_PASSWORD: ddeployminiosecret
