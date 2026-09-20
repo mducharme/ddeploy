@@ -63,6 +63,7 @@ load_conf() {
     WEBHOOK_LISTEN="${WEBHOOK_LISTEN:-127.0.0.1:8787}"
     NOTIFY_WEBHOOK="${NOTIFY_WEBHOOK:-}"
     NOTIFY_COOLDOWN="${NOTIFY_COOLDOWN:-3600}"
+    RELEASES_KEEP="${RELEASES_KEEP:-5}"
 }
 
 # Lighter loader for `init-db`, run on a dedicated database server that
@@ -112,7 +113,37 @@ require_yq() {
     fi
 }
 
-site_dir() { echo "$SITES_ROOT/$1"; }
+# Wrapper directory: Linux user HOME, .ssh, releases/, current.
+# Previews have no current symlink, so this is also their checkout.
+site_root() { echo "$SITES_ROOT/$1"; }
+
+# Live code directory: .../<name>/current for atomic sites, the wrapper
+# itself for previews and not-yet-migrated checkouts.
+site_dir() {
+    local root="$SITES_ROOT/$1"
+    if [[ -L "$root/current" ]]; then
+        echo "$root/current"
+    else
+        echo "$root"
+    fi
+}
+
+# Optional CONFIG_CHECKOUT_DIR: parse_config / resolve_config_path read
+# the NEW release's YAML before `current` is swapped. Callers unset it.
+config_checkout_dir() {
+    local name="$1"
+    if [[ -n "${CONFIG_CHECKOUT_DIR:-}" ]]; then
+        echo "$CONFIG_CHECKOUT_DIR"
+    else
+        site_dir "$name"
+    fi
+}
+
+is_releases_layout() { [[ -L "$(site_root "$1")/current" ]]; }
+
+current_release_real() {
+    readlink -f "$(site_root "$1")/current" 2>/dev/null || true
+}
 
 # git (2.35.2+, which Ubuntu 24.04 ships) refuses to operate in a
 # repository it doesn't own. Every site directory ends up owned by its
@@ -127,8 +158,12 @@ site_dir() { echo "$SITES_ROOT/$1"; }
 # rather than once for the whole SITES_ROOT in `init`.
 git_trust_repo() {
     local dir="$1"
-    git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$dir" \
-        || git config --system --add safe.directory "$dir"
+    local p
+    for p in "$dir" "$dir/.git"; do
+        [[ -e "$p" ]] || continue
+        git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$p" \
+            || git config --system --add safe.directory "$p"
+    done
 }
 
 # Grants traversal (o+x) on every ancestor directory from $1 up to (but

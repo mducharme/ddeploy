@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# `deploy <name>` — pull, re-apply vhost/FPM config, replay post-start
-# hooks, reload. This is the CI target: the pipeline's SSH command
-# becomes `provision.sh deploy <name>`.
-# `deploy <name> --rollback [<sha>]` moves the code backward instead — see
-# lib/deploy_history.sh and usage_deploy below for what that does and
-# doesn't cover.
+# `deploy <name>` — build a new release, re-apply vhost/FPM config, replay
+# post-start hooks on the NEW tree, then atomically retarget `current`.
+# This is the CI target: the pipeline's SSH command becomes
+# `provision.sh deploy <name>`.
+# `deploy <name> --rollback [<sha>]` retargets `current` at an earlier
+# release instead — see lib/releases.sh, lib/deploy_history.sh, and
+# usage_deploy below.
 
 usage_deploy() {
     cat <<'EOF'
@@ -12,11 +13,12 @@ usage: provision.sh deploy <name> [--rollback [<sha>]]
        provision.sh deploy <name> --history
 
 options:
-  --rollback [<sha>]   instead of pulling, `git reset --hard` to <sha> (or,
+  --rollback [<sha>]   instead of pulling, retarget `current` at <sha> (or,
                         if omitted, the most recent different commit this
-                        tool has itself deployed) and replay hooks — see
-                        README "Rolling back" for what this does and does
-                        NOT undo (database migrations are not reversed)
+                        tool has itself deployed). Hooks run only when a
+                        new release directory has to be built. See README
+                        "Rolling back" for what this does and does NOT
+                        undo (database migrations are not reversed)
   --history             print this site's deploy history (newest last) and
                         exit — use a SHA from here with --rollback
 EOF
@@ -32,6 +34,10 @@ cmd_deploy() {
     shift || true
     validate_name "$name"
 
+    if is_preview "$name"; then
+        die "'$name' is a preview — use deploy-preview, not deploy"
+    fi
+
     local rollback=0 rollback_sha="" history=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -46,6 +52,9 @@ cmd_deploy() {
         shift
     done
 
+    ensure_releases_layout "$name"
+
+    local wrapper; wrapper="$(site_root "$name")"
     local dir; dir="$(site_dir "$name")"
     [[ -d "$dir/.git" ]] || die "$dir is not a git repo — provision it first"
 
@@ -62,14 +71,14 @@ cmd_deploy() {
         return 0
     fi
 
-    local cfg_path; cfg_path="$(resolve_config_path "$name")"
-    [[ -n "$cfg_path" ]] || die "no config for '$name' (no .ddev/config.yaml or generated sidecar) — run provision first"
-
     # Re-synced on every deploy (cheap, idempotent) so a rotated
-    # GIT_DEPLOY_KEY propagates without a separate command.
-    sync_site_ssh "$name" "$dir"
+    # GIT_DEPLOY_KEY propagates without a separate command. Lives on the
+    # wrapper, not inside a release — HOME for the site user is site_root.
+    sync_site_ssh "$name" "$wrapper"
 
     local current_sha; current_sha="$(git -C "$dir" log -1 --format=%H)"
+    local dest run_hooks=1
+    ROLLBACK_RELEASE_KIND=""
 
     if [[ "$rollback" -eq 1 ]]; then
         local target="$rollback_sha"
@@ -77,48 +86,71 @@ cmd_deploy() {
             target="$(previous_deploy_sha "$name" "$current_sha")" \
                 || die "no earlier deploy recorded for '$name' to roll back to — pass an explicit <sha> (see --history), or there simply isn't one yet"
         fi
-        git -C "$dir" cat-file -e "${target}^{commit}" 2>/dev/null \
-            || die "'$target' isn't a commit '$name's checkout knows about"
         log_warn "rolling back '$name': $(git -C "$dir" log -1 --format=%h "$current_sha") -> $(git -C "$dir" log -1 --format=%h "$target") — this moves the CODE back only; any database migration already applied by a later deploy is NOT undone"
-        sudo -u "www-$name" env HOME="$dir" git -C "$dir" reset --hard "$target" 2>&1 | tee -a "$LOG_DIR/$name.log"
+        dest="$(prepare_rollback_release "$name" "$target")"
+        [[ "$ROLLBACK_RELEASE_KIND" == "existing" ]] && run_hooks=0
     else
-        log_info "git pull --ff-only ($name)"
-        sudo -u "www-$name" env HOME="$dir" git -C "$dir" pull --ff-only 2>&1 | tee -a "$LOG_DIR/$name.log"
+        dest="$(prepare_forward_release "$name")"
     fi
 
+    # Discard this release on any failure before switch_current, so a
+    # broken hook cannot take the site down.
+    NEW_RELEASE_DIR=""
+    if [[ "$run_hooks" -eq 1 ]]; then
+        NEW_RELEASE_DIR="$dest"
+        trap '[[ -n "${NEW_RELEASE_DIR:-}" ]] && rm -rf "$NEW_RELEASE_DIR"' EXIT
+    fi
+
+    CONFIG_CHECKOUT_DIR="$dest"
+    local cfg_path; cfg_path="$(resolve_config_path "$name")"
+    [[ -n "$cfg_path" ]] || { unset CONFIG_CHECKOUT_DIR; die "no config for '$name' (no .ddev/config.yaml or generated sidecar) — run provision first"; }
     parse_config "$name" "$cfg_path" 1
-    # Idempotent and cheap — re-links anything new in upload_dirs/
-    # persistent_files since the last deploy, same reasoning as
-    # sync_site_ssh re-running on every deploy rather than only at
-    # provision time.
-    link_persistent_files "$name" "$dir"
+    unset CONFIG_CHECKOUT_DIR
+
+    apply_permissions "$name" "$dest"
+    link_persistent_files "$name" "$dest"
+
+    if [[ "$run_hooks" -eq 1 ]]; then
+        scan_hooks "$name"
+        replay_hooks "$name" "$PHP_VERSION" "$dest" "www-$name" "$wrapper"
+        run_repo_hook "$name" "$PHP_VERSION" "$dest" ".provisioner/post-deploy.sh" "post-deploy script" "www-$name" "$wrapper"
+    else
+        log_info "skipping hook replay — retargeting an existing release that already ran them"
+    fi
+
+    switch_current "$name" "$dest"
+    NEW_RELEASE_DIR=""
+    trap - EXIT
+    dir="$(site_dir "$name")"
 
     # Re-applied on every deploy, not just provision — php_version,
     # basic_auth, client_max_body_size, fpm_max_children, php_ini, and
     # additional_hostnames/additional_fqdns are all config an operator
-    # reasonably expects a deploy to pick up, not something that only
-    # takes effect on the next full re-provision. Cheap and idempotent
-    # when nothing changed: same content re-rendered, same reload
-    # install_fpm_pool/install_vhost/install_custom_domain_vhost already
-    # do themselves — no separate reload needed after this block.
+    # reasonably expects a deploy to pick up. Reload after the swap so
+    # PHP's realpath cache drops the previous release path.
     ensure_php_installed "$PHP_VERSION"
     install_fpm_pool "$name" "$PHP_VERSION" "" "" "${FPM_MAX_CHILDREN_CONFIG:-$FPM_MAX_CHILDREN}"
-    local root="$dir"
-    [[ -n "$DOCROOT" ]] && root="$dir/$DOCROOT"
+    local nginx_root="$dir"
+    [[ -n "$DOCROOT" ]] && nginx_root="$dir/$DOCROOT"
     local auth="${BASIC_AUTH_CONFIG:-$BASIC_AUTH_DEFAULT}"
     local max_body_size="${CLIENT_MAX_BODY_SIZE_CONFIG:-$CLIENT_MAX_BODY_SIZE}"
-    install_vhost "$name" "$root" "$auth" "$max_body_size" "${ADDITIONAL_HOSTNAMES[@]}"
-    # Same reasoning as cmd_provision.sh: a custom domain's HTTP-01
-    # request can fail (DNS not live yet) without that being fatal to
-    # the rest of the deploy — the site's still reachable at the
-    # wildcard domain, and hooks/reload below still need to run.
-    if ! install_custom_domain_vhost "$name" "$root" "$auth" "$max_body_size" "${ADDITIONAL_FQDNS[@]}"; then
+    install_vhost "$name" "$nginx_root" "$auth" "$max_body_size" "${ADDITIONAL_HOSTNAMES[@]}"
+    if ! install_custom_domain_vhost "$name" "$nginx_root" "$auth" "$max_body_size" "${ADDITIONAL_FQDNS[@]}"; then
         log_warn "custom domain setup failed for '$name' during deploy — continuing; re-run deploy once DNS is ready to retry it"
     fi
 
-    scan_hooks "$name"
-    replay_hooks "$name" "$PHP_VERSION" "$dir"
-    run_repo_hook "$name" "$PHP_VERSION" "$dir" ".provisioner/post-deploy.sh" "post-deploy script"
+    prune_old_releases "$name"
+
+    # Root-run ops hooks (hooks/post-deploy.d/*.sh — operator concerns
+    # like a reverse-proxy list or a success ping, per hooks/README.md)
+    # fire here, after the swap, not alongside the repo's own build-time
+    # hooks above — an ops hook wants to know the release is actually
+    # live, and SITE_DIR should be the stable current-based path (still
+    # valid after this release itself is eventually pruned), not the
+    # specific release directory that was just staged. Unconditional
+    # (not gated on $run_hooks): a rollback to an already-built release
+    # still retargets current, which is the event these care about, even
+    # though replay_hooks itself was skipped for it.
     run_ops_hooks "post-deploy" "$name" "$dir" "$PHP_VERSION"
 
     local full_sha; full_sha="$(git -C "$dir" log -1 --format=%H)"

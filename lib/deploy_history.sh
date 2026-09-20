@@ -5,14 +5,13 @@
 # they're meant to be disposable, not something you'd roll a deploy back
 # on; provision-preview/deploy-preview never call record_deploy.
 #
-# This is deliberately NOT a release-directory/symlink model (Capistrano/
-# Deployer's approach) — the site's checkout is still a single in-place
-# git working tree, same as a normal deploy. A rollback is a
-# `git reset --hard` to an earlier commit already in that tree's own
-# history (every site is cloned in full, no --depth), then the same hook
-# replay a normal deploy runs. That means a rollback moves the CODE back;
-# it does NOT undo any database migration a forward deploy already
-# applied — there's no down-migration tracking here. See README.
+# The checkout itself is a releases/ + current symlink (lib/releases.sh).
+# This file is only the SHA log used when `--rollback` is called without
+# an explicit SHA ("what was live immediately before now"). A rollback
+# retargets `current` at an earlier release when that tree is still on
+# disk, otherwise it builds a new release via `git reset --hard`. It
+# does NOT undo any database migration a forward deploy already applied
+# — there's no down-migration tracking here. See README.
 
 deploy_history_path() { echo "$GENERATED_DIR/$1.deploys"; }
 

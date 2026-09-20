@@ -104,6 +104,7 @@ PREVIEW_DB_MODE="shared"
 PREVIEW_SEED="true"
 PREVIEW_PRUNE_ENABLED="false"
 WEBHOOK_ENABLED="true"
+RELEASES_KEEP="3"
 EOF
 
 cat > "$GEN_DIR/backup-credentials.env" <<'EOF'

@@ -49,7 +49,9 @@ cmd_remove() {
         shift
     done
 
-    local dir; dir="$(site_dir "$name")"
+    # The wrapper, not `current`: rm -rf on a symlink would delete only
+    # the link and leave releases/ behind.
+    local dir; dir="$(site_root "$name")"
 
     # Removal has to stay robust even if nginx -t fails for an unrelated
     # reason (e.g. another vhost hand-edited elsewhere) — a bare call

@@ -105,7 +105,7 @@ cmd_provision_preview() {
 
     local exec_user exec_home pool_user pool_group
     if [[ "$mode" == "shared" ]]; then
-        exec_user="www-$project"; exec_home="$project_dir"
+        exec_user="www-$project"; exec_home="$(site_root "$project")"
         pool_user="www-$project"; pool_group="www-$project"
         apply_permissions "$name" "$dir" "$pool_user"
         link_shared_uploads "$dir" "$project_dir" "${UPLOAD_DIRS[@]}"
@@ -164,7 +164,7 @@ cmd_deploy_preview() {
     local exec_user="www-$name" exec_home="$dir"
     if [[ "$PREVIEW_MODE" == "shared" ]]; then
         exec_user="www-$PREVIEW_PROJECT"
-        exec_home="$(site_dir "$PREVIEW_PROJECT")"
+        exec_home="$(site_root "$PREVIEW_PROJECT")"
     else
         sync_site_ssh "$name" "$dir"
     fi

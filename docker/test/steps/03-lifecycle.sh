@@ -130,12 +130,16 @@ print(json.dumps({
 step "provision testsite"
 ./provision.sh provision testsite "$REPO_URL"
 sleep 1  # nginx's graceful reload briefly straddles old/new config; give it a beat before curling
+LIVE="$(site_dir testsite)"
 
 step "provision: checks"
 assert_cmd_ok "www-testsite Linux user created" id -u www-testsite
 assert_file_exists "/etc/nginx/sites-enabled/testsite.conf" "vhost enabled"
 assert_file_exists "/etc/php/8.3/fpm/pool.d/testsite.conf" "FPM pool installed"
-assert_file_exists "$SITES_ROOT/testsite/.env" "laravel-scheme .env written"
+assert_cmd_ok "current is a symlink" test -L "$SITES_ROOT/testsite/current"
+assert_cmd_ok "releases directory exists" test -d "$SITES_ROOT/testsite/releases"
+assert_cmd_ok "nginx root goes through current" grep -q "/current/" /etc/nginx/sites-available/testsite.conf
+assert_file_exists "$LIVE/.env" "laravel-scheme .env written"
 assert_cmd_ok "nginx config valid" nginx -t
 
 out="$(curl_site testsite.staging.ddeploy.test)"
@@ -152,14 +156,86 @@ assert_contains "$out_custom" "MARKER=v1" "custom-domain vhost reaches the same 
 list_out="$(./provision.sh list)"
 assert_contains "$list_out" "testsite" "list shows testsite"
 
+step "migrating an existing flat checkout to the releases layout stays reachable"
+# Reverts testsite to look exactly like a site a pre-atomic-release
+# ddeploy build left behind: no releases/current, a vhost with a
+# literal (non-symlinked) root path baked in. Then runs `deploy` and
+# polls throughout — this is the one-time migration
+# ensure_releases_layout does on a site's first deploy/provision after
+# upgrading to this code, and it must not leave the site 404ing until
+# hook replay finishes (composer install, migrations, ... — potentially
+# a long time). lib/releases.sh's migration branch is supposed to
+# bridge that by re-rendering the vhost immediately, before hooks run,
+# not leave it to the caller's own later install_vhost call.
+FLAT_TARGET="$(readlink -f "$SITES_ROOT/testsite/current")"
+rm -f "$SITES_ROOT/testsite/current"
+shopt -s dotglob
+for f in "$FLAT_TARGET"/*; do mv "$f" "$SITES_ROOT/testsite/"; done
+shopt -u dotglob
+rmdir "$FLAT_TARGET"
+rm -rf "$SITES_ROOT/testsite/releases"
+chown -R www-testsite:www-data "$SITES_ROOT/testsite"
+find "$SITES_ROOT/testsite" -maxdepth 1 -type d -exec chmod 2750 {} \;
+# Both vhosts (the main one and the custom-domain one) get this same
+# literal-path treatment — a real pre-atomic-release site would have
+# both, and the migration bridge is supposed to fix both.
+sed -i "s#$SITES_ROOT/testsite/current/#$SITES_ROOT/testsite/#g" \
+    /etc/nginx/sites-available/testsite.conf /etc/nginx/sites-available/testsite-custom.conf
+nginx -t && systemctl reload nginx
+sleep 1
+assert_cmd_ok "sanity: flat-layout testsite still serves before migration" curl -fsSk --resolve "testsite.staging.ddeploy.test:443:127.0.0.1" "https://testsite.staging.ddeploy.test/"
+assert_cmd_ok "sanity: flat-layout custom domain still serves before migration" curl -fsSk --resolve "custom.ddeploy.test:443:127.0.0.1" "https://custom.ddeploy.test/"
+
+poll_loop() {
+    local host="$1" out="$2"
+    : > "$out"
+    while true; do
+        code="$(curl -sk -o /dev/null -w '%{http_code}' --resolve "${host}:443:127.0.0.1" "https://${host}/" 2>/dev/null || echo "000")"
+        echo "$code" >> "$out"
+    done
+}
+poll_loop testsite.staging.ddeploy.test /tmp/migration-poll-main.log &
+POLL_MAIN_PID=$!
+poll_loop custom.ddeploy.test /tmp/migration-poll-custom.log &
+POLL_CUSTOM_PID=$!
+
+./provision.sh deploy testsite
+
+kill "$POLL_MAIN_PID" "$POLL_CUSTOM_PID" 2>/dev/null || true
+wait "$POLL_MAIN_PID" "$POLL_CUSTOM_PID" 2>/dev/null || true
+
+# A brief blip right as the migration starts (the instant the old
+# checkout is moved out from under the old vhost path, before the
+# bridging install_vhost's own nginx reload completes) is the best this
+# can do without a fancier zero-downtime reload mechanism — that's fine.
+# What must NOT happen is the old bug: failures spanning the entire
+# deploy because nothing re-pointed the vhost until hook replay
+# finished. Guard both: the bad fraction stays small (old bug: ~60%+
+# for this fixture's ~1.5s deploy), and the tail end is definitely back
+# up, not still down when we stopped polling.
+for pair in "main:/tmp/migration-poll-main.log" "custom domain:/tmp/migration-poll-custom.log"; do
+    label="${pair%%:*}" log="${pair#*:}"
+    total="$(wc -l < "$log")"
+    bad="$(grep -vc '^200$' "$log" || true)"
+    half=$((total / 2))
+    [[ "$bad" -lt "$half" ]] && pass "$label: migration outage stayed brief, not the whole deploy ($bad/$total polls bad)" || fail "$label: $bad/$total polls were non-200 — migration left the site down for most of the deploy, not just a brief reload blip"
+    tail_bad="$(tail -n 5 "$log" | grep -vc '^200$' || true)"
+    [[ "$tail_bad" -eq 0 ]] && pass "$label: site was back up well before the deploy finished" || fail "$label: still returning errors in the last few polls before deploy completed"
+    rm -f "$log"
+done
+
+assert_cmd_ok "current is a symlink again after migration" test -L "$SITES_ROOT/testsite/current"
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "MARKER=v1" "testsite still serves its real content after the migration"
+
 step "persistent files: linked into the persistent store"
-assert_cmd_ok "uploads dir is a symlink" test -L "$SITES_ROOT/testsite/private-uploads"
-assert_contains "$(readlink "$SITES_ROOT/testsite/private-uploads")" "$PERSISTENT_ROOT/testsite/private-uploads" "uploads symlinked into PERSISTENT_ROOT"
-assert_cmd_ok ".env is a symlink" test -L "$SITES_ROOT/testsite/.env"
-assert_contains "$(readlink "$SITES_ROOT/testsite/.env")" "$PERSISTENT_ROOT/testsite/.env" ".env symlinked into PERSISTENT_ROOT"
-assert_cmd_ok "persistent_files entry (shared-notes.txt) is a symlink" test -L "$SITES_ROOT/testsite/shared-notes.txt"
-assert_contains "$(readlink "$SITES_ROOT/testsite/shared-notes.txt")" "$PERSISTENT_ROOT/testsite/shared-notes.txt" "persistent_files entry symlinked into PERSISTENT_ROOT"
-echo "important client note" > "$SITES_ROOT/testsite/shared-notes.txt"
+assert_cmd_ok "uploads dir is a symlink" test -L "$LIVE/private-uploads"
+assert_contains "$(readlink "$LIVE/private-uploads")" "$PERSISTENT_ROOT/testsite/private-uploads" "uploads symlinked into PERSISTENT_ROOT"
+assert_cmd_ok ".env is a symlink" test -L "$LIVE/.env"
+assert_contains "$(readlink "$LIVE/.env")" "$PERSISTENT_ROOT/testsite/.env" ".env symlinked into PERSISTENT_ROOT"
+assert_cmd_ok "persistent_files entry (shared-notes.txt) is a symlink" test -L "$LIVE/shared-notes.txt"
+assert_contains "$(readlink "$LIVE/shared-notes.txt")" "$PERSISTENT_ROOT/testsite/shared-notes.txt" "persistent_files entry symlinked into PERSISTENT_ROOT"
+echo "important client note" > "$LIVE/shared-notes.txt"
 
 step "per-site config overrides (.ddeploy/config.yaml)"
 assert_cmd_ok "vhost has the overridden client_max_body_size" grep -q "client_max_body_size 256m;" /etc/nginx/sites-available/testsite.conf
@@ -338,8 +414,8 @@ fi
 git -C "$BARE" branch -D feature-gh >/dev/null
 assert_file_absent "/etc/nginx/sites-enabled/$GH_PREVIEW.conf" "GitHub-webhook preview cleaned up"
 
-step "deploy testsite via GitHub webhook (git pull --ff-only)"
-V1_SHA="$(git -C "$SITES_ROOT/testsite" log -1 --format=%H)"
+step "deploy testsite via GitHub webhook (atomic release, git pull --ff-only)"
+V1_SHA="$(git -C "$LIVE" log -1 --format=%H)"
 WORK="$(mktemp -d)"
 git clone -q "$BARE" "$WORK"
 git -C "$WORK" config user.email 'test@ddeploy.test'
@@ -357,6 +433,8 @@ sleep 1
 
 out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "MARKER=v2" "webhook deploy pulled the new commit (git_deploy_key + sync_site_ssh work end to end)"
+V2_RELEASE="$(readlink -f "$LIVE")"
+assert_cmd_ok "v2 is a distinct release directory" test -d "$V2_RELEASE"
 rm -f "$BODY"
 
 step "deploy --rollback / --history"
@@ -367,6 +445,11 @@ assert_contains "$history_out" "v2" "deploy history lists the v2 commit"
 sleep 1
 out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "MARKER=v1" "deploy --rollback (implicit, no sha) moved the code back to v1"
+assert_cmd_ok "rollback retargeted current away from the v2 release" test "$V2_RELEASE" != "$(readlink -f "$LIVE")"
+assert_contains "$(grep MARKER= "$V2_RELEASE/web/index.php")" "MARKER=v2" "the previous release tree is left intact (not git-reset in place)"
+
+n_releases="$(find "$SITES_ROOT/testsite/releases" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | wc -l)"
+[[ "$n_releases" -le 3 ]] && pass "RELEASES_KEEP=3 pruned extras (have $n_releases)" || fail "expected at most 3 releases, have $n_releases"
 
 ./provision.sh deploy testsite --rollback "$V1_SHA"
 sleep 1
@@ -375,8 +458,8 @@ assert_contains "$out" "MARKER=v1" "deploy --rollback <sha> (explicit) works too
 
 # Roll forward again with a plain deploy — proves a rollback doesn't
 # strand the site: origin/main is still at v2, and a normal
-# `git pull --ff-only` fast-forwards right back up to it. Also leaves
-# testsite at v2 for every later step in this script, which expects it.
+# deploy builds a new release that fast-forwards right back up to it.
+# Also leaves testsite at v2 for every later step in this script.
 ./provision.sh deploy testsite
 sleep 1
 out="$(curl_site testsite.staging.ddeploy.test)"
@@ -433,9 +516,9 @@ rm -f "$BODY"
 # --- backup / restore, against real object storage (MinIO) -------------
 
 step "backup-uploads / backup-database (all sites)"
-echo "hello from uploads" > "$SITES_ROOT/testsite/private-uploads/marker.txt"
-mkdir -p "$SITES_ROOT/testsite/private-uploads/exclude-me"
-echo "should never leave this box" > "$SITES_ROOT/testsite/private-uploads/exclude-me/secret.txt"
+echo "hello from uploads" > "$LIVE/private-uploads/marker.txt"
+mkdir -p "$LIVE/private-uploads/exclude-me"
+echo "should never leave this box" > "$LIVE/private-uploads/exclude-me/secret.txt"
 
 backup_out="$(./provision.sh backup-uploads 2>&1)"
 assert_contains "$backup_out" "skipping 'testsite-feature-a'" "backup-uploads skips the shared-mode preview"
@@ -454,11 +537,11 @@ db_listing="$(rclone lsf "${remote}/testsite/db/" 2>/dev/null || true)"
 [[ -n "$db_listing" ]] && pass "a database dump landed in object storage" || fail "no database dump found in object storage"
 
 step "restore-uploads / restore-database"
-rm -f "$SITES_ROOT/testsite/private-uploads/marker.txt"
+rm -f "$LIVE/private-uploads/marker.txt"
 mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" testsite -e "DROP TABLE probe;"
 
 ./provision.sh restore-uploads testsite --yes
-assert_file_exists "$SITES_ROOT/testsite/private-uploads/marker.txt" "restore-uploads brought the file back"
+assert_file_exists "$LIVE/private-uploads/marker.txt" "restore-uploads brought the file back"
 
 ./provision.sh restore-database testsite --yes
 probe_count="$(mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" -N -B testsite -e "SELECT COUNT(*) FROM probe;")"
@@ -486,7 +569,7 @@ assert_file_absent "/etc/nginx/sites-enabled/$PREVIEW.conf" "prune-previews remo
 # --- persistent files: survive removal, restore automatically ----------
 
 step "persistent files: survive --purge-files without --purge-persistent"
-db_pass_before="$(grep '^DB_PASSWORD=' "$SITES_ROOT/testsite/.env" | cut -d= -f2-)"
+db_pass_before="$(grep '^DB_PASSWORD=' "$LIVE/.env" | cut -d= -f2-)"
 [[ -n "$db_pass_before" ]] || fail "couldn't read DB_PASSWORD from testsite's .env before removal"
 
 ./provision.sh remove testsite --purge-files
@@ -503,8 +586,8 @@ step "provision re-links and restores automatically"
 sleep 1
 out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "DB_OK" "re-provisioned site reconnects to its DB"
-assert_file_exists "$SITES_ROOT/testsite/private-uploads/marker.txt" "uploads immediately present again, no restore step needed"
-db_pass_after="$(grep '^DB_PASSWORD=' "$SITES_ROOT/testsite/.env" | cut -d= -f2-)"
+assert_file_exists "$LIVE/private-uploads/marker.txt" "uploads immediately present again, no restore step needed"
+db_pass_after="$(grep '^DB_PASSWORD=' "$LIVE/.env" | cut -d= -f2-)"
 [[ "$db_pass_before" == "$db_pass_after" ]] && pass "same DB password reused — zero credential churn" || fail "DB password changed across remove/re-provision (before='$db_pass_before' after='$db_pass_after')"
 
 # --- doctor (health check) ----------------------------------------------

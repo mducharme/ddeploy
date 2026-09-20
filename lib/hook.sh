@@ -24,7 +24,7 @@ matching_sites_for_urls() {
         [[ -d "$site_path" ]] || continue
         name="$(basename "$site_path")"
         is_provisioned "$name" || continue
-        origin="$(git -C "$site_path" remote get-url origin 2>/dev/null || true)"
+        origin="$(git -C "$(site_dir "$name")" remote get-url origin 2>/dev/null || true)"
         [[ -n "$origin" ]] || continue
         canon="$(canonicalize_git_url "$origin")"
         [[ -n "$canon" ]] || continue

@@ -89,7 +89,7 @@ validate_hostname() {
 # still read from $cfg (a real .ddev/config.yaml with one of these set by
 # hand, or the sidecar, which is ddeploy's own file and never at risk
 # from DDEV's tooling) — so nothing already relying on that breaks.
-ext_config_path() { echo "$SITES_ROOT/$1/.ddeploy/config.yaml"; }
+ext_config_path() { echo "$(config_checkout_dir "$1")/.ddeploy/config.yaml"; }
 
 # Reads array expression $3 from $1 (extension config, may not exist) if
 # it declares the key, else from $2 (the site's primary config).
@@ -305,7 +305,7 @@ parse_config() {
     DB_ENV_SCHEME="$(read_ext_scalar "$ext_cfg" "$cfg" '.db_env_scheme // ""')"
     [[ "$DB_ENV_SCHEME" == "null" ]] && DB_ENV_SCHEME=""
     if [[ -z "$DB_ENV_SCHEME" ]]; then
-        local detected_cms; detected_cms="$(detect_cms "$SITES_ROOT/$name")"
+        local detected_cms; detected_cms="$(detect_cms "$(config_checkout_dir "$name")")"
         cms_defaults "$detected_cms"
         DB_ENV_SCHEME="$CMS_DB_ENV_SCHEME"
     fi
@@ -343,7 +343,7 @@ parse_config() {
     # applies via CMS detection (config.sh's interactive/non_interactive
     # fallbacks), just extended to also cover "config exists but declares
     # nothing".
-    if [[ ! -s "$GENERATED_DIR/$name.steps" && -f "$SITES_ROOT/$name/composer.json" ]]; then
+    if [[ ! -s "$GENERATED_DIR/$name.steps" && -f "$(config_checkout_dir "$name")/composer.json" ]]; then
         printf 'composer\tinstall\n' > "$GENERATED_DIR/$name.steps"
         log_info "'$name': no hooks.post-start declared but composer.json exists — defaulting to 'composer install' as the deploy step (add hooks.post-start to .ddev/config.yaml to override)"
     fi
@@ -517,7 +517,7 @@ non_interactive_config() {
 # empty if neither exists.
 resolve_config_path() {
     local name="$1"
-    local ddev="$SITES_ROOT/$name/.ddev/config.yaml"
+    local ddev="$(config_checkout_dir "$name")/.ddev/config.yaml"
     local sidecar="$GENERATED_DIR/$name.yaml"
     if [[ -f "$ddev" ]]; then
         echo "$ddev"

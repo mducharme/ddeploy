@@ -38,7 +38,7 @@ site, partway through that suite:
 ```
 $ ./provision.sh provision testsite ssh://gitfixture@127.0.0.1/srv/git/testsite.git
 [info]  cloning ssh://gitfixture@127.0.0.1/srv/git/testsite.git -> /home/deploy/sites/testsite
-Cloning into '/home/deploy/sites/testsite'...
+Cloning into '/home/deploy/sites/testsite/releases/.staging-…'...
 [info]  resolved: php=8.3 docroot='web' hostnames=[alt-testsite]
 [info]  php8.3-fpm and configured extensions already installed
 [info]  created system user www-testsite
@@ -82,7 +82,7 @@ check on it.
 init                          set up a web server (packages, PHP, TLS, firewall)
 init-db                       set up a dedicated database server
 provision <name> [repo-url]   add a site
-deploy <name> [--rollback [<sha>]] [--history]   pull + re-apply vhost/FPM config + run deploy steps (see -h)
+deploy <name> [--rollback [<sha>]] [--history]   new release + re-apply vhost/FPM config + run deploy steps (see -h)
 remove <name> [--purge-db] [--purge-files] [--purge-persistent]
 list                          table of provisioned sites
 provision-all                 provision every site in ./manifest
@@ -325,7 +325,8 @@ that for a truly empty database.
 
 `deploy-preview` does `git fetch && reset --hard`, not `--ff-only pull`
 — PR branches get rebased and force-pushed routinely, and there's
-nothing local worth protecting on a preview. Basic auth defaults to on
+nothing local worth protecting on a preview. Previews stay in-place;
+they are not atomic releases. Basic auth defaults to on
 for previews (`--no-auth` to turn it off), unlike normal sites, since
 these are meant for internal/client eyes, not public or indexed.
 
@@ -400,32 +401,43 @@ Do not have CI fake a forge payload.
 ### Rolling back
 
 `deploy <name> --rollback [<sha>]` moves a site's code backward instead
-of pulling forward. Without `<sha>`, it rolls back to the most recent
-commit this tool has itself deployed that differs from what's live now —
-`deploy <name> --history` lists that record (newest last) if you want to
-pick a specific, earlier `<sha>` instead.
+of building a new forward release. Without `<sha>`, it rolls back to the
+most recent commit this tool has itself deployed that differs from
+what's live now — `deploy <name> --history` lists that record (newest
+last) if you want to pick a specific, earlier `<sha>` instead.
 
-Mechanically this is a `git reset --hard` to that commit (every site is
-cloned in full, so its own history is always available locally — no
-separate release directory to manage) followed by the exact same hook
-replay + reload a normal deploy runs. A rollback is itself recorded as a
-new deploy, so it composes normally: a plain `deploy` afterward fast-
-forwards right back to where you rolled back from (origin hasn't moved),
-and a second `--rollback` walks one step further back, or forward again
-to undo the rollback, whichever you ask for.
+Normal sites use a Capistrano-style layout: `$SITES_ROOT/<name>/current`
+is a symlink to `releases/<timestamp>-<sha>/`, nginx's root follows
+`current`, and persistent files already live outside the checkout (see
+below). A forward `deploy` clones the live tree, `git pull --ff-only`s
+as the site user, runs hooks on the NEW directory, and only then
+retargets `current`. A failed pull or hook leaves the previous tree
+serving. `RELEASES_KEEP` in `provisioner.conf` (default 5) is how many
+release directories to keep; the live one is never pruned.
+
+Rollback retargets `current` at an earlier release when that tree is
+still on disk (hooks already ran when it was first deployed, so they
+are not replayed). If it has been pruned, a new release is built with
+`git reset --hard` and hooks run before the swap. A rollback is itself
+recorded as a new deploy, so it composes normally: a plain `deploy`
+afterward fast-forwards right back to where you rolled back from
+(origin hasn't moved), and a second `--rollback` walks one step further
+back, or forward again to undo the rollback, whichever you ask for.
 
 **What this does not do:** undo a database migration. If a deploy you're
 rolling back past ran `migrate` (or any other forward-only step) against
 the database, rolling the code back does not reverse it — you'll have
 older code pointed at newer schema. For a rollback driven by a bad
 migration, restore the database too (see "Restoring") or fix forward
-instead. This also doesn't apply to branch previews — they're meant to
-be disposable, not rolled back.
+instead. This also doesn't apply to branch previews — they stay
+in-place (`fetch` + `reset --hard`) and are meant to be disposable, not
+rolled back.
 
 ### Persistent files
 
 A site's own git checkout is disposable by design — `provision`/`deploy`
-clone and pull it freely, and `remove --purge-files` deletes it outright.
+clone it into `releases/` and retarget `current`, and `remove --purge-files`
+deletes the whole wrapper (every release, plus `current`).
 Some of what lives under that checkout isn't disposable at all, though:
 `upload_dirs` (client-uploaded files, genuinely irreplaceable) and the DB
 credential file (`.env` for laravel/craft, `config/config.local.json` for
@@ -660,9 +672,17 @@ repo — run as root, for every site. See `hooks/README.md`.
 ### Isolation
 
 Each site: its own Linux user (`www-<name>`), its own FPM pool and
-socket, its own database and DB user. Files are owned `www-<name>:www-data`,
-dirs `2750`, files `640` — nginx (`www-data`) can read them, no other
-site's user can.
+socket, its own database and DB user. Release content is owned
+`www-<name>:www-data`, dirs `2750`, files `640` — nginx (`www-data`) can
+read them, no other site's user can.
+
+The wrapper itself (`$SITES_ROOT/<name>`, containing `releases/` and
+`current`) and `current` are `root:root`/`root:www-<name>` with a sticky
+bit, not owned by the site's own user — a normal site's own compromised
+code (a bad dependency executing during hook replay, say) can create
+files under its own release, but cannot repoint `current` at a directory
+of its choosing or delete another release out from under a rollback.
+Only `provision`/`deploy`, which already run as root, can retarget it.
 
 ### Git access
 

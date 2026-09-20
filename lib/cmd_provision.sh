@@ -70,14 +70,26 @@ cmd_provision() {
         shift
     done
 
-    local dir; dir="$(site_dir "$name")"
+    local wrapper; wrapper="$(site_root "$name")"
+    local dir dest
 
-    if [[ ! -d "$dir" ]]; then
-        [[ -n "$repo_url" ]] || die "no repo at $dir and no repo-url given"
-        log_info "cloning $repo_url -> $dir"
-        GIT_SSH_COMMAND="$(git_ssh_command)" git clone "$repo_url" "$dir"
+    # Home dir for useradd; the wrapper is created by the clone below.
+    # Must exist as a user before lock_site_root (called from
+    # ensure_releases_layout) chowns the wrapper to that group.
+    mkdir -p "$wrapper"
+    ensure_site_user "$name" "$wrapper"
+
+    if [[ ! -d "$(site_dir "$name")/.git" ]]; then
+        [[ -n "$repo_url" ]] || die "no repo at $(site_dir "$name") and no repo-url given"
+        dest="$(clone_into_release "$name" "$repo_url")"
+        switch_current "$name" "$dest"
     fi
+    ensure_releases_layout "$name"
+    dir="$(site_dir "$name")"
+    dest="$(current_release_real "$name")"
+    [[ -n "$dest" ]] || dest="$dir"
     git_trust_repo "$dir"
+    git_trust_repo "$dest"
 
     local cfg_path; cfg_path="$(resolve_config_path "$name")"
 
@@ -105,8 +117,8 @@ cmd_provision() {
     scan_hooks "$name"
 
     ensure_php_installed "$PHP_VERSION"
-    ensure_site_user "$name" "$dir"
-    apply_permissions "$name" "$dir"
+    lock_site_root "$name"
+    apply_permissions "$name" "$dest"
     # Must run after apply_permissions (its chown/chmod would otherwise
     # walk right past the persistent store, which lives outside $dir —
     # not a problem, but ensure_persistent_link's own chown needs to run
@@ -114,12 +126,13 @@ cmd_provision() {
     # and before db_ensure below, so write_db_credentials writes through
     # an already-established symlink into the persistent store from the
     # very first write, not into a real file that then needs migrating.
-    link_persistent_files "$name" "$dir"
+    link_persistent_files "$name" "$dest"
     # Must come after apply_permissions (its 600/700 perms would
     # otherwise get clobbered by a later whole-tree chmod) and before
     # anything that might need repo access (hook replay, below, may run
-    # `composer install` against a private VCS dependency).
-    sync_site_ssh "$name" "$dir"
+    # `composer install` against a private VCS dependency). HOME is the
+    # wrapper, not a release, so a swap doesn't drop the key.
+    sync_site_ssh "$name" "$wrapper"
     install_fpm_pool "$name" "$PHP_VERSION" "" "" "${FPM_MAX_CHILDREN_CONFIG:-$FPM_MAX_CHILDREN}"
 
     local root="$dir"
@@ -136,17 +149,20 @@ cmd_provision() {
         log_warn "custom domain setup failed for '$name' — continuing with the rest of provisioning; re-run provision once DNS is ready to retry it"
     fi
 
-    db_ensure "$name" "$dir"   # each scheme re-owns the file it writes itself
+    db_ensure "$name" "$dest"   # each scheme re-owns the file it writes itself
 
     site_log "$name" "provision: php=$PHP_VERSION docroot=$DOCROOT"
 
     log_info "running first deploy for $name"
-    replay_hooks "$name" "$PHP_VERSION" "$dir"
-    run_repo_hook "$name" "$PHP_VERSION" "$dir" ".provisioner/post-provision.sh" "post-provision script"
+    replay_hooks "$name" "$PHP_VERSION" "$dest" "www-$name" "$wrapper"
+    run_repo_hook "$name" "$PHP_VERSION" "$dest" ".provisioner/post-provision.sh" "post-provision script" "www-$name" "$wrapper"
+    # $dir (current-based, stable), not $dest (the specific release
+    # directory) — an ops hook that persists SITE_DIR for later
+    # reference shouldn't be handed a path a future deploy will prune.
     run_ops_hooks "post-provision" "$name" "$dir" "$PHP_VERSION"
     # So `deploy --rollback` has something to walk back to even before a
     # single ordinary `deploy` has ever run against this site.
-    record_deploy "$name" "$(git -C "$dir" log -1 --format=%H)"
+    record_deploy "$name" "$(git -C "$dest" log -1 --format=%H)"
 
     log_info "provisioned: https://$name.$BASE_DOMAIN"
     local fqdn

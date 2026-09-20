@@ -6,6 +6,8 @@ set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)"
 # shellcheck source=lib/common.sh
 source "$LIB_DIR/common.sh"
+# shellcheck source=lib/releases.sh
+source "$LIB_DIR/releases.sh"
 # shellcheck source=lib/config.sh
 source "$LIB_DIR/config.sh"
 # shellcheck source=lib/hooks.sh
@@ -75,7 +77,7 @@ commands:
   init                          set up a web server (packages, PHP, TLS, firewall)
   init-db                       set up a dedicated database server
   provision <name> [repo-url]   stand up a site (see: provision.sh provision -h)
-  deploy <name> [opts]          pull + re-apply vhost/FPM config + replay hooks (see -h)
+  deploy <name> [opts]          new release + re-apply vhost/FPM config + replay hooks (see -h)
   remove <name> [opts]          disable a site (see: provision.sh remove -h)
   list                          table of provisioned sites
   provision-all                 provision every site in ./manifest

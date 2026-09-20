@@ -40,7 +40,7 @@ cmd_backup_uploads() {
         # One site's failure (network blip, bad credentials, whatever)
         # must not stop every other site from being backed up this run —
         # a bare call here would abort the whole loop under set -e.
-        if ! backup_site_uploads "$name" "${site_path%/}" "${UPLOAD_DIRS[@]}"; then
+        if ! backup_site_uploads "$name" "$(site_dir "$name")" "${UPLOAD_DIRS[@]}"; then
             log_error "backup-uploads failed for $name"
             failures=$((failures + 1))
             failed_names+=("$name")

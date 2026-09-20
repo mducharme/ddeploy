@@ -8,8 +8,9 @@
 # the command, so it uses the key directly via GIT_SSH_COMMAND. Every
 # `git pull` after that, in `deploy`, runs as the site's own www-<name>
 # user, which has no populated $HOME/.ssh of its own, so the key + host
-# keys are copied into $dir/.ssh (already that user's $HOME, set via
-# useradd --home-dir) so it can authenticate on its own.
+# keys are copied into $dir/.ssh (already that user's $HOME — for an
+# atomic site that's the wrapper at $SITES_ROOT/<name>, not a release)
+# so it can authenticate on its own.
 
 GIT_KNOWN_HOSTS_SEED="github.com gitlab.com bitbucket.org"
 

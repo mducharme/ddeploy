@@ -46,10 +46,11 @@ cmd_list() {
             preview="$PREVIEW_PROJECT/$PREVIEW_BRANCH ($PREVIEW_MODE)"
         fi
 
-        local sha="-" when="-"
-        if [[ -d "$site_path/.git" ]]; then
-            sha="$(git -C "$site_path" log -1 --format=%h 2>/dev/null || echo -)"
-            when="$(git -C "$site_path" log -1 --format=%cd --date=short 2>/dev/null || echo -)"
+        local sha="-" when="-" checkout
+        checkout="$(site_dir "$name")"
+        if [[ -d "$checkout/.git" ]]; then
+            sha="$(git -C "$checkout" log -1 --format=%h 2>/dev/null || echo -)"
+            when="$(git -C "$checkout" log -1 --format=%cd --date=short 2>/dev/null || echo -)"
         fi
 
         printf '%-20s %-6s %-20s %-16s %-10s %-12s %s\n' \
