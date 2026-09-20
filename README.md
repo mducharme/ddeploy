@@ -1,36 +1,88 @@
 # ddeploy
 
-Provisions and deploys PHP sites on an Ubuntu 24.04 server: nginx + one
-PHP-FPM pool per site, one Linux user per site, one MariaDB database per
-site, a shared wildcard TLS cert. No containers. Each site's
-`.ddev/config.yaml` is read as config, not run.
+Provisions and deploys PHP sites on a plain Ubuntu 24.04 server: nginx,
+one PHP-FPM pool per site, one Linux user per site, one MariaDB database
+per site, a shared wildcard TLS certificate. No containers. It reads a
+project's own `.ddev/config.yaml` as configuration instead of asking for
+a second one, and it never runs DDEV itself.
 
-## Layout
+It's built for the staging/QA/client-review stage of a project's life —  
+there's no staging→production promotion path, no web UI, and no  
+cron/queue-worker management yet. One web server per project; a database  
+server can be shared across several web servers (`init-db`). à  
+  
+  
+  
+  
+  
+  
+ç
+
+## Requirements
+
+- An Ubuntu 24.04 server (or two — see "Database server" for a
+dedicated DB host), root/sudo access.
+- A domain, with either Cloudflare DNS or manual DNS control (TLS is
+issued via certbot either way).
+- A git host reachable over SSH — GitHub, GitLab, Bitbucket, self-hosted.
+- Docker, only if you want to run the test harness before touching a
+real server (next section).
+
+
+
+## See it work
+
+`docker/test/run.sh` builds two systemd-enabled Ubuntu containers plus a
+MinIO instance standing in for S3, and runs the entire lifecycle against
+them for real: `init`, `provision`, `deploy`, branch previews, git-push
+webhooks, backup/restore, rollback, `doctor`, `remove`. Nothing here is
+mocked except ACME/DNS-01 certificate issuance and `ufw`'s packet
+filtering — `docker/README.md` says exactly why, and everything else has
+been verified against this harness, not just read.
+
+This is genuine, unedited output from an actual run — provisioning one
+site, partway through that suite:
 
 ```
-provision.sh       entrypoint
-provisioner.conf   per-server config, edit after cloning
-manifest           name -> repo-url, used by provision-all / deploy-all
-templates/         nginx vhost + FPM pool + webhook vhost templates
-lib/               implementation
-hook/              unprivileged git-forge webhook listener (Python)
-hooks/             ops scripts run for every site (see hooks/README.md)
-generated/         sidecar configs + DB credentials (created at runtime)
-logs/              per-site provision/deploy logs (created at runtime)
+$ ./provision.sh provision testsite ssh://gitfixture@127.0.0.1/srv/git/testsite.git
+[info]  cloning ssh://gitfixture@127.0.0.1/srv/git/testsite.git -> /home/deploy/sites/testsite
+Cloning into '/home/deploy/sites/testsite'...
+[info]  resolved: php=8.3 docroot='web' hostnames=[alt-testsite]
+[info]  php8.3-fpm and configured extensions already installed
+[info]  created system user www-testsite
+[info]  installed FPM pool for testsite (php8.3, user=www-testsite, pm.max_children=20)
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+[info]  installed vhost for testsite (testsite.staging.ddeploy.test alt-testsite.staging.ddeploy.test)
+[info]  database 'testsite' ready (user 'testsite'@'10.88.90.4', scheme=laravel)
+[info]  running first deploy for testsite
+[info]  provisioned: https://testsite.staging.ddeploy.test
 ```
 
-Expected to live at `/home/deploy/provisioner`. Sites are checked out
-under `$SITES_ROOT` (`provisioner.conf`, default `/home/deploy/sites`).
+That's a real Linux user, a real nginx vhost that `nginx -t` actually
+validated, a real PHP-FPM pool, a real MariaDB database and grant —
+served by real nginx over TLS to a real `curl` request. Run
+`docker/test/run.sh` yourself and watch the rest happen (needs Docker
+with `--privileged` containers allowed, and internet egress for apt
+packages and a few real API calls).
 
-## Setup
+## Quickstart: a real server
 
-1. `git clone` this repo to the server.
-2. Edit `provisioner.conf` — domain, paths, PHP versions, DB creds path,
-   git key path.
-3. Place the Cloudflare API token at `CF_CREDENTIALS` (`chmod 600`).
-4. Place the shared git SSH key at `GIT_DEPLOY_KEY` (`chmod 600`) — see
-   "Git access" below.
-5. `sudo ./provision.sh init`
+1. `git clone` this repo onto the server, at `/home/deploy/provisioner`
+  (`provisioner.conf`'s defaults assume this path).
+2. Edit `provisioner.conf` — domain, paths, PHP versions, DB credentials
+  path, git key path.
+3. Place a Cloudflare API token at `CF_CREDENTIALS` (`chmod 600`).
+4. Place a shared git SSH key at `GIT_DEPLOY_KEY` (`chmod 600`) — see
+  "Git access."
+5. `sudo ./provision.sh init` — installs nginx/PHP/MariaDB/certbot,
+  issues the wildcard cert, sets up the firewall.
+6. `sudo ./provision.sh provision <name> <repo-url>` — clones, detects
+  or asks for config, stands up the vhost/FPM pool/database, runs the
+   first deploy.
+
+From there: `deploy <name>` on every push (or set up "Deploy on git
+push" so that happens on its own), `list` to see the fleet, `doctor` to
+check on it.
 
 ## Commands
 
@@ -57,16 +109,40 @@ doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
 `init`, `init-db`, `provision`, `deploy`, `remove`, `backup-uploads`,
 `backup-database`, and the `*-preview`/`prune-previews` commands need root.
 
-## Site config resolution
+## Configuration
+
+Five places a setting can come from, in increasing order of "how
+permanent is this":
+
+
+| Where                                            | What goes here                                                                              | Lives in                               | Git-tracked                           |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------- |
+| `provisioner.conf`                               | Server-wide defaults — every site on this box starts from these                             | this repo, on the server               | no — per-server, edited after cloning |
+| `.ddev/config.yaml`                              | Real DDEV fields: `php_version`, `docroot`, `upload_dirs`, `hooks.post-start`, `database.*` | the client's repo                      | yes — it's DDEV's own file            |
+| `.ddeploy/config.yaml`                           | ddeploy-only per-site keys that aren't real DDEV fields (below)                             | the client's repo, sibling to `.ddev/` | yes                                   |
+| `generated/<name>.yaml`                          | Sidecar ddeploy writes itself for a repo with no `.ddev/config.yaml` yet                    | this repo, on the server               | no — `generated/` is gitignored       |
+| CLI flags (`--db`, `--hostnames`, `--auth`, ...) | A one-off override for this run of `provision`, always wins                                 | the terminal                           | n/a                                   |
+
+
+**Precedence, per key:** an explicit CLI flag on `provision` always
+wins, even against a project that already has a real `.ddev/config.yaml`
+— `--db`, `--hostnames`, `--custom-domains`, `--upload-dirs`, and
+`--deploy-cmd` aren't just "what to use the first time a site is
+provisioned," they override every run they're passed on (see `provision -h`). Short of an explicit flag: `.ddeploy/config.yaml` wins for any key
+it declares; otherwise whichever of `.ddev/config.yaml` or the sidecar
+was actually used (`.ddev/config.yaml` if the repo has one, else the
+sidecar ddeploy already wrote for it).
+
+### Resolving a new site
 
 `provision` resolves a site's PHP version, docroot, hostnames, and
 deploy steps in this order:
 
 1. `.ddev/config.yaml` in the repo, if present.
 2. A sidecar at `generated/<name>.yaml`, if one was written by a
-   previous run.
+  previous run.
 3. `--non-interactive` with `--php`/`--docroot`/`--db`/`--hostnames`/
-   `--custom-domains`/`--upload-dirs`/`--deploy-cmd` flags.
+  `--custom-domains`/`--upload-dirs`/`--deploy-cmd` flags.
 4. Interactive prompts.
 
 Paths 3 and 4 write the result to `generated/<name>.yaml`, so later runs
@@ -135,45 +211,51 @@ Three of these are per-site overrides of a server-wide `provisioner.conf`
 default, for a project that needs something different from the fleet:
 
 - `basic_auth` — overrides `BASIC_AUTH_DEFAULT` for a normal site, or the
-  on-by-default for a preview (still beaten by `--auth`/`--no-auth` on
-  the CLI, which wins over both).
+on-by-default for a preview (still beaten by `--auth`/`--no-auth` on
+the CLI, which wins over both).
 - `client_max_body_size` — overrides `CLIENT_MAX_BODY_SIZE` (nginx's
-  upload-size ceiling, default `64m` — nginx's own stock default is a
-  restrictive `1m`, which breaks most real media uploads out of the box).
+upload-size ceiling, default `64m` — nginx's own stock default is a
+restrictive `1m`, which breaks most real media uploads out of the box).
 - `fpm_max_children` — overrides `FPM_MAX_CHILDREN` (PHP-FPM pool
-  concurrency ceiling, default `5`) for a site that needs more (or less)
-  headroom than the rest of the fleet.
+concurrency ceiling, default `5`) for a site that needs more (or less)
+headroom than the rest of the fleet.
 
 Three more with no server-wide equivalent — off by default, only active
 when declared:
 
 - `auth_exempt_paths` — URL path prefixes that bypass basic auth even
-  when it's on (a webhook or health-check endpoint on an otherwise-gated
-  preview, say). Absolute paths only (`/webhook`, not `webhook`).
-  Implemented as an nginx `map` on `$uri` feeding `auth_basic` a variable
-  rather than a location-block trick — the app is a front-controller
-  that rewrites everything to `index.php` via `try_files`, and that
-  internal rewrite re-runs nginx's location search from scratch, so a
-  nested location inside an exempt-path location never actually gets
-  used. `auth_basic` is evaluated against the real, pre-rewrite `$uri`,
-  which is what makes this work.
+when it's on (a webhook or health-check endpoint on an otherwise-gated
+preview, say). Absolute paths only (`/webhook`, not `webhook`).
+Implemented as an nginx `map` on `$uri` feeding `auth_basic` a variable
+rather than a location-block trick — the app is a front-controller
+that rewrites everything to `index.php` via `try_files`, and that
+internal rewrite re-runs nginx's location search from scratch, so a
+nested location inside an exempt-path location never actually gets
+used. `auth_basic` is evaluated against the real, pre-rewrite `$uri`,
+which is what makes this work.
 - `backup_exclude` — `rclone --exclude` glob patterns (e.g. `cache/**`),
-  applied to `backup-uploads` only; `restore-uploads` naturally only
-  pulls back what actually made it to object storage, so nothing extra
-  is needed on that side.
+applied to `backup-uploads` only; `restore-uploads` naturally only
+pulls back what actually made it to object storage, so nothing extra
+is needed on that side.
 - `db_backup_retention_days` — per-site override of the server-wide
-  `DB_BACKUP_RETENTION_DAYS`.
+`DB_BACKUP_RETENTION_DAYS`.
 - `php_ini` — a map of PHP directive → value, rendered as
-  `php_admin_value[]` lines in the site's own FPM pool — never touches
-  the shared `php.ini`, so one site's override can't affect any other.
-  `php_admin_value`, not `php_value`: the app itself can't override
-  these back at runtime via `ini_set`, so the ceiling actually holds.
+`php_admin_value[]` lines in the site's own FPM pool — never touches
+the shared `php.ini`, so one site's override can't affect any other.
+`php_admin_value`, not `php_value`: the app itself can't override
+these back at runtime via `ini_set`, so the ceiling actually holds.
 
-## Custom domains
+
+
+## Site lifecycle
+
+
+
+### Custom domains
 
 Every site gets `<name>.$BASE_DOMAIN` for free, covered by the shared
 wildcard cert. A site can also have its own domain(s) — `additional_fqdns`
-in `.ddeploy/config.yaml` (see "Site config resolution"; a real
+in `.ddeploy/config.yaml` (see "Configuration"; a real
 `.ddev/config.yaml` and the sidecar both still work too) or
 `--custom-domains "a.com www.a.com"` non-interactively.
 
@@ -183,24 +265,23 @@ since a custom domain generally isn't on the same Cloudflare account as
 `$BASE_DOMAIN`, or on Cloudflare at all). Requirements:
 
 - DNS for the domain(s) must already point at this server before
-  `provision` runs — HTTP-01 fails otherwise, `provision` logs a warning
-  and leaves an HTTP-only vhost in place; re-run once DNS is live.
+`provision` runs — HTTP-01 fails otherwise, `provision` logs a warning
+and leaves an HTTP-only vhost in place; re-run once DNS is live.
 - All of a site's custom domains share one certificate, named after the
-  first one listed.
+first one listed.
 - If the server is behind Cloudflare, these domains need their own
-  orange/grey-cloud DNS record and don't inherit `$BASE_DOMAIN`'s proxy
-  setup — set that up per domain as needed.
+orange/grey-cloud DNS record and don't inherit `$BASE_DOMAIN`'s proxy
+setup — set that up per domain as needed.
 
 Once issued, renewal is certbot's timer, same as the wildcard.
 
-## Branch previews
+### Branch previews
 
 `provision-preview <project> <branch> [repo-url]` stands up a site for
 one branch of an existing project, at a name derived deterministically
 from `<project>` + `<branch>` (`preview_slug` in `lib/preview.sh` —
 lowercased, slugified, truncated with a hash suffix to fit the 28-char
-name cap). `deploy-preview`/`remove-preview` take the same `(project,
-branch)` pair and resolve the same name, so nothing needs to remember or
+name cap). `deploy-preview`/`remove-preview` take the same `(project, branch)` pair and resolve the same name, so nothing needs to remember or
 pass around a generated name — CI just needs to know the project and
 branch it's already building.
 
@@ -255,8 +336,7 @@ time, only at request time — so a preview with no htpasswd file of its
 own would 500 on every request. `init` generates a shared fallback
 (`BASIC_AUTH_CREDENTIALS`, default `/etc/nginx/htpasswd/default`) once,
 with a random password logged to stdout — every site with auth on and
-no htpasswd file of its own (`htpasswd -c /etc/nginx/htpasswd/<name>
-<user>`) uses that shared one instead. Rotate it by deleting the file
+no htpasswd file of its own (`htpasswd -c /etc/nginx/htpasswd/<name> <user>`) uses that shared one instead. Rotate it by deleting the file
 and re-running `init`.
 
 `remove-preview --purge-db` only drops a database for an isolated-mode
@@ -283,17 +363,19 @@ any rebased branch); and plain `remove <name>` on a preview detects that
 and delegates to `remove-preview`, so the purge-db-belongs-to-the-parent
 safety and the symlink-safe file cleanup apply automatically.
 
-## Deploy on git push
+### Deploy on git push
 
 Set `WEBHOOK_ENABLED=true` in `provisioner.conf` and re-run `init`. That
 stands up `https://hooks.$BASE_DOMAIN` (wildcard cert) proxying to an
 unprivileged listener on localhost. A root systemd worker then runs the
 existing CLI — nothing in the HTTP request is executed as a command.
 
-| Forge | URL | Events |
-|---|---|---|
-| GitHub | `https://hooks.$BASE_DOMAIN/github` | `push`, `pull_request` |
+
+| Forge           | URL                                    | Events                                                                 |
+| --------------- | -------------------------------------- | ---------------------------------------------------------------------- |
+| GitHub          | `https://hooks.$BASE_DOMAIN/github`    | `push`, `pull_request`                                                 |
 | Bitbucket Cloud | `https://hooks.$BASE_DOMAIN/bitbucket` | `repo:push`, `pullrequest:created`, `updated`, `fulfilled`, `rejected` |
+
 
 HMAC secret is generated at `$WEBHOOK_SECRET` (default
 `/etc/ddeploy/webhook.secret`, chmod 640). Paste it into the GitHub org
@@ -303,107 +385,23 @@ webhook and/or the Bitbucket workspace webhook. Optional
 What actually runs:
 
 - Push to the branch a provisioned (non-preview) site currently has
-  checked out → `deploy <name>`. Other branches are ignored on push.
+checked out → `deploy <name>`. Other branches are ignored on push.
 - PR opened / synced (same-repo only) → `provision-preview` or
-  `deploy-preview` of that parent site.
+`deploy-preview` of that parent site.
 - PR closed / merged / declined → `remove-preview --purge-files`
-  (`--purge-db` too if the preview was isolated).
+(`--purge-db` too if the preview was isolated).
 - Fork PRs are refused (shared-mode previews would run untrusted code
-  against the parent's live database).
+against the parent's live database).
 - A repo that isn't provisioned on this box is a 202 no-op, so one org
-  or workspace hook can cover every client repo.
+or workspace hook can cover every client repo.
 
 `provision.sh deploy` over SSH is still valid. For repos that cannot use
 an org/workspace webhook, copy
-[`examples/ci/github-action`](examples/ci/github-action/action.yml) or
-[`examples/ci/bitbucket-pipelines.yml`](examples/ci/bitbucket-pipelines.yml).
+`[examples/ci/github-action](examples/ci/github-action/action.yml)` or
+`[examples/ci/bitbucket-pipelines.yml](examples/ci/bitbucket-pipelines.yml)`.
 Do not have CI fake a forge payload.
 
-## Database server
-
-By default `DB_HOST` is `127.0.0.1`: `init` installs MariaDB on the same
-server, and `provision`/`deploy` connect as local root over the unix
-socket — no credentials file needed.
-
-To share one MariaDB instance across multiple web servers instead, run
-`init-db` on a dedicated database server (set `DB_ADMIN_CREDENTIALS` and
-`DB_ALLOWED_HOSTS` — the web servers' IPs — in its `provisioner.conf`
-first). It installs MariaDB, opens it to `DB_ALLOWED_HOSTS` only (via
-`ufw`, port 3306; SSH stays open), and writes an admin credentials file
-at `DB_ADMIN_CREDENTIALS`. Copy that file to the same path on each web
-server, then on each web server's `provisioner.conf` set:
-
-```
-DB_HOST="<database server's address>"
-DB_ADMIN_CREDENTIALS="<path to the copied credentials file>"
-DB_GRANT_HOST="<this web server's address>"
-```
-
-`DB_GRANT_HOST` (default `localhost`) is the host each site's own DB user
-is granted access from — it should match one of the entries in
-`DB_ALLOWED_HOSTS` on the database server.
-
-**Accepted tradeoff:** the admin account `init-db` creates has
-`GRANT ALL ON *.* WITH GRANT OPTION` — full control of every database on
-that server, not just the ones this tool manages — scoped only by source
-IP (`DB_ALLOWED_HOSTS`), and shared across every web server that gets a
-copy of `DB_ADMIN_CREDENTIALS`. Provisioning/deploying/backing up a site
-on demand needs an account that can create databases and grant per-site
-users, and MySQL has no clean "can CREATE DATABASE and GRANT on what it
-creates, but nothing else" role — the real options are a wildcard-prefix
-grant (forces every site's DB name under one prefix, still one shared
-account, needs a naming convention + migration) or a per-web-server admin
-account (limits blast radius to one server's compromise instead of the
-whole fleet's, no schema change, but doesn't shrink the account's own
-privileges). Neither is a clean win over the other, so this stays as-is
-for now — keep `DB_ADMIN_CREDENTIALS` file permissions tight (600,
-root-owned) and `DB_ALLOWED_HOSTS` as narrow as possible.
-
-## Database credentials
-
-Set by `db_env_scheme` (from CMS detection, or an explicit `db_env_scheme:`
-in `.ddeploy/config.yaml` or the sidecar):
-
-| scheme     | written to                        | vars |
-|------------|------------------------------------|------|
-| `laravel`  | `.env`                             | `DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD` |
-| `craft`    | `.env`                             | `CRAFT_DB_*` |
-| `charcoal` | `config/config.local.json`         | `databases.<default_database>.{hostname,database,username,password}` |
-| `none`     | nowhere (e.g. plain WordPress)     | saved to `generated/<name>.dbpass`, logged once |
-
-`charcoal` creates `config/config.local.json` if it doesn't exist,
-reuses the file's own `default_database` key if one is already set, and
-leaves any other keys in the file untouched.
-
-## Deploy hooks
-
-`.ddev/config.yaml`'s `hooks.post-start` is replayed on every deploy, as
-the site's own `www-<name>` user, under its pinned PHP version.
-`exec`/`composer` steps run; `exec-host` steps are logged and skipped.
-Any step referencing `ddev` or `/var/www/html` is skipped with a
-warning.
-
-If `hooks.post-start` isn't declared at all and the repo has a
-`composer.json`, a `composer install` step is assumed by default — DDEV
-itself often installs dependencies implicitly on `ddev start` without an
-explicit hook, which this tool has no way to see since it never runs
-DDEV; without this fallback that shows up as a 500 from a missing
-`vendor/autoload.php` on first deploy. This only fills in a completely
-absent `hooks.post-start` — a config that declares some steps but skips
-composer is treated as deliberate and left alone. Add an explicit
-`hooks.post-start` (with or without a `composer` step) to `.ddev/config.yaml`
-to override either way.
-
-Two more extension points:
-
-- `.provisioner/post-provision.sh` / `.provisioner/post-deploy.sh` in
-  the client repo — run as `www-<name>`, same as any hook step.
-  `post-provision.sh` runs once after the first deploy; `post-deploy.sh`
-  runs every deploy.
-- `hooks/post-provision.d/*.sh` / `hooks/post-deploy.d/*.sh` in this
-  repo — run as root, for every site. See `hooks/README.md`.
-
-## Rolling back
+### Rolling back
 
 `deploy <name> --rollback [<sha>]` moves a site's code backward instead
 of pulling forward. Without `<sha>`, it rolls back to the most recent
@@ -428,7 +426,7 @@ migration, restore the database too (see "Restoring") or fix forward
 instead. This also doesn't apply to branch previews — they're meant to
 be disposable, not rolled back.
 
-## Persistent files
+### Persistent files
 
 A site's own git checkout is disposable by design — `provision`/`deploy`
 clone and pull it freely, and `remove --purge-files` deletes it outright.
@@ -448,8 +446,8 @@ password is picked up the same way (`read_db_password` finds it already
 in the persistent store), so this isn't just "the files survive" — the
 site reconnects with zero credential churn.
 
-`persistent_files:` (in `.ddeploy/config.yaml` — see "Site config
-resolution" — not a real DDEV key) declares arbitrary extra paths beyond
+`persistent_files:` (in `.ddeploy/config.yaml` — see "Configuration" —
+not a real DDEV key) declares arbitrary extra paths beyond
 `upload_dirs` and the DB credential file — a custom `.env.local`, a
 `storage/app` directory, etc. — relative to the repo root, not the
 docroot. A trailing `/` marks a directory; without one, a file:
@@ -465,46 +463,11 @@ as disposable as before (shared-mode previews already point at the
 parent's persistent store transitively, through the parent's own
 symlink, with no changes needed).
 
-## Isolation
+## Data protection
 
-Each site: its own Linux user (`www-<name>`), its own FPM pool and
-socket, its own database and DB user. Files are owned `www-<name>:www-data`,
-dirs `2750`, files `640` — nginx (`www-data`) can read them, no other
-site's user can.
 
-## Git access
 
-All git operations (clone, pull) authenticate with one shared SSH key,
-placed at `GIT_DEPLOY_KEY`. This should be a machine-user account (bot
-GitHub/GitLab/Bitbucket user, not a personal one) added as a read-only
-collaborator on each client repo or org — not a GitHub "deploy key",
-which is limited to one repo and can't be reused across a fleet.
-
-`init` seeds `/etc/ssh/ssh_known_hosts` with GitHub/GitLab/Bitbucket host
-keys for the initial clone (runs as root). `provision` and `deploy` copy
-the key into each site's `$dir/.ssh` (that site's `www-<name>` `$HOME`),
-so pulls after the first one run as the site's own user, not root.
-
-## Cloudflare
-
-`CLOUDFLARE_PROXIED` in `provisioner.conf` (default `true`) controls two
-`init` steps for a proxied (orange-cloud) domain:
-
-- Writes `/etc/nginx/conf.d/cloudflare-realip.conf` so nginx/PHP see the
-  real visitor IP (`CF-Connecting-IP`) instead of Cloudflare's edge IP.
-- Firewalls 80/443 to Cloudflare's published ranges via `ufw` (SSH stays
-  open). Without this the origin is reachable directly, bypassing
-  Cloudflare.
-
-Both refetch Cloudflare's ranges on every `init` run; a failed fetch
-leaves existing rules/config as they were. Set `CLOUDFLARE_PROXIED=false`
-for a grey-cloud (DNS-only) domain — DNS-01 cert issuance uses the
-Cloudflare API either way, independent of proxy status.
-
-Set the domain's SSL/TLS mode to "Full (strict)" in Cloudflare once
-`init` has issued the origin cert.
-
-## Backups
+### Backups
 
 Disaster-recovery only, not live/shared storage — local disk and the
 running database are always what's actually served; these are one-way
@@ -575,7 +538,7 @@ loud warning, and restores the parent's actual database/uploads — the
 ones every preview of it is currently sharing. An isolated-mode preview
 restores its own, same as any normal site.
 
-## Health check
+### Health check
 
 `doctor [name]` runs a set of read-only checks — nginx config/service,
 disk space, the database server itself, certificate expiry, and (per
@@ -593,37 +556,184 @@ whole run down: each site's checks run in their own subshell, so a `die`
 there just becomes one `[fail]` row instead of aborting `doctor` for
 every other site.
 
+## Server & operations
+
+
+
+### Database server
+
+By default `DB_HOST` is `127.0.0.1`: `init` installs MariaDB on the same
+server, and `provision`/`deploy` connect as local root over the unix
+socket — no credentials file needed.
+
+To share one MariaDB instance across multiple web servers instead, run
+`init-db` on a dedicated database server (set `DB_ADMIN_CREDENTIALS` and
+`DB_ALLOWED_HOSTS` — the web servers' IPs — in its `provisioner.conf`
+first). It installs MariaDB, opens it to `DB_ALLOWED_HOSTS` only (via
+`ufw`, port 3306; SSH stays open), and writes an admin credentials file
+at `DB_ADMIN_CREDENTIALS`. Copy that file to the same path on each web
+server, then on each web server's `provisioner.conf` set:
+
+```
+DB_HOST="<database server's address>"
+DB_ADMIN_CREDENTIALS="<path to the copied credentials file>"
+DB_GRANT_HOST="<this web server's address>"
+```
+
+`DB_GRANT_HOST` (default `localhost`) is the host each site's own DB user
+is granted access from — it should match one of the entries in
+`DB_ALLOWED_HOSTS` on the database server.
+
+**Accepted tradeoff:** the admin account `init-db` creates has
+`GRANT ALL ON *.* WITH GRANT OPTION` — full control of every database on
+that server, not just the ones this tool manages — scoped only by source
+IP (`DB_ALLOWED_HOSTS`), and shared across every web server that gets a
+copy of `DB_ADMIN_CREDENTIALS`. Provisioning/deploying/backing up a site
+on demand needs an account that can create databases and grant per-site
+users, and MySQL has no clean "can CREATE DATABASE and GRANT on what it
+creates, but nothing else" role — the real options are a wildcard-prefix
+grant (forces every site's DB name under one prefix, still one shared
+account, needs a naming convention + migration) or a per-web-server admin
+account (limits blast radius to one server's compromise instead of the
+whole fleet's, no schema change, but doesn't shrink the account's own
+privileges). Neither is a clean win over the other, so this stays as-is
+for now — keep `DB_ADMIN_CREDENTIALS` file permissions tight (600,
+root-owned) and `DB_ALLOWED_HOSTS` as narrow as possible.
+
+### Database credentials
+
+Set by `db_env_scheme` (from CMS detection, or an explicit `db_env_scheme:`
+in `.ddeploy/config.yaml` or the sidecar):
+
+
+| scheme     | written to                     | vars                                                                 |
+| ---------- | ------------------------------ | -------------------------------------------------------------------- |
+| `laravel`  | `.env`                         | `DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`               |
+| `craft`    | `.env`                         | `CRAFT_DB_*`                                                         |
+| `charcoal` | `config/config.local.json`     | `databases.<default_database>.{hostname,database,username,password}` |
+| `none`     | nowhere (e.g. plain WordPress) | saved to `generated/<name>.dbpass`, logged once                      |
+
+
+`charcoal` creates `config/config.local.json` if it doesn't exist,
+reuses the file's own `default_database` key if one is already set, and
+leaves any other keys in the file untouched.
+
+### Deploy hooks
+
+`.ddev/config.yaml`'s `hooks.post-start` is replayed on every deploy, as
+the site's own `www-<name>` user, under its pinned PHP version.
+`exec`/`composer` steps run; `exec-host` steps are logged and skipped.
+Any step referencing `ddev` or `/var/www/html` is skipped with a
+warning.
+
+If `hooks.post-start` isn't declared at all and the repo has a
+`composer.json`, a `composer install` step is assumed by default — DDEV
+itself often installs dependencies implicitly on `ddev start` without an
+explicit hook, which this tool has no way to see since it never runs
+DDEV; without this fallback that shows up as a 500 from a missing
+`vendor/autoload.php` on first deploy. This only fills in a completely
+absent `hooks.post-start` — a config that declares some steps but skips
+composer is treated as deliberate and left alone. Add an explicit
+`hooks.post-start` (with or without a `composer` step) to `.ddev/config.yaml`
+to override either way.
+
+Two more extension points:
+
+- `.provisioner/post-provision.sh` / `.provisioner/post-deploy.sh` in
+the client repo — run as `www-<name>`, same as any hook step.
+`post-provision.sh` runs once after the first deploy; `post-deploy.sh`
+runs every deploy.
+- `hooks/post-provision.d/*.sh` / `hooks/post-deploy.d/*.sh` in this
+repo — run as root, for every site. See `hooks/README.md`.
+
+
+
+### Isolation
+
+Each site: its own Linux user (`www-<name>`), its own FPM pool and
+socket, its own database and DB user. Files are owned `www-<name>:www-data`,
+dirs `2750`, files `640` — nginx (`www-data`) can read them, no other
+site's user can.
+
+### Git access
+
+All git operations (clone, pull) authenticate with one shared SSH key,
+placed at `GIT_DEPLOY_KEY`. This should be a machine-user account (bot
+GitHub/GitLab/Bitbucket user, not a personal one) added as a read-only
+collaborator on each client repo or org — not a GitHub "deploy key",
+which is limited to one repo and can't be reused across a fleet.
+
+`init` seeds `/etc/ssh/ssh_known_hosts` with GitHub/GitLab/Bitbucket host
+keys for the initial clone (runs as root). `provision` and `deploy` copy
+the key into each site's `$dir/.ssh` (that site's `www-<name>` `$HOME`),
+so pulls after the first one run as the site's own user, not root.
+
+### Cloudflare
+
+`CLOUDFLARE_PROXIED` in `provisioner.conf` (default `true`) controls two
+`init` steps for a proxied (orange-cloud) domain:
+
+- Writes `/etc/nginx/conf.d/cloudflare-realip.conf` so nginx/PHP see the
+real visitor IP (`CF-Connecting-IP`) instead of Cloudflare's edge IP.
+- Firewalls 80/443 to Cloudflare's published ranges via `ufw` (SSH stays
+open). Without this the origin is reachable directly, bypassing
+Cloudflare.
+
+Both refetch Cloudflare's ranges on every `init` run; a failed fetch
+leaves existing rules/config as they were. Set `CLOUDFLARE_PROXIED=false`
+for a grey-cloud (DNS-only) domain — DNS-01 cert issuance uses the
+Cloudflare API either way, independent of proxy status.
+
+Set the domain's SSL/TLS mode to "Full (strict)" in Cloudflare once
+`init` has issued the origin cert.
+
+## Layout
+
+```
+provision.sh       entrypoint
+provisioner.conf   per-server config, edit after cloning
+manifest           name -> repo-url, used by provision-all / deploy-all
+templates/         nginx vhost + FPM pool + webhook vhost templates
+lib/               implementation
+hook/              unprivileged git-forge webhook listener (Python)
+hooks/             ops scripts run for every site (see hooks/README.md)
+generated/         sidecar configs + DB credentials (created at runtime)
+logs/              per-site provision/deploy logs (created at runtime)
+```
+
+Expected to live at `/home/deploy/provisioner`. Sites are checked out
+under `$SITES_ROOT` (`provisioner.conf`, default `/home/deploy/sites`).
+
+## Accepted tradeoffs
+
+Places where ddeploy deliberately chose the option with a real downside
+over one without, because the alternative was worse. Full reasoning is
+in the linked section.
+
+- **Branch previews share the parent's database by default**, not an
+isolated copy — two previews with diverging schema changes can
+conflict with each other against that one database. The alternative
+(an isolated preview database) guarantees content a client enters is
+lost when the branch merges. See "Branch previews."
+- **The** `init-db` **admin account has** `GRANT ALL ON *.`* on the database
+server, not scoped to just the databases this tool manages — MySQL has
+no clean "can `CREATE DATABASE` and `GRANT` on what it creates, but
+nothing else" role. See "Database server."
+- `deploy --rollback` **moves code, not schema** — a database migration
+a later deploy already ran forward is not undone by rolling the code
+back past it. See "Rolling back."
+
+
+
 ## Testing
 
-`docker/` runs the actual provisioner — init, init-db, provision, deploy,
-branch previews, backup/restore, remove — against real systemd, nginx,
-PHP-FPM, MariaDB, sshd, and object storage in disposable containers. See
-`docker/README.md`. `docker/test/run.sh` is the entry point.
+`docker/` runs the actual provisioner — init, init-db, provision, deploy
+(including rollback), git-push webhooks, branch previews, backup/restore,
+doctor, remove — against real systemd, nginx, PHP-FPM, MariaDB, sshd, and
+object storage in disposable containers. See `docker/README.md`.
+`docker/test/run.sh` is the entry point.
 
-## Assumptions to verify against a real deploy
 
-- `PHP_EXTENSIONS` (`provisioner.conf`) covers what the CMS needs.
-- The front-controller rewrite (`try_files $uri $uri/ /index.php?$query_string;`)
-  matches the CMS's actual routing.
-- Craft's and Bedrock's `.env` variable names (`lib/cms.sh`) are the
-  frameworks' documented conventions, not verified against a real repo.
-- Craft's migrate/cache CLI commands (`lib/cms.sh`) are documented
-  defaults, not verified against a real project.
-- Real ACME/DNS-01 and HTTP-01 certificate issuance, and ufw's actual
-  packet-filtering behavior — `docker/`'s test harness mocks both (see
-  its README for why) and everything else has been verified against it;
-  these two still need a real domain / real VM to check.
 
-## Planned
 
-Not built yet, roughly in priority order:
 
-- **Notification routing** — backup/deploy failures currently only show
-  up in logs; nothing pings anyone. Likely per-project override (a
-  specific client's failures paging someone specific) over a purely
-  server-wide setting.
-- **Custom nginx snippet injection** — an escape hatch for a project
-  that needs nginx config the standard template doesn't cover. Bigger
-  security-review lift than the other `.ddeploy/config.yaml` keys, since
-  it'd be raw server config sourced from a client repo, not a scoped
-  value substituted into one — deliberately not rushed.
