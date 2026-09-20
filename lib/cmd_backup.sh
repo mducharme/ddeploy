@@ -10,6 +10,7 @@ cmd_backup_uploads() {
 
     local only="${1:-}" failures=0
     local site_path name
+    local -a failed_names=()
     for site_path in "$SITES_ROOT"/*/; do
         [[ -d "$site_path" ]] || continue
         name="$(basename "$site_path")"
@@ -42,7 +43,11 @@ cmd_backup_uploads() {
         if ! backup_site_uploads "$name" "${site_path%/}" "${UPLOAD_DIRS[@]}"; then
             log_error "backup-uploads failed for $name"
             failures=$((failures + 1))
+            failed_names+=("$name")
         fi
     done
-    [[ "$failures" -eq 0 ]] || die "$failures site(s) failed to back up"
+    if [[ "$failures" -ne 0 ]]; then
+        notify_failure backup-uploads "" "${failures} site(s): ${failed_names[*]}"
+        die "$failures site(s) failed to back up"
+    fi
 }

@@ -23,7 +23,10 @@ cmd_remove() {
     load_conf
     require_root
 
-    local name="${1:-}"; [[ -n "$name" ]] && shift || true
+    local name="${1:-}"
+    if [[ -n "$name" ]]; then
+        shift
+    fi
     [[ -n "$name" ]] || { usage_remove; die "site name required"; }
     validate_name "$name"
 
@@ -74,7 +77,9 @@ cmd_remove() {
     if [[ "$purge_files" -eq 1 ]]; then
         rm -rf "$dir"
         rm -f "$GENERATED_DIR/$name.yaml" "$GENERATED_DIR/$name.steps" "$(deploy_history_path "$name")"
-        id -u "www-$name" >/dev/null 2>&1 && userdel "www-$name" 2>/dev/null || true
+        if id -u "www-$name" >/dev/null 2>&1; then
+            userdel "www-$name" 2>/dev/null || true
+        fi
         log_info "removed site directory and user for $name"
     else
         log_info "leaving site files in place (pass --purge-files to delete them)"

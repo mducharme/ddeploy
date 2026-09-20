@@ -13,7 +13,8 @@ Read-only checks (nginx, PHP-FPM, database reachability, disk space,
 certificate expiry), printed as [ok]/[warn]/[fail] per line. Without a
 name, checks shared infrastructure plus every provisioned site; with
 one, shared infrastructure plus just that site (previews included).
-Exits nonzero if any check failed — fit for cron/monitoring.
+Exits nonzero if any check failed — fit for cron/monitoring. When
+NOTIFY_WEBHOOK is set, a [fail] (not a [warn]) also POSTs there.
 EOF
 }
 
@@ -191,5 +192,8 @@ cmd_doctor() {
     done <<< "$all"
 
     log_info "doctor: $ok ok, $warn warn, $fail fail"
+    if [[ "$fail" -gt 0 ]]; then
+        notify_failure doctor "${only:-}" "$fail fail, $warn warn"
+    fi
     [[ "$fail" -eq 0 ]]
 }

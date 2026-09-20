@@ -250,8 +250,8 @@ cmd_remove_preview() {
         # the symlinks themselves, never what they point to.
         rm -rf "$dir"
         rm -f "$GENERATED_DIR/$name.yaml" "$GENERATED_DIR/$name.steps"
-        if [[ "$mode" != "shared" ]]; then
-            id -u "www-$name" >/dev/null 2>&1 && userdel "www-$name" 2>/dev/null || true
+        if [[ "$mode" != "shared" ]] && id -u "www-$name" >/dev/null 2>&1; then
+            userdel "www-$name" 2>/dev/null || true
         fi
         log_info "removed preview $name"
     fi
@@ -305,6 +305,7 @@ cmd_prune_previews() {
         if ! cmd_remove_preview "$PREVIEW_PROJECT" "$PREVIEW_BRANCH" --purge-db --purge-files; then
             log_error "prune: failed to remove preview '$name'"
             failures=$((failures + 1))
+            notify_failure prune-previews "$name" "failed to remove preview of $PREVIEW_PROJECT/$PREVIEW_BRANCH"
         fi
     done
     [[ "$failures" -eq 0 ]] || die "$failures preview(s) failed to remove"

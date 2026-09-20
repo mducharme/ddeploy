@@ -38,7 +38,10 @@ cmd_provision() {
     load_conf
     require_root
 
-    local name="${1:-}"; [[ -n "$name" ]] && shift || true
+    local name="${1:-}"
+    if [[ -n "$name" ]]; then
+        shift
+    fi
     [[ -n "$name" ]] || { usage_provision; die "site name required"; }
     validate_name "$name"
 

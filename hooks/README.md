@@ -2,8 +2,10 @@
 
 Scripts here run for **every** site on this server, as **root**, at the
 end of `provision` / `deploy` respectively — for operator concerns
-(monitoring, Slack notifications, reverse-proxy lists), not site-specific
-setup. For site-specific one-offs, use `.provisioner/post-provision.sh` /
+(reverse-proxy lists, optional success pings), not site-specific
+setup. **Failure** paging is `NOTIFY_WEBHOOK` in `provisioner.conf`, not
+a hook here — these scripts only run after a successful provision/deploy.
+For site-specific one-offs, use `.provisioner/post-provision.sh` /
 `.provisioner/post-deploy.sh` in the client repo instead (see main README).
 
 - `post-provision.d/*.sh` — run once, after a site's first deploy finishes.

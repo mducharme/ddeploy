@@ -12,8 +12,23 @@ permissions:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    env:
+      SHELLCHECK_VERSION: "0.11.0"
     steps:
       - uses: actions/checkout@v4
+      # Pinned, not whatever ubuntu-latest happens to preinstall — an
+      # older shellcheck flagged SC2015 on an `A && B || true` pattern
+      # (a deliberate, correct idiom to keep `set -e` from aborting on a
+      # false condition) that this exact version does not, since it
+      # tightened that check's false-positive rate. Same reasoning as
+      # cmd_init.sh's pinned yq install: trust an exact binary, not
+      # whatever a package manager/runner image happens to ship today.
+      - name: install pinned shellcheck
+        run: |
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ
+          sudo mv "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
       - name: shellcheck
         run: shellcheck -x provision.sh
       - name: bash -n (syntax check every sourced file)

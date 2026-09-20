@@ -38,6 +38,8 @@ source "$LIB_DIR/deploy_history.sh"
 source "$LIB_DIR/preview.sh"
 # shellcheck source=lib/hook.sh
 source "$LIB_DIR/hook.sh"
+# shellcheck source=lib/notify.sh
+source "$LIB_DIR/notify.sh"
 # shellcheck source=lib/cmd_init.sh
 source "$LIB_DIR/cmd_init.sh"
 # shellcheck source=lib/cmd_init_db.sh
@@ -92,7 +94,10 @@ EOF
 }
 
 main() {
-    local cmd="${1:-}"; [[ $# -gt 0 ]] && shift || true
+    local cmd="${1:-}"
+    if [[ $# -gt 0 ]]; then
+        shift
+    fi
     case "$cmd" in
         init)           cmd_init "$@" ;;
         init-db)        cmd_init_db "$@" ;;

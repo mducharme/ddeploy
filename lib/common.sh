@@ -61,6 +61,8 @@ load_conf() {
     WEBHOOK_SECRET="${WEBHOOK_SECRET:-/etc/ddeploy/webhook.secret}"
     WEBHOOK_SECRET_BITBUCKET="${WEBHOOK_SECRET_BITBUCKET:-}"
     WEBHOOK_LISTEN="${WEBHOOK_LISTEN:-127.0.0.1:8787}"
+    NOTIFY_WEBHOOK="${NOTIFY_WEBHOOK:-}"
+    NOTIFY_COOLDOWN="${NOTIFY_COOLDOWN:-3600}"
 }
 
 # Lighter loader for `init-db`, run on a dedicated database server that

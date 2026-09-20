@@ -6,17 +6,11 @@ per site, a shared wildcard TLS certificate. No containers. It reads a
 project's own `.ddev/config.yaml` as configuration instead of asking for
 a second one, and it never runs DDEV itself.
 
-It's built for the staging/QA/client-review stage of a project's life —  
-there's no staging→production promotion path, no web UI, and no  
-cron/queue-worker management yet. One web server per project; a database  
-server can be shared across several web servers (`init-db`). à  
-  
-  
-  
-  
-  
-  
-ç
+It's built for the staging/QA/client-review stage of a project's life —
+there's no staging→production promotion path, no web UI, and no
+cron/queue-worker management yet. One web server per project; a database
+server can be shared across several web servers (`init-db`). If none of
+that matches what you need, this probably isn't the right tool for it.
 
 ## Requirements
 
@@ -27,8 +21,6 @@ issued via certbot either way).
 - A git host reachable over SSH — GitHub, GitLab, Bitbucket, self-hosted.
 - Docker, only if you want to run the test harness before touching a
 real server (next section).
-
-
 
 ## See it work
 
@@ -114,7 +106,6 @@ doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
 Five places a setting can come from, in increasing order of "how
 permanent is this":
 
-
 | Where                                            | What goes here                                                                              | Lives in                               | Git-tracked                           |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------- |
 | `provisioner.conf`                               | Server-wide defaults — every site on this box starts from these                             | this repo, on the server               | no — per-server, edited after cloning |
@@ -122,7 +113,6 @@ permanent is this":
 | `.ddeploy/config.yaml`                           | ddeploy-only per-site keys that aren't real DDEV fields (below)                             | the client's repo, sibling to `.ddev/` | yes                                   |
 | `generated/<name>.yaml`                          | Sidecar ddeploy writes itself for a repo with no `.ddev/config.yaml` yet                    | this repo, on the server               | no — `generated/` is gitignored       |
 | CLI flags (`--db`, `--hostnames`, `--auth`, ...) | A one-off override for this run of `provision`, always wins                                 | the terminal                           | n/a                                   |
-
 
 **Precedence, per key:** an explicit CLI flag on `provision` always
 wins, even against a project that already has a real `.ddev/config.yaml`
@@ -245,11 +235,7 @@ the shared `php.ini`, so one site's override can't affect any other.
 `php_admin_value`, not `php_value`: the app itself can't override
 these back at runtime via `ini_set`, so the ceiling actually holds.
 
-
-
 ## Site lifecycle
-
-
 
 ### Custom domains
 
@@ -370,12 +356,10 @@ stands up `https://hooks.$BASE_DOMAIN` (wildcard cert) proxying to an
 unprivileged listener on localhost. A root systemd worker then runs the
 existing CLI — nothing in the HTTP request is executed as a command.
 
-
 | Forge           | URL                                    | Events                                                                 |
 | --------------- | -------------------------------------- | ---------------------------------------------------------------------- |
 | GitHub          | `https://hooks.$BASE_DOMAIN/github`    | `push`, `pull_request`                                                 |
 | Bitbucket Cloud | `https://hooks.$BASE_DOMAIN/bitbucket` | `repo:push`, `pullrequest:created`, `updated`, `fulfilled`, `rejected` |
-
 
 HMAC secret is generated at `$WEBHOOK_SECRET` (default
 `/etc/ddeploy/webhook.secret`, chmod 640). Paste it into the GitHub org
@@ -464,8 +448,6 @@ parent's persistent store transitively, through the parent's own
 symlink, with no changes needed).
 
 ## Data protection
-
-
 
 ### Backups
 
@@ -556,9 +538,28 @@ whole run down: each site's checks run in their own subshell, so a `die`
 there just becomes one `[fail]` row instead of aborting `doctor` for
 every other site.
 
+Set `NOTIFY_WEBHOOK` in `provisioner.conf` to a Slack incoming-webhook
+or Discord webhook URL (or any endpoint that accepts JSON) and a
+`[fail]` pages that URL. `[warn]` does not. See "Failure paging."
+
+## Failure paging
+
+Unattended work (backup cron, the git-push worker, `prune-previews`,
+`doctor`) used to fail into a log file. Set `NOTIFY_WEBHOOK` to a Slack
+incoming webhook, a Discord webhook, or any URL that accepts a JSON POST
+with `text` and `content` (both are sent, so either product works). The
+URL is a credential — do not commit it. Empty (the default) is off.
+
+Only **failures** page. A successful deploy, backup, or doctor run is
+silent. The same command+site will not page again until
+`NOTIFY_COOLDOWN` seconds have passed (default 3600), so an hourly
+backup that fails all night is one message, not twenty-four.
+
+SSH `provision.sh deploy` does not page: you are already watching.
+A git-push deploy that fails after GitHub/Bitbucket got 202 does page,
+because the forge UI stays green.
+
 ## Server & operations
-
-
 
 ### Database server
 
@@ -605,14 +606,12 @@ root-owned) and `DB_ALLOWED_HOSTS` as narrow as possible.
 Set by `db_env_scheme` (from CMS detection, or an explicit `db_env_scheme:`
 in `.ddeploy/config.yaml` or the sidecar):
 
-
 | scheme     | written to                     | vars                                                                 |
 | ---------- | ------------------------------ | -------------------------------------------------------------------- |
 | `laravel`  | `.env`                         | `DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`               |
 | `craft`    | `.env`                         | `CRAFT_DB_*`                                                         |
 | `charcoal` | `config/config.local.json`     | `databases.<default_database>.{hostname,database,username,password}` |
 | `none`     | nowhere (e.g. plain WordPress) | saved to `generated/<name>.dbpass`, logged once                      |
-
 
 `charcoal` creates `config/config.local.json` if it doesn't exist,
 reuses the file's own `default_database` key if one is already set, and
@@ -645,8 +644,6 @@ the client repo — run as `www-<name>`, same as any hook step.
 runs every deploy.
 - `hooks/post-provision.d/*.sh` / `hooks/post-deploy.d/*.sh` in this
 repo — run as root, for every site. See `hooks/README.md`.
-
-
 
 ### Isolation
 
@@ -711,19 +708,17 @@ over one without, because the alternative was worse. Full reasoning is
 in the linked section.
 
 - **Branch previews share the parent's database by default**, not an
-isolated copy — two previews with diverging schema changes can
-conflict with each other against that one database. The alternative
-(an isolated preview database) guarantees content a client enters is
-lost when the branch merges. See "Branch previews."
-- **The** `init-db` **admin account has** `GRANT ALL ON *.`* on the database
-server, not scoped to just the databases this tool manages — MySQL has
-no clean "can `CREATE DATABASE` and `GRANT` on what it creates, but
-nothing else" role. See "Database server."
-- `deploy --rollback` **moves code, not schema** — a database migration
-a later deploy already ran forward is not undone by rolling the code
-back past it. See "Rolling back."
-
-
+  isolated copy — two previews with diverging schema changes can
+  conflict with each other against that one database. The alternative
+  (an isolated preview database) guarantees content a client enters is
+  lost when the branch merges. See "Branch previews."
+- **The `init-db` admin account has `GRANT ALL ON *.*`** on the database
+  server, not scoped to just the databases this tool manages — MySQL has
+  no clean "can `CREATE DATABASE` and `GRANT` on what it creates, but
+  nothing else" role. See "Database server."
+- **`deploy --rollback` moves code, not schema** — a database migration
+  a later deploy already ran forward is not undone by rolling the code
+  back past it. See "Rolling back."
 
 ## Testing
 
@@ -733,7 +728,27 @@ doctor, remove — against real systemd, nginx, PHP-FPM, MariaDB, sshd, and
 object storage in disposable containers. See `docker/README.md`.
 `docker/test/run.sh` is the entry point.
 
+## Assumptions to verify against a real deploy
 
+- `PHP_EXTENSIONS` (`provisioner.conf`) covers what the CMS needs.
+- The front-controller rewrite (`try_files $uri $uri/ /index.php?$query_string;`)
+  matches the CMS's actual routing.
+- Craft's and Bedrock's `.env` variable names (`lib/cms.sh`) are the
+  frameworks' documented conventions, not verified against a real repo.
+- Craft's migrate/cache CLI commands (`lib/cms.sh`) are documented
+  defaults, not verified against a real project.
+- Real ACME/DNS-01 and HTTP-01 certificate issuance, and ufw's actual
+  packet-filtering behavior — `docker/`'s test harness mocks both (see
+  its README for why) and everything else has been verified against it;
+  these two still need a real domain / real VM to check.
 
+## Planned
 
+Not built yet, roughly in priority order:
+
+- **Custom nginx snippet injection** — an escape hatch for a project
+  that needs nginx config the standard template doesn't cover. Bigger
+  security-review lift than the other `.ddeploy/config.yaml` keys, since
+  it'd be raw server config sourced from a client repo, not a scoped
+  value substituted into one — deliberately not rushed.
 

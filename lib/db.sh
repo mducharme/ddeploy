@@ -69,7 +69,11 @@ json_write() {
 charcoal_db_key() {
     local charcoal_json="$1" key
     key="$(json_read "$charcoal_json" '.default_database' || true)"
-    [[ "$key" =~ ^[a-zA-Z0-9_]+$ ]] && echo "$key" || echo "default"
+    if [[ "$key" =~ ^[a-zA-Z0-9_]+$ ]]; then
+        echo "$key"
+    else
+        echo "default"
+    fi
 }
 
 # Reads a site's existing DB password back out of wherever $scheme
@@ -78,7 +82,11 @@ read_db_password() {
     local name="$1" dir="$2" scheme="$3"
     case "$scheme" in
         craft)    read_env_var "$dir/.env" CRAFT_DB_PASSWORD || true ;;
-        none)     [[ -f "$GENERATED_DIR/$name.dbpass" ]] && cat "$GENERATED_DIR/$name.dbpass" || true ;;
+        none)
+            if [[ -f "$GENERATED_DIR/$name.dbpass" ]]; then
+                cat "$GENERATED_DIR/$name.dbpass"
+            fi
+            ;;
         charcoal)
             local cj="$dir/config/config.local.json"
             json_read "$cj" ".databases.$(charcoal_db_key "$cj").password" || true

@@ -456,6 +456,73 @@ assert_contains "$fleet_out" "testsite: vhost" "doctor (fleet-wide): includes te
 
 assert_cmd_fails "doctor errors cleanly on an unknown site name" ./provision.sh doctor not-a-real-site
 
+# --- failure paging (NOTIFY_WEBHOOK) ------------------------------------
+
+step "notify_failure POSTs JSON and respects cooldown"
+source lib/notify.sh
+rm -f /tmp/ddeploy-notify-sink.jsonl
+python3 - <<'PY' &
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+out = Path("/tmp/ddeploy-notify-sink.jsonl")
+
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or "0")
+        body = self.rfile.read(n)
+        with out.open("ab") as f:
+            f.write(body + b"\n")
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+    def log_message(self, *_args):
+        pass
+
+HTTPServer(("127.0.0.1", 8799), H).serve_forever()
+PY
+NOTIFY_PID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    curl -fsS -o /dev/null http://127.0.0.1:8799/ && break
+    sleep 0.2
+done
+: >/tmp/ddeploy-notify-sink.jsonl
+
+rm -rf /var/lib/ddeploy/notify
+NOTIFY_WEBHOOK="http://127.0.0.1:8799/notify"
+NOTIFY_COOLDOWN=3600
+notify_failure backup-uploads testsite "rclone 403 for tests"
+sleep 0.2
+sink="$(cat /tmp/ddeploy-notify-sink.jsonl 2>/dev/null || true)"
+assert_contains "$sink" "backup-uploads" "notify POST includes the command"
+assert_contains "$sink" "testsite" "notify POST includes the site"
+assert_contains "$sink" '"text"' "notify POST has Slack text"
+assert_contains "$sink" '"content"' "notify POST has Discord content"
+
+notify_failure backup-uploads testsite "second failure same hour"
+sleep 0.2
+lines="$(grep -c . /tmp/ddeploy-notify-sink.jsonl 2>/dev/null || echo 0)"
+[[ "$lines" == "1" ]] && pass "cooldown skipped the second page" || fail "cooldown did not skip (sink lines=$lines)"
+
+NOTIFY_COOLDOWN=0
+notify_failure backup-uploads testsite "cooldown disabled"
+sleep 0.2
+lines="$(grep -c . /tmp/ddeploy-notify-sink.jsonl 2>/dev/null || echo 0)"
+[[ "$lines" == "2" ]] && pass "NOTIFY_COOLDOWN=0 sends again" || fail "expected 2 sink lines, got $lines"
+
+NOTIFY_WEBHOOK=""
+notify_failure backup-uploads testsite "should be silent"
+sleep 0.2
+lines="$(grep -c . /tmp/ddeploy-notify-sink.jsonl 2>/dev/null || echo 0)"
+[[ "$lines" == "2" ]] && pass "empty NOTIFY_WEBHOOK is a no-op" || fail "empty URL still posted (sink lines=$lines)"
+
+kill "$NOTIFY_PID" 2>/dev/null || true
+wait "$NOTIFY_PID" 2>/dev/null || true
+rm -rf /var/lib/ddeploy/notify /tmp/ddeploy-notify-sink.jsonl
+
 # --- final cleanup, everything purged ------------------------------------
 
 step "remove testsite --purge-db --purge-files --purge-persistent"
