@@ -82,15 +82,25 @@ hook_process_job() {
         return 0
     fi
 
-    local name branch parent preview head hit extra failures=0
+    local name branch parent preview head target hit extra failures=0
     case "$event" in
         push_head)
             for name in "${matches[@]}"; do
                 is_preview "$name" && continue
                 head="$(site_head_branch "$name")"
+                # Also match the site's configured deploy_branch (README
+                # "Default branch"), not just its current HEAD — otherwise
+                # the very first push to a newly-configured branch would
+                # be ignored, since HEAD only moves once deploy itself
+                # performs the switch (lib/releases.sh's
+                # prepare_forward_release), which this push is meant to
+                # trigger in the first place.
+                target="$(read_deploy_branch "$(site_dir "$name")" "$name")"
                 hit=0
                 for branch in "${branches[@]}"; do
-                    [[ "$head" == "$branch" ]] && hit=1 && break
+                    if [[ "$head" == "$branch" ]] || [[ -n "$target" && "$target" == "$branch" ]]; then
+                        hit=1; break
+                    fi
                 done
                 if [[ "$hit" -ne 1 ]]; then
                     log_info "webhook: skipping '$name' — HEAD is '$head', push was not"

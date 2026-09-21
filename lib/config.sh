@@ -11,7 +11,8 @@
 # FPM_MAX_CHILDREN_CONFIG DB_BACKUP_RETENTION_DAYS_CONFIG (the scalar
 # _CONFIG ones empty unless overridden — see README ".ddeploy/config.yaml"),
 # SECURITY_HEADERS STATIC_CACHE DENY_PHP_IN_UPLOADS DENY_PHP_PATHS[]
-# REDIRECTS[] (from<TAB>to<TAB>code),
+# REDIRECTS[] (from<TAB>to<TAB>code), DEPLOY_BRANCH (empty unless
+# .ddeploy/config.yaml declares one — see README "Default branch"),
 # and writes $GENERATED_DIR/<name>.steps (TYPE<TAB>CMD per line, TYPE in
 # exec|composer|exec-host).
 #
@@ -76,6 +77,21 @@ resolve_docroot_relative() {
 # as certbot -d arguments — reject anything that isn't a plain hostname,
 # so a crafted value can't inject extra nginx directives (YAML allows
 # embedded newlines in a string) or be misread as a flag by certbot.
+# A git branch name headed for `git fetch origin <val>` / `git checkout
+# -B <val>` as its own argv element (never shell-interpolated, so this
+# isn't injection defense) — still refused if it could be mistaken for a
+# flag by git itself (a leading '-') or isn't a plausible ref name.
+validate_branch_name() {
+    local val="$1" label="$2"
+    [[ -z "$val" ]] && return 0
+    [[ "$val" == -* ]] && die "$label ('$val') cannot start with '-' — refusing to use it"
+    local re='^[A-Za-z0-9][A-Za-z0-9._/-]*$'
+    [[ "$val" =~ $re ]] || die "$label ('$val') is not a plain branch name — refusing to use it"
+    case "/$val/" in
+        */../*) die "$label ('$val') contains a '..' segment — refusing to use it" ;;
+    esac
+}
+
 validate_hostname() {
     local val="$1" label="$2"
     local re='^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$'
@@ -147,7 +163,7 @@ upload_dir_url_path() {
 
 # .ddeploy/config.yaml (git-tracked, sibling to .ddev/) is where ddeploy-
 # only keys belong — additional_hostnames, additional_fqdns,
-# persistent_files, db_env_scheme are not real DDEV fields, and stuffing
+# persistent_files, db_env_scheme, deploy_branch are not real DDEV fields, and stuffing
 # them into a real .ddev/config.yaml risks a future DDEV schema
 # validation pass (or `ddev config` regenerating the file) silently
 # dropping them. If present, it wins for these keys; if absent, they're
@@ -182,6 +198,27 @@ read_ext_scalar() {
         val="$(yq eval "$expr" "$cfg" 2>/dev/null)"
         [[ "$val" == "null" ]] && val=""
     fi
+    printf '%s' "$val"
+}
+
+# Reads deploy_branch straight from <dir>/.ddeploy/config.yaml — not
+# read_ext_scalar's ext/primary precedence, since this key has no real
+# DDEV field to fall back to (same category as redirects/persistent_files).
+# Takes a directory rather than a site name so it can be pointed at a
+# staging clone that isn't `current` yet (prepare_forward_release, before
+# parse_config has anything to read) as well as a live site's checkout
+# (the webhook's push-branch matcher). Empty if unset or the file is
+# absent; a present-but-malformed value dies via validate_branch_name
+# rather than being silently ignored, so a typo surfaces immediately
+# instead of quietly deploying the wrong branch forever.
+read_deploy_branch() {
+    local dir="$1" label="$2"
+    local f="$dir/.ddeploy/config.yaml"
+    [[ -f "$f" ]] || return 0
+    require_yq
+    local val; val="$(yq eval '.deploy_branch // ""' "$f" 2>/dev/null)"
+    [[ "$val" == "null" ]] && val=""
+    [[ -n "$val" ]] && validate_branch_name "$val" "deploy_branch for '$label'"
     printf '%s' "$val"
 }
 
@@ -238,6 +275,11 @@ parse_config() {
     local ext_cfg; ext_cfg="$(ext_config_path "$name")"
     mapfile -t ADDITIONAL_HOSTNAMES < <(read_ext_array "$ext_cfg" "$cfg" '.additional_hostnames[]')
     mapfile -t ADDITIONAL_FQDNS    < <(read_ext_array "$ext_cfg" "$cfg" '.additional_fqdns[]')
+
+    # Informational at this point — the actual branch switch (if any)
+    # already happened before this release was built; see
+    # prepare_forward_release/clone_into_release in lib/releases.sh.
+    DEPLOY_BRANCH="$(read_deploy_branch "$(config_checkout_dir "$name")" "$name")"
 
     # ADDITIONAL_HOSTNAMES_OVERRIDE/ADDITIONAL_FQDNS_OVERRIDE (set by
     # cmd_provision.sh's --hostnames/--custom-domains) win over whatever

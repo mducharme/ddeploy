@@ -138,16 +138,29 @@ finalize_staging() {
     printf '%s\n' "$dest"
 }
 
-# First clone of a site: origin -> a new release dir. Does not switch current.
+# First clone of a site: origin -> a new release dir. Does not switch
+# current. $3, if given, clones that branch directly — the operator's own
+# --branch at provision time (README "Default branch"); a repo whose
+# config instead declares deploy_branch: in .ddeploy/config.yaml on
+# whatever branch git clones by default gets picked up one release later,
+# by prepare_forward_release's own switch-if-configured check, since
+# .ddeploy/config.yaml isn't readable before the first clone exists.
 clone_into_release() {
-    local name="$1" repo_url="$2"
+    local name="$1" repo_url="$2" branch="${3:-}"
     local root; root="$(site_root "$name")"
     mkdir -p "$root/releases"
     rm -rf "$root/releases"/.staging-*
     local staging="$root/releases/.staging-$$"
     rm -rf "$staging"
-    log_info "cloning $repo_url -> $root"
-    GIT_SSH_COMMAND="$(git_ssh_command)" git clone "$repo_url" "$staging" \
+    local -a branch_args=()
+    if [[ -n "$branch" ]]; then
+        validate_branch_name "$branch" "--branch for '$name'"
+        branch_args=(--branch "$branch")
+        log_info "cloning $repo_url (branch $branch) -> $root"
+    else
+        log_info "cloning $repo_url -> $root"
+    fi
+    GIT_SSH_COMMAND="$(git_ssh_command)" git clone "${branch_args[@]}" "$repo_url" "$staging" \
         || die "git clone failed for '$name'"
     git_trust_repo "$staging"
     finalize_staging "$staging"
@@ -184,6 +197,27 @@ prepare_forward_release() {
     if ! sudo -u "www-$name" env HOME="$root" git -C "$staging" pull --ff-only 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
         rm -rf "$staging"
         die "git pull --ff-only failed for '$name' — live tree left unchanged"
+    fi
+
+    # deploy_branch (README "Default branch"): re-read AFTER the pull
+    # above, not before — a deploy_branch declaration that just landed on
+    # the branch we're already tracking must take effect THIS deploy, not
+    # the next one (reading pre-pull would only ever see it a release
+    # late). Self-stabilizing after the switch below, since the branch
+    # this reads from IS the configured one from then on.
+    local target_branch; target_branch="$(read_deploy_branch "$staging" "$name")"
+    local current_branch; current_branch="$(git -C "$staging" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+
+    if [[ -n "$target_branch" && "$target_branch" != "$current_branch" ]]; then
+        log_info "'$name': switching to configured deploy_branch '$target_branch' (was '$current_branch')"
+        if ! sudo -u "www-$name" env HOME="$root" git -C "$staging" fetch --quiet origin "$target_branch" 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
+            rm -rf "$staging"
+            die "'$name': failed to fetch deploy_branch '$target_branch' from origin — check the branch exists"
+        fi
+        if ! sudo -u "www-$name" env HOME="$root" git -C "$staging" checkout -B "$target_branch" "origin/$target_branch" 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
+            rm -rf "$staging"
+            die "'$name': failed to switch to deploy_branch '$target_branch'"
+        fi
     fi
     finalize_staging "$staging"
 }

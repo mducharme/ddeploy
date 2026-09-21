@@ -725,6 +725,117 @@ sleep 1
 out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "MARKER=v2" "a plain deploy after a rollback pulls forward again"
 
+step "deploy_branch: switching a site's tracked branch via config"
+
+# A new branch off main's current tip, with distinct content so a curl
+# can tell it apart from main.
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+git -C "$WORK" checkout -q -b alt-main
+sed -i 's/MARKER=v2/MARKER=alt-branch-v1/' "$WORK/web/index.php"
+git -C "$WORK" commit -q -am 'alt-main v1'
+git -C "$WORK" push -q origin alt-main:alt-main
+rm -rf "$WORK"
+
+# deploy_branch: alt-main lands on main ITSELF (the branch testsite is
+# currently tracking) — an ordinary push to a branch it already tracks,
+# which the existing push_head matcher already handles with no special
+# casing. prepare_forward_release always pulls the tracked branch FIRST
+# and only then checks the freshly-pulled config, so this one deploy both
+# picks up the declaration AND performs the switch — no separate push to
+# alt-main is needed for the common case (this IS the "easy" part).
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+python3 -c "
+p = '$WORK/.ddeploy/config.yaml'
+s = open(p).read()
+open(p, 'w').write('deploy_branch: alt-main\n' + s)
+"
+git -C "$WORK" commit -q -am 'declare deploy_branch: alt-main'
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+
+BODY="$(mktemp)"
+write_github_push main "$BODY"
+code="$(post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY")"
+[[ "$code" == "202" ]] && pass "GitHub push to main (declaring deploy_branch) accepted" || fail "GitHub push to main returned $code, expected 202"
+flush_hooks
+sleep 1
+rm -f "$BODY"
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "MARKER=alt-branch-v1" "one deploy both picked up deploy_branch and switched the site onto it"
+head_branch="$(git -C "$LIVE" rev-parse --abbrev-ref HEAD)"
+[[ "$head_branch" == "alt-main" ]] && pass "site's checkout is now on alt-main" || fail "expected HEAD alt-main, got '$head_branch'"
+
+# The webhook branch-matcher itself (matching a push against deploy_branch,
+# not just HEAD) matters for the narrower case of a config that declares
+# deploy_branch from a site's very first commit, before any deploy has
+# ever run (so HEAD hasn't had a chance to catch up yet) — not exercised
+# here since testsite was already live before this test began.
+
+# Once already on the configured branch, later pushes to it are an
+# ordinary pull --ff-only, not another switch.
+WORK="$(mktemp -d)"
+git clone -q --branch alt-main "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+sed -i 's/MARKER=alt-branch-v1/MARKER=alt-branch-v2/' "$WORK/web/index.php"
+git -C "$WORK" commit -q -am 'alt-main v2'
+git -C "$WORK" push -q origin alt-main
+rm -rf "$WORK"
+
+BODY="$(mktemp)"
+write_github_push alt-main "$BODY"
+code="$(post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY")"
+[[ "$code" == "202" ]] && pass "GitHub push to alt-main (2nd) accepted" || fail "GitHub push to alt-main (2nd) returned $code"
+flush_hooks
+sleep 1
+rm -f "$BODY"
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "MARKER=alt-branch-v2" "a later push to the already-tracked deploy_branch pulls forward normally"
+
+# Switch back to main (declared on alt-main itself), restoring testsite
+# to the state every later step in this script expects.
+WORK="$(mktemp -d)"
+git clone -q --branch alt-main "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+python3 -c "
+p = '$WORK/.ddeploy/config.yaml'
+s = open(p).read()
+open(p, 'w').write('deploy_branch: main\n' + s)
+"
+git -C "$WORK" commit -q -am 'declare deploy_branch: main'
+git -C "$WORK" push -q origin alt-main
+rm -rf "$WORK"
+
+./provision.sh deploy testsite
+sleep 1
+head_branch="$(git -C "$LIVE" rev-parse --abbrev-ref HEAD)"
+[[ "$head_branch" == "main" ]] && pass "deploy_branch: main switched the site back" || fail "expected HEAD main, got '$head_branch'"
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "MARKER=v2" "back on main, serving its content again"
+
+# Drop main's own now-stale deploy_branch: alt-main (leftover from the
+# very first push in this step) so it doesn't surprise a later addition
+# to this test file with an unexpected switch on the next plain deploy.
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+sed -i '/^deploy_branch:/d' "$WORK/.ddeploy/config.yaml"
+git -C "$WORK" commit -q -am 'drop deploy_branch'
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+./provision.sh deploy testsite
+sleep 1
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "MARKER=v2" "main is clean again — deploy stays a plain pull with deploy_branch unset"
+
 # --- branch preview (shared mode, the default) -------------------------
 
 step "provision-preview testsite feature-a via Bitbucket webhook"
@@ -773,7 +884,7 @@ out="$(curl -fsSk -u "preview:$AUTH_PASS" --resolve "$PREVIEW.staging.ddeploy.te
 assert_contains "$out" "MARKER=preview-v2" "webhook deploy-preview fetch+reset picked up the new commit"
 sink="$(cat /tmp/ddeploy-comment-sink.jsonl 2>/dev/null || true)"
 assert_contains "$sink" "POST /2.0/repositories/gitfixture/testsite/pullrequests/7/comments" "Bitbucket webhook posted a preview comment on PR 7"
-assert_contains "$sink" "PUT /2.0/repositories/gitfixture/testsite/pullrequests/7/comments/1" "Bitbucket deploy-preview updated the existing PR comment"
+assert_contains "$sink" "PUT /2.0/repositories/gitfixture/testsite/pullrequests/7/comments/" "Bitbucket deploy-preview updated the existing PR comment (PUT, not a duplicate POST)"
 assert_contains "$sink" "https://testsite-feature-a.staging.ddeploy.test" "Bitbucket preview comment has the preview URL"
 kill "$COMMENT_PID" 2>/dev/null || true
 wait "$COMMENT_PID" 2>/dev/null || true

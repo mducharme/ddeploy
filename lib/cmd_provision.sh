@@ -12,6 +12,10 @@ options:
                             and no .ddev/config.yaml / sidecar exists
   --php <version>           e.g. 8.2 (non-interactive fallback field)
   --docroot <path>          relative to repo root (non-interactive fallback field)
+  --branch <name>           clone this branch instead of the remote's default;
+                            only affects the very first clone — see README
+                            "Default branch" for changing it later via
+                            deploy_branch: in .ddeploy/config.yaml
   --db <name>                DB name and user; always overrides config
   --hostnames "<a> <b>"     space-separated additional hostnames; always
                             overrides config
@@ -46,7 +50,7 @@ cmd_provision() {
     validate_name "$name"
 
     local repo_url="" non_interactive=0
-    local opt_php="" opt_docroot="" opt_db="" opt_hostnames="" opt_custom_domains="" opt_upload_dirs="" opt_deploy_cmds="" auth_flag=""
+    local opt_php="" opt_docroot="" opt_db="" opt_hostnames="" opt_custom_domains="" opt_upload_dirs="" opt_deploy_cmds="" opt_branch="" auth_flag=""
 
     if [[ "${1:-}" != "" && "${1:-}" != --* ]]; then
         repo_url="$1"; shift
@@ -57,6 +61,7 @@ cmd_provision() {
             --non-interactive) non_interactive=1 ;;
             --php) opt_php="$2"; shift ;;
             --docroot) opt_docroot="$2"; shift ;;
+            --branch) opt_branch="$2"; shift ;;
             --db) opt_db="$2"; shift ;;
             --hostnames) opt_hostnames="$2"; shift ;;
             --custom-domains) opt_custom_domains="$2"; shift ;;
@@ -81,7 +86,7 @@ cmd_provision() {
 
     if [[ ! -d "$(site_dir "$name")/.git" ]]; then
         [[ -n "$repo_url" ]] || die "no repo at $(site_dir "$name") and no repo-url given"
-        dest="$(clone_into_release "$name" "$repo_url")"
+        dest="$(clone_into_release "$name" "$repo_url" "$opt_branch")"
         switch_current "$name" "$dest"
     fi
     ensure_releases_layout "$name"
@@ -113,7 +118,7 @@ cmd_provision() {
     [[ -n "$opt_deploy_cmds" ]] && DEPLOY_CMDS_OVERRIDE="$opt_deploy_cmds"
     parse_config "$name" "$cfg_path" 1
 
-    log_info "resolved: php=$PHP_VERSION docroot='${DOCROOT}' hostnames=[${ADDITIONAL_HOSTNAMES[*]:-}]"
+    log_info "resolved: php=$PHP_VERSION docroot='${DOCROOT}' hostnames=[${ADDITIONAL_HOSTNAMES[*]:-}]${DEPLOY_BRANCH:+ deploy_branch=$DEPLOY_BRANCH}"
     scan_hooks "$name"
 
     ensure_php_installed "$PHP_VERSION"

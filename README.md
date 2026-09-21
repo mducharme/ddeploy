@@ -175,8 +175,8 @@ overruns the repo root itself.
 
 ### `.ddeploy/config.yaml`
 
-`additional_hostnames`, `additional_fqdns`, `persistent_files`, and
-`db_env_scheme` aren't real DDEV fields — putting them in a real
+`additional_hostnames`, `additional_fqdns`, `persistent_files`,
+`db_env_scheme`, and `deploy_branch` aren't real DDEV fields — putting them in a real
 `.ddev/config.yaml` risks a future DDEV schema-validation pass (or
 `ddev config` regenerating the file) silently dropping them, and it's a
 layering smell regardless: that file is DDEV's own, shared with the
@@ -185,6 +185,7 @@ client's dev team, not this tool's. Declare them instead in
 
 ```yaml
 db_env_scheme: charcoal
+deploy_branch: develop
 additional_hostnames:
   - alt-name
 additional_fqdns:
@@ -231,9 +232,12 @@ restrictive `1m`, which breaks most real media uploads out of the box).
 concurrency ceiling, default `5`) for a site that needs more (or less)
 headroom than the rest of the fleet.
 
-Three more with no server-wide equivalent — off by default, only active
+Four more with no server-wide equivalent — off by default, only active
 when declared:
 
+- `deploy_branch` — which branch a normal (non-preview) site tracks,
+instead of whatever branch it happened to be cloned on. See "Default
+branch".
 - `auth_exempt_paths` — URL path prefixes that bypass basic auth even
 when it's on (a webhook or health-check endpoint on an otherwise-gated
 preview, say). Absolute paths only (`/webhook`, not `webhook`).
@@ -453,6 +457,55 @@ an org/workspace webhook, copy
 `[examples/ci/github-action](examples/ci/github-action/action.yml)` or
 `[examples/ci/bitbucket-pipelines.yml](examples/ci/bitbucket-pipelines.yml)`.
 Do not have CI fake a forge payload.
+
+### Default branch
+
+By default a site tracks whatever branch it happened to be cloned on —
+normally the remote's actual default branch (`main`/`master`), decided
+by git, not by ddeploy. `<project>.$BASE_DOMAIN` deploys from that branch
+forever, since `deploy` just does `git pull --ff-only` on whatever's
+currently checked out.
+
+To pin a project to a specific branch instead — `develop`, `staging`,
+whatever the team has actually agreed is "production" — declare it in
+`.ddeploy/config.yaml`:
+
+```yaml
+deploy_branch: develop
+```
+
+Commit and push that onto whatever branch the site is *currently*
+tracking. `deploy` always pulls the tracked branch first (an ordinary
+pull, same as any other config change), then checks the config it just
+pulled: if it now names a different branch than the one actually checked
+out, that same deploy fetches the configured branch and switches
+`current`'s checkout onto it — a `git checkout -B <branch>
+origin/<branch>`, not a `pull`, since there's no reason to assume the
+previously-tracked branch fast-forwards into the new one. So **one push
+is enough**: the deploy it triggers both picks up the declaration and
+performs the switch, in a single step. From then on it's an ordinary
+`pull --ff-only` again, on the newly-configured branch. Change
+`deploy_branch:` again later (or remove it, to go back to "whatever git
+clone picked") and the same thing happens again.
+
+A git-push webhook (`push_head`, README "Deploy on git push") matches a
+push's branch against both the site's *current* checked-out branch and
+its *configured* `deploy_branch` — not just the current one. This mostly
+matters before a site's very first deploy: if `deploy_branch:` is already
+present in the very first commit a site is provisioned from (nothing has
+pulled or switched anything yet, so HEAD and the configured branch can
+genuinely disagree), a push to that configured branch is still recognized
+and triggers the deploy that performs the switch — instead of being
+silently ignored because HEAD hasn't caught up yet.
+
+For a brand-new site, `provision <name> <repo-url> --branch <name>`
+clones that branch directly instead of the remote's default, skipping the
+"clone default, then switch on first deploy" indirection. This only
+affects the initial clone; changing the tracked branch afterward is
+always `deploy_branch:` in config, above. (Branch previews are unaffected
+either way — a preview is inherently pinned to its own PR branch by
+definition, via `provision-preview <project> <branch>` /
+`deploy-preview`.)
 
 ### Rolling back
 
