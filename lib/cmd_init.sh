@@ -127,9 +127,9 @@ EOF
         rm -f /etc/nginx/sites-enabled/default
         log_info "disabled the stock default nginx site (per-site vhosts own the wildcard)"
     fi
-    mkdir -p /etc/nginx/ddeploy-extra
-    chmod 755 /etc/nginx/ddeploy-extra
-    chown root:root /etc/nginx/ddeploy-extra
+    mkdir -p "$NGINX_EXTRA_DIR"
+    chmod 755 "$NGINX_EXTRA_DIR"
+    chown root:root "$NGINX_EXTRA_DIR"
 
     if [[ "$CLOUDFLARE_PROXIED" == "true" ]]; then
         configure_cloudflare_realip

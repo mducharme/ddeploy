@@ -42,8 +42,11 @@ hook_process_job() {
     local f="$1"
     [[ -f "$f" ]] || return 0
     require_yq
-    local event branches_raw urls_raw
+    local event branches_raw urls_raw provider pr
     event="$(yq eval '.event // ""' "$f")"
+    provider="$(yq eval '.provider // ""' "$f")"
+    pr="$(yq eval '.pr // ""' "$f")"
+    [[ "$pr" == "null" ]] && pr=""
     branches_raw="$(yq eval '.branches[]' "$f" 2>/dev/null | grep -vx 'null' || true)"
     urls_raw="$(yq eval '.repo_urls[]' "$f" 2>/dev/null | grep -vx 'null' || true)"
 
@@ -111,12 +114,16 @@ hook_process_job() {
                     if ! with_site_lock "$preview" "$PROVISIONER_DIR/provision.sh" deploy-preview "$parent" "$branch"; then
                         failures=$((failures + 1))
                         notify_failure deploy-preview "$preview" "$(notify_log_snippet "$LOG_DIR/$preview.log")"
+                    else
+                        comment_preview_pr "$provider" "$preview" "$pr" "${urls[@]}"
                     fi
                 else
                     log_info "webhook: provision-preview '$parent' '$branch'"
                     if ! with_site_lock "$preview" "$PROVISIONER_DIR/provision.sh" provision-preview "$parent" "$branch"; then
                         failures=$((failures + 1))
                         notify_failure provision-preview "$preview" "$(notify_log_snippet "$LOG_DIR/$preview.log")"
+                    else
+                        comment_preview_pr "$provider" "$preview" "$pr" "${urls[@]}"
                     fi
                 fi
             done

@@ -28,6 +28,19 @@ from urllib.parse import urlparse
 
 MAX_BODY = 1_000_000
 ALLOWED_EVENTS = frozenset({"push_head", "preview_upsert", "preview_remove"})
+PR_ID_RE = re.compile(r"^[1-9][0-9]{0,9}$")
+
+
+def _pr_id(val: Any) -> str:
+    """Digits-only PR number/id, or empty. Never pass forge JSON through."""
+    if isinstance(val, bool) or val is None:
+        return ""
+    if isinstance(val, int) and 0 < val <= 9_999_999_999:
+        return str(val)
+    s = str(val).strip()
+    if PR_ID_RE.fullmatch(s):
+        return s
+    return ""
 
 
 def canonicalize_git_url(url: str) -> str:
@@ -144,6 +157,7 @@ def parse_github(event: str, data: dict[str, Any]) -> dict[str, Any] | None:
             "repo_urls": urls,
             "branches": [branch],
             "sha": head.get("sha") or "",
+            "pr": _pr_id(pr.get("number")),
         }
     return None
 
@@ -201,6 +215,7 @@ def parse_bitbucket(event_key: str, data: dict[str, Any]) -> dict[str, Any] | No
             "repo_urls": _bitbucket_urls(repo, dst_repo),
             "branches": [branch],
             "sha": sha,
+            "pr": _pr_id(pr.get("id")),
         }
     return None
 

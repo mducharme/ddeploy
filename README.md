@@ -95,11 +95,13 @@ provision-preview <project> <branch> [repo-url] [opts]   branch preview (see -h)
 deploy-preview <project> <branch>       pull + redeploy a preview
 remove-preview <project> <branch> [opts]   remove a preview (see -h)
 prune-previews [project]      remove previews whose branch no longer exists
+preview-url <project> <branch>   print the preview URL (site need not exist)
+logs <name> [-n N] [-f]       tail a site or fleet log (see -h)
 doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
 ```
 
 `init`, `init-db`, `provision`, `deploy`, `remove`, `backup-uploads`,
-`backup-database`, and the `*-preview`/`prune-previews` commands need root.
+`backup-database`, `logs`, and the `*-preview`/`prune-previews` commands need root.
 
 ## Configuration
 
@@ -429,6 +431,22 @@ checked out → `deploy <name>`. Other branches are ignored on push.
 against the parent's live database).
 - A repo that isn't provisioned on this box is a 202 no-op, so one org
 or workspace hook can cover every client repo.
+
+If `PREVIEW_COMMENT_CREDENTIALS` is set (a chmod 600 file with
+`GITHUB_TOKEN` and/or Bitbucket `BITBUCKET_USER`+`BITBUCKET_APP_PASSWORD`,
+see `provisioner.conf`), a successful preview upsert also posts a PR
+comment `Preview: https://<slug>.$BASE_DOMAIN`. Later pushes **update**
+that comment (it is marked `<!-- ddeploy-preview -->`) instead of
+stacking a new one. The repo is taken from the job's canonical
+`github.com/…` / `bitbucket.org/…` URLs, not from an unvalidated
+`full_name` field. A failed comment is a warning, not a failed deploy.
+The token is never logged.
+
+`provision.sh logs <name>` tails `$LOG_DIR/<name>.log` without hunting
+the box (`-n`, `-f`). `provision.sh preview-url <project> <branch>`
+prints the same URL the comment uses — handy when CI is the deploy
+trigger instead of the webhook. Neither interpolates an unvalidated
+name into a path or an API URL.
 
 `provision.sh deploy` over SSH is still valid. For repos that cannot use
 an org/workspace webhook, copy

@@ -67,12 +67,14 @@ action, branch, head_repo, clone = sys.argv[1], sys.argv[2], sys.argv[3], sys.ar
 print(json.dumps({
     "action": action,
     "pull_request": {
+        "number": 42,
         "head": {"ref": branch, "sha": "0"*40, "repo": {"full_name": head_repo}},
         "base": {"repo": {"full_name": "gitfixture/testsite"}},
     },
     "repository": {
         "clone_url": clone,
         "ssh_url": "ssh://gitfixture@127.0.0.1/srv/git/testsite.git",
+        "html_url": "https://github.com/gitfixture/testsite",
     },
 }))
 ' "$action" "$branch" "$head_repo" "$HOOK_CLONE" > "$out"
@@ -105,6 +107,7 @@ import json, sys
 event, branch, src, dst, clone = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 print(json.dumps({
     "pullrequest": {
+        "id": 7,
         "source": {
             "branch": {"name": branch},
             "commit": {"hash": "0"*40},
@@ -156,6 +159,16 @@ assert_contains "$out_custom" "MARKER=v1" "custom-domain vhost reaches the same 
 list_out="$(./provision.sh list)"
 assert_contains "$list_out" "testsite" "list shows testsite"
 
+step "logs and preview-url"
+logs_out="$(./provision.sh logs testsite -n 20)"
+assert_contains "$logs_out" "provision:" "logs shows the site's provision line"
+assert_cmd_fails "logs rejects a name that would walk out of LOG_DIR" ./provision.sh logs '../etc/passwd'
+assert_cmd_fails "logs errors on a name with no log file" ./provision.sh logs nosuchsite
+purl="$(./provision.sh preview-url testsite feature-a)"
+[[ "$purl" == "https://testsite-feature-a.staging.ddeploy.test" ]] \
+    && pass "preview-url is deterministic (site need not exist yet)" \
+    || fail "preview-url returned '$purl'"
+
 step "scoped nginx extras (allowlisted knobs, not raw snippets)"
 vhost="$(cat /etc/nginx/sites-available/testsite.conf)"
 assert_contains "$vhost" 'add_header X-Content-Type-Options "nosniff" always;' "security_headers rendered into the vhost"
@@ -174,6 +187,17 @@ printf '<?php echo "PWN";\n' > "$LIVE/web/uploads/evil.php"
 chown www-testsite:www-data "$LIVE/web/uploads/evil.php"
 php_code="$(curl -sSk -o /dev/null -w '%{http_code}' --resolve "testsite.staging.ddeploy.test:443:127.0.0.1" "https://testsite.staging.ddeploy.test/uploads/evil.php")"
 [[ "$php_code" == "403" ]] && pass "PHP under /uploads is denied" || fail "GET /uploads/evil.php returned $php_code, expected 403"
+
+# static_cache and deny_php_in_uploads both render as a location for
+# /uploads/ — a static asset there must still get cached, not be
+# silently shadowed by the deny-php prefix location (nginx's ^~ match
+# skips all top-level regex locations once it wins, including
+# build_static_cache_block's own).
+printf 'not a real png, just needs the extension\n' > "$LIVE/web/uploads/logo.png"
+chown www-testsite:www-data "$LIVE/web/uploads/logo.png"
+uploads_asset_hdrs="$(curl -sSk -D- -o /dev/null --resolve "testsite.staging.ddeploy.test:443:127.0.0.1" "https://testsite.staging.ddeploy.test/uploads/logo.png" | tr '[:upper:]' '[:lower:]')"
+assert_contains "$uploads_asset_hdrs" "200" "static asset under the deny-php-protected /uploads/ still serves"
+assert_contains "$uploads_asset_hdrs" "cache-control:" "static_cache still applies under a deny_php_in_uploads-protected prefix"
 
 step "migrating an existing flat checkout to the releases layout stays reachable"
 # Reverts testsite to look exactly like a site a pre-atomic-release
@@ -220,6 +244,15 @@ POLL_CUSTOM_PID=$!
 
 ./provision.sh deploy testsite
 
+# `deploy` itself always ends with a handful of `systemctl reload nginx`
+# calls (FPM pool, vhost, custom-domain vhost) whose async worker
+# respawn doesn't necessarily finish the instant the command returns —
+# every other deploy-then-curl check in this script already gives that
+# a beat ("nginx's graceful reload briefly straddles old/new config").
+# Keep polling through that same settling window here, so the tail
+# check below measures actual post-deploy health, not a race against
+# deploy's own ordinary last reload.
+sleep 1
 kill "$POLL_MAIN_PID" "$POLL_CUSTOM_PID" 2>/dev/null || true
 wait "$POLL_MAIN_PID" "$POLL_CUSTOM_PID" 2>/dev/null || true
 
@@ -230,15 +263,15 @@ wait "$POLL_MAIN_PID" "$POLL_CUSTOM_PID" 2>/dev/null || true
 # What must NOT happen is the old bug: failures spanning the entire
 # deploy because nothing re-pointed the vhost until hook replay
 # finished. Guard both: the bad fraction stays small (old bug: ~60%+
-# for this fixture's ~1.5s deploy), and the tail end is definitely back
-# up, not still down when we stopped polling.
+# for this fixture's ~1.5s deploy), and the tail (now well past deploy's
+# own return, not raced against it) is clean.
 for pair in "main:/tmp/migration-poll-main.log" "custom domain:/tmp/migration-poll-custom.log"; do
     label="${pair%%:*}" log="${pair#*:}"
     total="$(wc -l < "$log")"
     bad="$(grep -vc '^200$' "$log" || true)"
     half=$((total / 2))
     [[ "$bad" -lt "$half" ]] && pass "$label: migration outage stayed brief, not the whole deploy ($bad/$total polls bad)" || fail "$label: $bad/$total polls were non-200 — migration left the site down for most of the deploy, not just a brief reload blip"
-    tail_bad="$(tail -n 5 "$log" | grep -vc '^200$' || true)"
+    tail_bad="$(tail -n 15 "$log" | grep -vc '^200$' || true)"
     [[ "$tail_bad" -eq 0 ]] && pass "$label: site was back up well before the deploy finished" || fail "$label: still returning errors in the last few polls before deploy completed"
     rm -f "$log"
 done
@@ -427,6 +460,179 @@ flush_hooks
 assert_file_absent "/etc/nginx/sites-enabled/testsite-feature-a.conf" "Bitbucket fork PR did not provision a preview"
 rm -f "$BODY"
 
+# --- PR preview comments (mock GitHub/Bitbucket API) -------------------
+
+step "preview PR comments (upsert + webhook wiring)"
+python3 - <<'PY' &
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+import json
+import re
+
+log = Path("/tmp/ddeploy-comment-sink.jsonl")
+# Comments are keyed by PR so a later webhook on PR 42 does not
+# "find" the helper-test comment that was posted on PR 99.
+github = {}
+bitbucket = {}
+github_ids = {}
+bitbucket_ids = {}
+counters = {"gh": 1, "bb": 1}
+
+class H(BaseHTTPRequestHandler):
+    def _plain(self):
+        return self.path.split("?", 1)[0]
+
+    def _auth(self):
+        h = self.headers.get("Authorization") or ""
+        return h.startswith("Bearer ") or h.startswith("Basic ")
+
+    def _read(self):
+        n = int(self.headers.get("Content-Length") or "0")
+        return self.rfile.read(n)
+
+    def _json(self, code, obj):
+        raw = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _record(self, method):
+        body = self._read()
+        with log.open("ab") as f:
+            f.write(("%s %s " % (method, self.path)).encode() + body + b"\n")
+        return body
+
+    def _gh_pr(self):
+        m = re.search(r"/issues/(\d+)/comments/?$", self._plain())
+        return m.group(1) if m else None
+
+    def _bb_pr(self):
+        m = re.search(r"/pullrequests/(\d+)/comments/?$", self._plain())
+        return m.group(1) if m else None
+
+    def do_GET(self):
+        if not self._auth():
+            self._json(401, {"message": "unauthorized"})
+            return
+        pr = self._gh_pr()
+        if pr is not None:
+            self._json(200, github.get(pr, []))
+            return
+        pr = self._bb_pr()
+        if pr is not None:
+            self._json(200, {"values": bitbucket.get(pr, [])})
+            return
+        self._json(404, {"message": "not found"})
+
+    def do_POST(self):
+        if not self._auth():
+            self._json(401, {"message": "unauthorized"})
+            return
+        raw = self._record("POST")
+        data = json.loads(raw.decode() or "{}")
+        pr = self._gh_pr()
+        if pr is not None:
+            item = {"id": counters["gh"], "body": data.get("body") or ""}
+            counters["gh"] += 1
+            github.setdefault(pr, []).append(item)
+            github_ids[item["id"]] = item
+            self._json(201, item)
+            return
+        pr = self._bb_pr()
+        if pr is not None:
+            item = {"id": counters["bb"], "content": data.get("content") or {}}
+            counters["bb"] += 1
+            bitbucket.setdefault(pr, []).append(item)
+            bitbucket_ids[item["id"]] = item
+            self._json(201, item)
+            return
+        self._json(404, {"message": "not found"})
+
+    def do_PATCH(self):
+        if not self._auth():
+            self._json(401, {"message": "unauthorized"})
+            return
+        raw = self._record("PATCH")
+        data = json.loads(raw.decode() or "{}")
+        cid = int(self._plain().rstrip("/").rsplit("/", 1)[-1])
+        item = github_ids.get(cid)
+        if item is not None:
+            item["body"] = data.get("body") or item.get("body")
+            self._json(200, item)
+            return
+        self._json(404, {"message": "not found"})
+
+    def do_PUT(self):
+        if not self._auth():
+            self._json(401, {"message": "unauthorized"})
+            return
+        raw = self._record("PUT")
+        data = json.loads(raw.decode() or "{}")
+        cid = int(self._plain().rstrip("/").rsplit("/", 1)[-1])
+        item = bitbucket_ids.get(cid)
+        if item is not None:
+            item["content"] = data.get("content") or item.get("content")
+            self._json(200, item)
+            return
+        self._json(404, {"message": "not found"})
+
+    def log_message(self, *_args):
+        pass
+
+HTTPServer(("127.0.0.1", 8801), H).serve_forever()
+PY
+COMMENT_PID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    curl -fsS -o /dev/null -H 'Authorization: Bearer t' "http://127.0.0.1:8801/repos/x/y/issues/1/comments" && break
+    sleep 0.2
+done
+: >/tmp/ddeploy-comment-sink.jsonl
+cat > /etc/ddeploy/preview-comment.env <<'EOF'
+GITHUB_TOKEN="test-github-token"
+GITHUB_API="http://127.0.0.1:8801"
+BITBUCKET_USER="bb"
+BITBUCKET_APP_PASSWORD="bbpass"
+BITBUCKET_API="http://127.0.0.1:8801"
+EOF
+chmod 600 /etc/ddeploy/preview-comment.env
+grep -q '^PREVIEW_COMMENT_CREDENTIALS=' /opt/ddeploy/provisioner.conf \
+    || echo 'PREVIEW_COMMENT_CREDENTIALS="/etc/ddeploy/preview-comment.env"' >> /opt/ddeploy/provisioner.conf
+
+# Direct helper: first call POSTs, second call PATCHes the same marker.
+export PREVIEW_COMMENT_CREDENTIALS="/etc/ddeploy/preview-comment.env"
+source lib/preview_comment.sh
+comment_preview_pr github testsite 99 github.com/gitfixture/testsite
+comment_preview_pr github testsite 99 github.com/gitfixture/testsite
+sink="$(cat /tmp/ddeploy-comment-sink.jsonl 2>/dev/null || true)"
+assert_contains "$sink" "POST /repos/gitfixture/testsite/issues/99/comments" "first preview comment is a POST"
+assert_contains "$sink" "PATCH /repos/gitfixture/testsite/issues/comments/1" "second preview comment updates the existing one"
+assert_contains "$sink" "https://testsite.staging.ddeploy.test" "preview comment includes the site URL"
+assert_contains "$sink" "<!-- ddeploy-preview -->" "preview comment carries the idempotency marker"
+comment_preview_pr github testsite '1; curl evil' github.com/gitfixture/testsite
+lines="$(grep -c . /tmp/ddeploy-comment-sink.jsonl 2>/dev/null || echo 0)"
+[[ "$lines" == "2" ]] && pass "non-numeric PR id is refused (no extra API call)" || fail "poison PR id still posted (sink lines=$lines)"
+comment_preview_pr github testsite 99 evil.example/gitfixture/testsite
+[[ "$(grep -c . /tmp/ddeploy-comment-sink.jsonl 2>/dev/null || echo 0)" == "2" ]] \
+    && pass "comment repo is taken from github.com urls, not an arbitrary host" \
+    || fail "arbitrary host still posted"
+: >/tmp/ddeploy-comment-sink.jsonl
+
+# bitbucket_upsert is a genuinely separate code path from github_upsert
+# (different endpoint shape, PUT not PATCH, {"content":{"raw":...}} not
+# {"body":...}, Basic auth from user+app-password) — the mock server
+# above already handles Bitbucket-shaped routes, but nothing called this
+# until now, so none of that was ever actually exercised.
+comment_preview_pr bitbucket testsite 77 bitbucket.org/gitfixture/testsite
+comment_preview_pr bitbucket testsite 77 bitbucket.org/gitfixture/testsite
+bb_sink="$(cat /tmp/ddeploy-comment-sink.jsonl 2>/dev/null || true)"
+assert_contains "$bb_sink" "POST /2.0/repositories/gitfixture/testsite/pullrequests/77/comments" "first Bitbucket preview comment is a POST"
+assert_contains "$bb_sink" "PUT /2.0/repositories/gitfixture/testsite/pullrequests/77/comments/1" "second Bitbucket preview comment updates the existing one (PUT, not PATCH)"
+assert_contains "$bb_sink" "https://testsite.staging.ddeploy.test" "Bitbucket preview comment includes the site URL"
+assert_contains "$bb_sink" "<!-- ddeploy-preview -->" "Bitbucket preview comment carries the idempotency marker"
+: >/tmp/ddeploy-comment-sink.jsonl
+
 # Only the Bitbucket path exercises a successful (same-repo) PR above —
 # this covers the GitHub side of parse_github's pull_request handling
 # end to end, not just the fork-rejection branch.
@@ -451,6 +657,9 @@ rm -f "$BODY"
 
 GH_PREVIEW=testsite-feature-gh
 assert_file_exists "/etc/nginx/sites-enabled/$GH_PREVIEW.conf" "GitHub-webhook provision-preview created the preview vhost"
+sink="$(cat /tmp/ddeploy-comment-sink.jsonl 2>/dev/null || true)"
+assert_contains "$sink" "POST /repos/gitfixture/testsite/issues/42/comments" "GitHub webhook posted a preview comment on PR 42"
+assert_contains "$sink" "https://testsite-feature-gh.staging.ddeploy.test" "GitHub preview comment has the preview URL"
 if [[ -n "$AUTH_PASS" ]]; then
     out="$(curl -fsSk -u "preview:$AUTH_PASS" --resolve "$GH_PREVIEW.staging.ddeploy.test:443:127.0.0.1" "https://$GH_PREVIEW.staging.ddeploy.test/")"
     assert_contains "$out" "MARKER=preview-gh-v1" "GitHub-webhook preview serves the feature-gh branch"
@@ -562,6 +771,12 @@ flush_hooks
 sleep 1
 out="$(curl -fsSk -u "preview:$AUTH_PASS" --resolve "$PREVIEW.staging.ddeploy.test:443:127.0.0.1" "https://$PREVIEW.staging.ddeploy.test/")"
 assert_contains "$out" "MARKER=preview-v2" "webhook deploy-preview fetch+reset picked up the new commit"
+sink="$(cat /tmp/ddeploy-comment-sink.jsonl 2>/dev/null || true)"
+assert_contains "$sink" "POST /2.0/repositories/gitfixture/testsite/pullrequests/7/comments" "Bitbucket webhook posted a preview comment on PR 7"
+assert_contains "$sink" "PUT /2.0/repositories/gitfixture/testsite/pullrequests/7/comments/1" "Bitbucket deploy-preview updated the existing PR comment"
+assert_contains "$sink" "https://testsite-feature-a.staging.ddeploy.test" "Bitbucket preview comment has the preview URL"
+kill "$COMMENT_PID" 2>/dev/null || true
+wait "$COMMENT_PID" 2>/dev/null || true
 rm -f "$BODY"
 
 # --- backup / restore, against real object storage (MinIO) -------------

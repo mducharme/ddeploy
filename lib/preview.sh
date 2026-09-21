@@ -37,6 +37,12 @@ preview_slug() {
     echo "$slug"
 }
 
+# Public URL for a (project, branch) preview. Deterministic — the site
+# does not have to exist yet. Used by `preview-url` and the PR comment.
+preview_url() {
+    printf 'https://%s.%s\n' "$(preview_slug "$1" "$2")" "$BASE_DOMAIN"
+}
+
 # --- .preview metadata: marks a site as a preview and records what it's
 # a preview of, so deploy/remove/list/prune know how to treat it. ---
 

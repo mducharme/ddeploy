@@ -200,11 +200,35 @@ build_redirects_block() {
     done
 }
 
+# Extensions build_static_cache_block treats as cacheable static assets.
+# Shared with build_deny_php_block, which nests the identical rule
+# inside each deny-php prefix — a top-level `^~` prefix location (what
+# deny_php_in_uploads renders) is, once it's the longest match, never
+# followed by nginx checking any top-level regex location at all, so
+# without this, static_cache's own top-level `~*` block would be
+# silently shadowed for exactly the subdirectory (uploads) most likely
+# to hold cacheable assets. Safe to nest here (unlike auth_exempt_paths'
+# now-abandoned nested-location attempt, see build_auth_block): this
+# block's own try_files has no `/index.php` fallback, so a request under
+# it is never internally rewritten, and nginx's location search is never
+# re-run from the top mid-request the way it was for that case.
+STATIC_CACHE_EXT_RE='\.(?:css|js|mjs|map|jpg|jpeg|gif|png|svg|webp|avif|ico|woff|woff2|ttf|otf|eot)$'
+
 # Nested `deny all` for PHP under web-accessible upload (or explicit)
 # prefixes. try_files =404 so a missing file does not fall through to
 # index.php. Path `/` is rejected at parse time.
 build_deny_php_block() {
-    local path
+    local path static_snippet=""
+    if [[ -n "${STATIC_CACHE:-}" ]]; then
+        static_snippet="$(cat <<EOF
+        location ~* ${STATIC_CACHE_EXT_RE} {
+            expires ${STATIC_CACHE};
+            access_log off;
+            try_files \$uri =404;
+        }
+EOF
+)"
+    fi
     for path in "${DENY_PHP_PATHS[@]+"${DENY_PHP_PATHS[@]}"}"; do
         path="${path%/}"
         # Prefix + trailing slash, not `location =`: nginx forbids nested
@@ -213,6 +237,7 @@ build_deny_php_block() {
         cat <<EOF
     location ^~ ${path}/ {
         location ~ \\.php\$ { deny all; }
+${static_snippet}
         try_files \$uri \$uri/ =404;
     }
 EOF
@@ -227,7 +252,7 @@ build_static_cache_block() {
     local dur="${STATIC_CACHE:-}"
     [[ -n "$dur" ]] || return 0
     cat <<EOF
-    location ~* \\.(?:css|js|mjs|map|jpg|jpeg|gif|png|svg|webp|avif|ico|woff|woff2|ttf|otf|eot)\$ {
+    location ~* ${STATIC_CACHE_EXT_RE} {
         expires $dur;
         access_log off;
         try_files \$uri =404;

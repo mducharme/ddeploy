@@ -37,6 +37,24 @@ shared-uploads symlink.
 EOF
 }
 
+usage_preview_url() {
+    cat <<'EOF'
+usage: provision.sh preview-url <project> <branch>
+
+Print https://<slug>.$BASE_DOMAIN for this pair. The preview does not
+have to exist — the name is the same one provision-preview would use.
+EOF
+}
+
+cmd_preview_url() {
+    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage_preview_url; return 0; }
+    load_conf
+    local project="${1:-}" branch="${2:-}"
+    [[ -n "$project" && -n "$branch" ]] || { usage_preview_url; die "project and branch required"; }
+    validate_name "$(preview_slug "$project" "$branch")"
+    preview_url "$project" "$branch"
+}
+
 cmd_provision_preview() {
     [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage_provision_preview; return 0; }
     load_conf

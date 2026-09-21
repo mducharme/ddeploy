@@ -127,7 +127,13 @@ validate_static_cache() {
 # or empty if that dir is not web-accessible (e.g. ../private-uploads).
 upload_dir_url_path() {
     local site_rel="$1"
-    local doc="${DOCROOT:-}"
+    # Strip a trailing slash: DOCROOT is never rejected for having one
+    # (validate_relative_path doesn't check for it), but UPLOAD_DIRS
+    # entries are already normalized without one (resolve_docroot_relative),
+    # so an un-stripped "$doc/" here would build the case pattern below
+    # as "doc//*" (a literal double slash) — never matching a normalized
+    # entry, silently treating every upload dir as not web-accessible.
+    local doc="${DOCROOT%/}"
     if [[ -z "$doc" ]]; then
         printf '/%s\n' "$site_rel"
         return 0
@@ -374,9 +380,16 @@ parse_config() {
             deny_url="$(upload_dir_url_path "$v")" || continue
             [[ "$deny_url" == "/" ]] && continue
             validate_url_path "$deny_url" "derived deny_php path for upload_dirs '$v'"
+            # Compare with trailing slashes stripped, the same
+            # normalization build_deny_php_block (lib/vhost.sh) applies
+            # when it renders each entry — otherwise an explicit
+            # deny_php_paths: ["/uploads/"] and a derived "/uploads"
+            # (upload_dir_url_path never adds a trailing slash) look like
+            # two different paths here, but render as the identical
+            # nginx location, which `nginx -t` rejects as a duplicate.
             local already=0 d
             for d in "${DENY_PHP_PATHS[@]}"; do
-                [[ "$d" == "$deny_url" ]] && { already=1; break; }
+                [[ "${d%/}" == "${deny_url%/}" ]] && { already=1; break; }
             done
             [[ "$already" -eq 0 ]] && DENY_PHP_PATHS+=("$deny_url")
         done
@@ -384,11 +397,20 @@ parse_config() {
     (( ${#DENY_PHP_PATHS[@]} > 30 )) && die "deny_php_paths for '$name' has more than 30 entries — refusing to use it"
 
     REDIRECTS=()
-    local redirects_src="" redirects_tag
+    local redirects_src="" redirects_tag redirects_ext_count
     if [[ -f "$ext_cfg" ]]; then
         redirects_tag="$(yq eval '.redirects | tag' "$ext_cfg" 2>/dev/null || true)"
-        [[ "$redirects_tag" == "!!seq" ]] && redirects_src="$ext_cfg"
-        if [[ -z "$redirects_src" && -n "$redirects_tag" && "$redirects_tag" != "!!null" ]]; then
+        if [[ "$redirects_tag" == "!!seq" ]]; then
+            # An explicit empty list in .ddeploy/config.yaml falls back
+            # to the primary config, same as every other overridable
+            # array key (read_ext_array: ext wins only when it actually
+            # resolves to a non-empty value) — declaring the key isn't
+            # enough to win on its own, or redirects would be the one
+            # field in this tool that behaves differently from the rest.
+            redirects_ext_count="$(yq eval '.redirects | length' "$ext_cfg" 2>/dev/null || echo 0)"
+            [[ "$redirects_ext_count" =~ ^[0-9]+$ ]] || redirects_ext_count=0
+            [[ "$redirects_ext_count" -gt 0 ]] && redirects_src="$ext_cfg"
+        elif [[ -n "$redirects_tag" && "$redirects_tag" != "!!null" ]]; then
             die "redirects for '$name' must be a list of {from, to, code} maps — refusing to use it"
         fi
     fi

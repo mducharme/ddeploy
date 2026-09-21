@@ -42,6 +42,8 @@ source "$LIB_DIR/preview.sh"
 source "$LIB_DIR/hook.sh"
 # shellcheck source=lib/notify.sh
 source "$LIB_DIR/notify.sh"
+# shellcheck source=lib/preview_comment.sh
+source "$LIB_DIR/preview_comment.sh"
 # shellcheck source=lib/cmd_init.sh
 source "$LIB_DIR/cmd_init.sh"
 # shellcheck source=lib/cmd_init_db.sh
@@ -62,6 +64,8 @@ source "$LIB_DIR/cmd_backup.sh"
 source "$LIB_DIR/cmd_db_backup.sh"
 # shellcheck source=lib/cmd_preview.sh
 source "$LIB_DIR/cmd_preview.sh"
+# shellcheck source=lib/cmd_logs.sh
+source "$LIB_DIR/cmd_logs.sh"
 # shellcheck source=lib/cmd_restore.sh
 source "$LIB_DIR/cmd_restore.sh"
 # shellcheck source=lib/cmd_doctor.sh
@@ -90,6 +94,8 @@ commands:
   deploy-preview <project> <branch>       pull + redeploy a preview
   remove-preview <project> <branch> [opts]   remove a preview (see -h)
   prune-previews [project]      remove previews whose branch no longer exists
+  preview-url <project> <branch>   print https://<slug>.$BASE_DOMAIN (see -h)
+  logs <name> [-n N] [-f]       tail a site or fleet log (see -h)
   doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
   hook-worker                   drain the git-push webhook queue (systemd; not an operator command)
 EOF
@@ -117,6 +123,8 @@ main() {
         deploy-preview) cmd_deploy_preview "$@" ;;
         remove-preview) cmd_remove_preview "$@" ;;
         prune-previews) cmd_prune_previews "$@" ;;
+        preview-url)    cmd_preview_url "$@" ;;
+        logs)           cmd_logs "$@" ;;
         doctor)         cmd_doctor "$@" ;;
         hook-worker)    cmd_hook_worker "$@" ;;
         -h|--help|help|"") usage ;;
