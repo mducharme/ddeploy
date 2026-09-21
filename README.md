@@ -175,8 +175,8 @@ overruns the repo root itself.
 
 ### `.ddeploy/config.yaml`
 
-`additional_hostnames`, `additional_fqdns`, `persistent_files`,
-`db_env_scheme`, and `deploy_branch` aren't real DDEV fields — putting them in a real
+`additional_hostnames`, `additional_fqdns`, `persistent_files`, and
+`db_env_scheme` aren't real DDEV fields — putting them in a real
 `.ddev/config.yaml` risks a future DDEV schema-validation pass (or
 `ddev config` regenerating the file) silently dropping them, and it's a
 layering smell regardless: that file is DDEV's own, shared with the
@@ -185,7 +185,6 @@ client's dev team, not this tool's. Declare them instead in
 
 ```yaml
 db_env_scheme: charcoal
-deploy_branch: develop
 additional_hostnames:
   - alt-name
 additional_fqdns:
@@ -232,12 +231,9 @@ restrictive `1m`, which breaks most real media uploads out of the box).
 concurrency ceiling, default `5`) for a site that needs more (or less)
 headroom than the rest of the fleet.
 
-Four more with no server-wide equivalent — off by default, only active
+Three more with no server-wide equivalent — off by default, only active
 when declared:
 
-- `deploy_branch` — which branch a normal (non-preview) site tracks,
-instead of whatever branch it happened to be cloned on. See "Default
-branch".
 - `auth_exempt_paths` — URL path prefixes that bypass basic auth even
 when it's on (a webhook or health-check endpoint on an otherwise-gated
 preview, say). Absolute paths only (`/webhook`, not `webhook`).
@@ -467,42 +463,41 @@ forever, since `deploy` just does `git pull --ff-only` on whatever's
 currently checked out.
 
 To pin a project to a specific branch instead — `develop`, `staging`,
-whatever the team has actually agreed is "production" — declare it in
-`.ddeploy/config.yaml`:
+whatever the team has actually agreed is "production" — set it with
+`--branch`:
 
-```yaml
-deploy_branch: develop
+```
+provision.sh provision <name> --branch develop
 ```
 
-Commit and push that onto whatever branch the site is *currently*
-tracking. `deploy` always pulls the tracked branch first (an ordinary
-pull, same as any other config change), then checks the config it just
-pulled: if it now names a different branch than the one actually checked
-out, that same deploy fetches the configured branch and switches
-`current`'s checkout onto it — a `git checkout -B <branch>
-origin/<branch>`, not a `pull`, since there's no reason to assume the
-previously-tracked branch fast-forwards into the new one. So **one push
-is enough**: the deploy it triggers both picks up the declaration and
-performs the switch, in a single step. From then on it's an ordinary
-`pull --ff-only` again, on the newly-configured branch. Change
-`deploy_branch:` again later (or remove it, to go back to "whatever git
-clone picked") and the same thing happens again.
+This is **operator state, not repo state**: it's saved server-side (not
+written into the client's repo), and takes effect immediately. That
+matters because a repo-committed setting would be backwards here — it
+would have to be pushed to whatever branch is *currently* tracked (the
+one you're trying to move away from) to ever be seen at all. The
+operator-side setting has no such bootstrapping problem: the next
+`deploy` (webhook-triggered or over SSH) sees it right away and, if it
+names a different branch than the one actually checked out, fetches that
+branch and switches `current`'s checkout onto it — a `git checkout -B
+<branch> origin/<branch>`, not a `pull`, since there's no reason to
+assume the previously-tracked branch fast-forwards into the new one.
+From then on it's an ordinary `pull --ff-only` again, on the
+newly-tracked branch. `--clear-branch` removes the setting, going back
+to whatever's already checked out.
 
 A git-push webhook (`push_head`, README "Deploy on git push") matches a
 push's branch against both the site's *current* checked-out branch and
-its *configured* `deploy_branch` — not just the current one. This mostly
-matters before a site's very first deploy: if `deploy_branch:` is already
-present in the very first commit a site is provisioned from (nothing has
-pulled or switched anything yet, so HEAD and the configured branch can
-genuinely disagree), a push to that configured branch is still recognized
-and triggers the deploy that performs the switch — instead of being
+this setting — not just the current one — so a push to the
+newly-configured branch is recognized (and triggers the deploy that
+performs the switch) the moment the setting is made, rather than being
 silently ignored because HEAD hasn't caught up yet.
 
 For a brand-new site, `provision <name> <repo-url> --branch <name>`
-clones that branch directly instead of the remote's default, skipping the
-"clone default, then switch on first deploy" indirection. This only
-affects the initial clone; changing the tracked branch afterward is
-always `deploy_branch:` in config, above. (Branch previews are unaffected
+clones that branch directly instead of the remote's default (and
+persists the setting the same as above), skipping an unnecessary
+first-deploy switch. Onboarding a whole server's site list at once via
+`./manifest` (README "Layout") takes the same setting as an optional 3rd
+column: `<name> <repo-url> [branch]`. (Branch previews are unaffected
 either way — a preview is inherently pinned to its own PR branch by
 definition, via `provision-preview <project> <branch>` /
 `deploy-preview`.)
@@ -830,7 +825,7 @@ Set the domain's SSL/TLS mode to "Full (strict)" in Cloudflare once
 ```
 provision.sh       entrypoint
 provisioner.conf   per-server config, edit after cloning
-manifest           name -> repo-url, used by provision-all / deploy-all
+manifest           name -> repo-url -> optional branch, used by provision-all
 templates/         nginx vhost + FPM pool + webhook vhost templates
 lib/               implementation
 hook/              unprivileged git-forge webhook listener (Python)

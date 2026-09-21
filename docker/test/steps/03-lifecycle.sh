@@ -725,7 +725,7 @@ sleep 1
 out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "MARKER=v2" "a plain deploy after a rollback pulls forward again"
 
-step "deploy_branch: switching a site's tracked branch via config"
+step "deploy_branch: operator-side branch override (provision --branch)"
 
 # A new branch off main's current tip, with distinct content so a curl
 # can tell it apart from main.
@@ -739,43 +739,29 @@ git -C "$WORK" commit -q -am 'alt-main v1'
 git -C "$WORK" push -q origin alt-main:alt-main
 rm -rf "$WORK"
 
-# deploy_branch: alt-main lands on main ITSELF (the branch testsite is
-# currently tracking) — an ordinary push to a branch it already tracks,
-# which the existing push_head matcher already handles with no special
-# casing. prepare_forward_release always pulls the tracked branch FIRST
-# and only then checks the freshly-pulled config, so this one deploy both
-# picks up the declaration AND performs the switch — no separate push to
-# alt-main is needed for the common case (this IS the "easy" part).
-WORK="$(mktemp -d)"
-git clone -q "$BARE" "$WORK"
-git -C "$WORK" config user.email 'test@ddeploy.test'
-git -C "$WORK" config user.name 'ddeploy test'
-python3 -c "
-p = '$WORK/.ddeploy/config.yaml'
-s = open(p).read()
-open(p, 'w').write('deploy_branch: alt-main\n' + s)
-"
-git -C "$WORK" commit -q -am 'declare deploy_branch: alt-main'
-git -C "$WORK" push -q origin main
-rm -rf "$WORK"
+# Operator sets the override — server-side only, no repo commit. testsite
+# is already provisioned (tracking main), so this just persists the
+# setting; it does not touch git by itself (only `deploy` does that).
+resolved_out="$(./provision.sh provision testsite --branch alt-main 2>&1)"
+assert_contains "$resolved_out" "deploy_branch=alt-main" "provision echoes the resolved deploy_branch"
+head_branch="$(git -C "$LIVE" rev-parse --abbrev-ref HEAD)"
+[[ "$head_branch" == "main" ]] && pass "setting the override alone does not touch git yet" || fail "expected HEAD still main, got '$head_branch'"
 
+# The override is visible immediately (it's a local file, not something
+# that has to be pulled), so — unlike a repo-committed setting — even the
+# very FIRST push to the newly-configured branch is recognized right
+# away: the webhook branch-matcher checks it alongside HEAD.
 BODY="$(mktemp)"
-write_github_push main "$BODY"
+write_github_push alt-main "$BODY"
 code="$(post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY")"
-[[ "$code" == "202" ]] && pass "GitHub push to main (declaring deploy_branch) accepted" || fail "GitHub push to main returned $code, expected 202"
+[[ "$code" == "202" ]] && pass "GitHub push to alt-main accepted" || fail "GitHub push to alt-main returned $code, expected 202"
 flush_hooks
 sleep 1
 rm -f "$BODY"
 out="$(curl_site testsite.staging.ddeploy.test)"
-assert_contains "$out" "MARKER=alt-branch-v1" "one deploy both picked up deploy_branch and switched the site onto it"
+assert_contains "$out" "MARKER=alt-branch-v1" "the push was matched via the override (not ignored) and switched the site onto it"
 head_branch="$(git -C "$LIVE" rev-parse --abbrev-ref HEAD)"
 [[ "$head_branch" == "alt-main" ]] && pass "site's checkout is now on alt-main" || fail "expected HEAD alt-main, got '$head_branch'"
-
-# The webhook branch-matcher itself (matching a push against deploy_branch,
-# not just HEAD) matters for the narrower case of a config that declares
-# deploy_branch from a site's very first commit, before any deploy has
-# ever run (so HEAD hasn't had a chance to catch up yet) — not exercised
-# here since testsite was already live before this test began.
 
 # Once already on the configured branch, later pushes to it are an
 # ordinary pull --ff-only, not another switch.
@@ -796,45 +782,22 @@ flush_hooks
 sleep 1
 rm -f "$BODY"
 out="$(curl_site testsite.staging.ddeploy.test)"
-assert_contains "$out" "MARKER=alt-branch-v2" "a later push to the already-tracked deploy_branch pulls forward normally"
+assert_contains "$out" "MARKER=alt-branch-v2" "a later push to the already-tracked branch pulls forward normally"
 
-# Switch back to main (declared on alt-main itself), restoring testsite
-# to the state every later step in this script expects.
-WORK="$(mktemp -d)"
-git clone -q --branch alt-main "$BARE" "$WORK"
-git -C "$WORK" config user.email 'test@ddeploy.test'
-git -C "$WORK" config user.name 'ddeploy test'
-python3 -c "
-p = '$WORK/.ddeploy/config.yaml'
-s = open(p).read()
-open(p, 'w').write('deploy_branch: main\n' + s)
-"
-git -C "$WORK" commit -q -am 'declare deploy_branch: main'
-git -C "$WORK" push -q origin alt-main
-rm -rf "$WORK"
-
+# Switch back to main — same mechanism, no repo commit needed.
+./provision.sh provision testsite --branch main
 ./provision.sh deploy testsite
 sleep 1
 head_branch="$(git -C "$LIVE" rev-parse --abbrev-ref HEAD)"
-[[ "$head_branch" == "main" ]] && pass "deploy_branch: main switched the site back" || fail "expected HEAD main, got '$head_branch'"
+[[ "$head_branch" == "main" ]] && pass "--branch main switched the site back" || fail "expected HEAD main, got '$head_branch'"
 out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "MARKER=v2" "back on main, serving its content again"
 
-# Drop main's own now-stale deploy_branch: alt-main (leftover from the
-# very first push in this step) so it doesn't surprise a later addition
-# to this test file with an unexpected switch on the next plain deploy.
-WORK="$(mktemp -d)"
-git clone -q "$BARE" "$WORK"
-git -C "$WORK" config user.email 'test@ddeploy.test'
-git -C "$WORK" config user.name 'ddeploy test'
-sed -i '/^deploy_branch:/d' "$WORK/.ddeploy/config.yaml"
-git -C "$WORK" commit -q -am 'drop deploy_branch'
-git -C "$WORK" push -q origin main
-rm -rf "$WORK"
-./provision.sh deploy testsite
-sleep 1
-out="$(curl_site testsite.staging.ddeploy.test)"
-assert_contains "$out" "MARKER=v2" "main is clean again — deploy stays a plain pull with deploy_branch unset"
+# --clear-branch removes the override entirely, leaving testsite clean
+# for every later step in this script.
+./provision.sh provision testsite --clear-branch
+resolved_out="$(./provision.sh provision testsite 2>&1)"
+assert_not_contains "$resolved_out" "deploy_branch=" "--clear-branch removed the override"
 
 # --- branch preview (shared mode, the default) -------------------------
 

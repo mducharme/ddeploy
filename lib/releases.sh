@@ -17,6 +17,37 @@ release_id() {
     printf '%s-%s' "$(date -u +%Y%m%dT%H%M%SZ)" "${1:0:12}"
 }
 
+# --- deploy_branch: which branch a normal site tracks, set by the
+# operator (`provision --branch`, or the manifest's 3rd column) — never
+# read from the client repo itself. A repo-committed setting would have
+# to be pushed to whatever branch is CURRENTLY tracked to ever be seen
+# (the branch you're trying to move away from), which is backwards; an
+# operator-side file has no such bootstrapping problem; see README
+# "Default branch". ---
+
+deploy_branch_file() { echo "$GENERATED_DIR/$1.deploy-branch"; }
+
+write_deploy_branch() {
+    local name="$1" branch="$2"
+    validate_branch_name "$branch" "--branch for '$name'"
+    mkdir -p "$GENERATED_DIR"
+    printf '%s\n' "$branch" > "$(deploy_branch_file "$name")"
+}
+
+clear_deploy_branch() { rm -f "$(deploy_branch_file "$1")"; }
+
+# Empty if no override is set. A present-but-malformed value dies via
+# validate_branch_name rather than being silently ignored, so a typo
+# surfaces immediately instead of quietly deploying the wrong branch.
+read_deploy_branch() {
+    local name="$1" f; f="$(deploy_branch_file "$name")"
+    [[ -s "$f" ]] || return 0
+    local val; val="$(<"$f")"
+    val="${val%$'\n'}"
+    [[ -n "$val" ]] && validate_branch_name "$val" "deploy_branch override for '$name'"
+    printf '%s' "$val"
+}
+
 # site_root is the site user's HOME (composer cache, .ssh) but must not
 # let that user replace `current` (a compromised pool would otherwise
 # retarget nginx at an attacker-controlled tree). Sticky bit: the user
@@ -140,11 +171,9 @@ finalize_staging() {
 
 # First clone of a site: origin -> a new release dir. Does not switch
 # current. $3, if given, clones that branch directly — the operator's own
-# --branch at provision time (README "Default branch"); a repo whose
-# config instead declares deploy_branch: in .ddeploy/config.yaml on
-# whatever branch git clones by default gets picked up one release later,
-# by prepare_forward_release's own switch-if-configured check, since
-# .ddeploy/config.yaml isn't readable before the first clone exists.
+# --branch at provision time (README "Default branch"), which
+# cmd_provision.sh also persists via write_deploy_branch so later deploys
+# stay pinned to it without needing a second call.
 clone_into_release() {
     local name="$1" repo_url="$2" branch="${3:-}"
     local root; root="$(site_root "$name")"
@@ -193,19 +222,13 @@ prepare_forward_release() {
         || die "failed to restore origin on the new release of '$name'"
     apply_permissions "$name" "$staging"
 
-    log_info "git pull --ff-only ($name)"
-    if ! sudo -u "www-$name" env HOME="$root" git -C "$staging" pull --ff-only 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
-        rm -rf "$staging"
-        die "git pull --ff-only failed for '$name' — live tree left unchanged"
-    fi
-
-    # deploy_branch (README "Default branch"): re-read AFTER the pull
-    # above, not before — a deploy_branch declaration that just landed on
-    # the branch we're already tracking must take effect THIS deploy, not
-    # the next one (reading pre-pull would only ever see it a release
-    # late). Self-stabilizing after the switch below, since the branch
-    # this reads from IS the configured one from then on.
-    local target_branch; target_branch="$(read_deploy_branch "$staging" "$name")"
+    # deploy_branch (README "Default branch") is operator state, not
+    # anything read from the repo — available immediately, no pull
+    # needed to see it. Checked before pulling: if we're about to switch
+    # away from the currently-tracked branch anyway, there's no reason to
+    # pull --ff-only it first (and every reason not to — that pull could
+    # itself fail non-fast-forward on a branch we're abandoning regardless).
+    local target_branch; target_branch="$(read_deploy_branch "$name")"
     local current_branch; current_branch="$(git -C "$staging" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 
     if [[ -n "$target_branch" && "$target_branch" != "$current_branch" ]]; then
@@ -217,6 +240,12 @@ prepare_forward_release() {
         if ! sudo -u "www-$name" env HOME="$root" git -C "$staging" checkout -B "$target_branch" "origin/$target_branch" 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
             rm -rf "$staging"
             die "'$name': failed to switch to deploy_branch '$target_branch'"
+        fi
+    else
+        log_info "git pull --ff-only ($name)"
+        if ! sudo -u "www-$name" env HOME="$root" git -C "$staging" pull --ff-only 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
+            rm -rf "$staging"
+            die "git pull --ff-only failed for '$name' — live tree left unchanged"
         fi
     fi
     finalize_staging "$staging"

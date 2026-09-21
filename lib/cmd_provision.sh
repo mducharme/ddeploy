@@ -12,10 +12,15 @@ options:
                             and no .ddev/config.yaml / sidecar exists
   --php <version>           e.g. 8.2 (non-interactive fallback field)
   --docroot <path>          relative to repo root (non-interactive fallback field)
-  --branch <name>           clone this branch instead of the remote's default;
-                            only affects the very first clone — see README
-                            "Default branch" for changing it later via
-                            deploy_branch: in .ddeploy/config.yaml
+  --branch <name>           track this branch instead of whatever the remote's
+                            default is (first clone) or whatever's already
+                            checked out (an existing site) — persists as an
+                            operator-side setting, so the next deploy
+                            switches to it; see README "Default branch";
+                            always overrides config (there is no config
+                            equivalent — this is never read from the repo)
+  --clear-branch            remove a --branch override, going back to
+                            whatever branch is already checked out
   --db <name>                DB name and user; always overrides config
   --hostnames "<a> <b>"     space-separated additional hostnames; always
                             overrides config
@@ -50,7 +55,7 @@ cmd_provision() {
     validate_name "$name"
 
     local repo_url="" non_interactive=0
-    local opt_php="" opt_docroot="" opt_db="" opt_hostnames="" opt_custom_domains="" opt_upload_dirs="" opt_deploy_cmds="" opt_branch="" auth_flag=""
+    local opt_php="" opt_docroot="" opt_db="" opt_hostnames="" opt_custom_domains="" opt_upload_dirs="" opt_deploy_cmds="" opt_branch="" opt_clear_branch=0 auth_flag=""
 
     if [[ "${1:-}" != "" && "${1:-}" != --* ]]; then
         repo_url="$1"; shift
@@ -62,6 +67,7 @@ cmd_provision() {
             --php) opt_php="$2"; shift ;;
             --docroot) opt_docroot="$2"; shift ;;
             --branch) opt_branch="$2"; shift ;;
+            --clear-branch) opt_clear_branch=1 ;;
             --db) opt_db="$2"; shift ;;
             --hostnames) opt_hostnames="$2"; shift ;;
             --custom-domains) opt_custom_domains="$2"; shift ;;
@@ -74,6 +80,8 @@ cmd_provision() {
         esac
         shift
     done
+
+    [[ -n "$opt_branch" && "$opt_clear_branch" -eq 1 ]] && die "--branch and --clear-branch are mutually exclusive"
 
     local wrapper; wrapper="$(site_root "$name")"
     local dir dest
@@ -89,6 +97,17 @@ cmd_provision() {
         dest="$(clone_into_release "$name" "$repo_url" "$opt_branch")"
         switch_current "$name" "$dest"
     fi
+
+    # Persists regardless of whether this was a first clone or a re-run
+    # on an already-provisioned site — the latter is how an operator
+    # points an existing site at a different branch: no repo commit, the
+    # next deploy just picks it up. See README "Default branch".
+    if [[ -n "$opt_branch" ]]; then
+        write_deploy_branch "$name" "$opt_branch"
+    elif [[ "$opt_clear_branch" -eq 1 ]]; then
+        clear_deploy_branch "$name"
+    fi
+
     ensure_releases_layout "$name"
     dir="$(site_dir "$name")"
     dest="$(current_release_real "$name")"

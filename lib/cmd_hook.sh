@@ -88,14 +88,13 @@ hook_process_job() {
             for name in "${matches[@]}"; do
                 is_preview "$name" && continue
                 head="$(site_head_branch "$name")"
-                # Also match the site's configured deploy_branch (README
+                # Also match the site's deploy_branch override (README
                 # "Default branch"), not just its current HEAD — otherwise
-                # the very first push to a newly-configured branch would
-                # be ignored, since HEAD only moves once deploy itself
-                # performs the switch (lib/releases.sh's
-                # prepare_forward_release), which this push is meant to
-                # trigger in the first place.
-                target="$(read_deploy_branch "$(site_dir "$name")" "$name")"
+                # the very first push after an operator sets `provision
+                # --branch` would be ignored, since HEAD only moves once
+                # deploy itself performs the switch, which this push is
+                # meant to trigger in the first place.
+                target="$(read_deploy_branch "$name")"
                 hit=0
                 for branch in "${branches[@]}"; do
                     if [[ "$head" == "$branch" ]] || [[ -n "$target" && "$target" == "$branch" ]]; then

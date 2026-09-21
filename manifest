@@ -1,5 +1,9 @@
-# One line per site: "<name> <repo-url>".
+# One line per site: "<name> <repo-url> [branch]".
 # Consumed by `provision-all` / `deploy-all`. Blank lines and lines
-# starting with # are ignored.
+# starting with # are ignored. branch is optional — omit it to track
+# whatever the remote's default branch is; when given, it's passed as
+# `provision --branch`, which persists as an operator-side setting (not
+# written into the repo) — see README "Default branch".
 #
 # example-client git@github.com:youragency/example-client.git
+# other-client    git@github.com:youragency/other-client.git      develop
