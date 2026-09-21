@@ -25,7 +25,7 @@ site_log() {
 
 load_conf() {
     local conf="$PROVISIONER_DIR/provisioner.conf"
-    [[ -f "$conf" ]] || die "missing $conf"
+    [[ -f "$conf" ]] || die "missing $conf — run './provision.sh configure' first (or './install.sh')"
     # shellcheck source=/dev/null
     source "$conf"
     : "${BASE_DOMAIN:?provisioner.conf: BASE_DOMAIN not set}"
@@ -71,7 +71,7 @@ load_conf() {
 # doesn't need any of the web-server config load_conf requires.
 load_db_conf() {
     local conf="$PROVISIONER_DIR/provisioner.conf"
-    [[ -f "$conf" ]] || die "missing $conf"
+    [[ -f "$conf" ]] || die "missing $conf — run './provision.sh configure' first (or './install.sh')"
     # shellcheck source=/dev/null
     source "$conf"
     : "${DB_ADMIN_CREDENTIALS:?provisioner.conf: DB_ADMIN_CREDENTIALS not set}"

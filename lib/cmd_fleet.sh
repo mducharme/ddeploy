@@ -10,6 +10,7 @@ read_manifest() {
 
 cmd_provision_all() {
     load_conf
+    [[ -f "$PROVISIONER_DIR/manifest" ]] || die "no ./manifest — copy manifest.example to manifest and fill it in first"
     local failures=0
     local line name repo_url branch
     local -a extra

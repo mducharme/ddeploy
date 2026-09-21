@@ -60,9 +60,12 @@ packages and a few real API calls).
 ## Quickstart: a real server
 
 1. `git clone` this repo onto the server, at `/home/deploy/provisioner`
-  (`provisioner.conf`'s defaults assume this path).
-2. Edit `provisioner.conf` — domain, paths, PHP versions, DB credentials
-  path, git key path.
+  (`provisioner.example.conf`'s defaults assume this path).
+2. `./provision.sh configure` — creates `provisioner.conf` from
+  `provisioner.example.conf` and interactively sets domain, paths, PHP
+  versions, and where the two credential files below will live.
+  `provisioner.conf` (like `manifest`) is gitignored: it's per-server, so
+  it never conflicts with a later `git pull` on this same checkout.
 3. Place a Cloudflare API token at `CF_CREDENTIALS` (`chmod 600`).
 4. Place a shared git SSH key at `GIT_DEPLOY_KEY` (`chmod 600`) — see
   "Git access."
@@ -72,6 +75,9 @@ packages and a few real API calls).
   or asks for config, stands up the vhost/FPM pool/database, runs the
    first deploy.
 
+Steps 2 and 5 are also just `./install.sh` (skips step 2 if
+`provisioner.conf` already exists).
+
 From there: `deploy <name>` on every push (or set up "Deploy on git
 push" so that happens on its own), `list` to see the fleet, `doctor` to
 check on it.
@@ -79,6 +85,7 @@ check on it.
 ## Commands
 
 ```
+configure                     create/update provisioner.conf (see -h)
 init                          set up a web server (packages, PHP, TLS, firewall)
 init-db                       set up a dedicated database server
 provision <name> [repo-url]   add a site
@@ -110,7 +117,7 @@ permanent is this":
 
 | Where                                            | What goes here                                                                              | Lives in                               | Git-tracked                           |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------- |
-| `provisioner.conf`                               | Server-wide defaults — every site on this box starts from these                             | this repo, on the server               | no — per-server, edited after cloning |
+| `provisioner.conf`                               | Server-wide defaults — every site on this box starts from these                             | this repo, on the server               | no — gitignored, created by `./provision.sh configure` from the tracked `provisioner.example.conf` |
 | `.ddev/config.yaml`                              | Real DDEV fields: `php_version`, `docroot`, `upload_dirs`, `hooks.post-start`, `database.*` | the client's repo                      | yes — it's DDEV's own file            |
 | `.ddeploy/config.yaml`                           | ddeploy-only per-site keys that aren't real DDEV fields (below)                             | the client's repo, sibling to `.ddev/` | yes                                   |
 | `generated/<name>.yaml`                          | Sidecar ddeploy writes itself for a repo with no `.ddev/config.yaml` yet                    | this repo, on the server               | no — `generated/` is gitignored       |
@@ -823,15 +830,18 @@ Set the domain's SSL/TLS mode to "Full (strict)" in Cloudflare once
 ## Layout
 
 ```
-provision.sh       entrypoint
-provisioner.conf   per-server config, edit after cloning
-manifest           name -> repo-url -> optional branch, used by provision-all
-templates/         nginx vhost + FPM pool + webhook vhost templates
-lib/               implementation
-hook/              unprivileged git-forge webhook listener (Python)
-hooks/             ops scripts run for every site (see hooks/README.md)
-generated/         sidecar configs + DB credentials (created at runtime)
-logs/              per-site provision/deploy logs (created at runtime)
+install.sh                 configure (if needed) + init, chained for a fresh server
+provision.sh               entrypoint
+provisioner.example.conf   tracked template; `configure` copies it to provisioner.conf
+provisioner.conf           per-server config, gitignored — created by `configure`
+manifest.example           tracked template; copy to manifest yourself if you want it
+manifest                   name -> repo-url -> optional branch, used by provision-all, gitignored
+templates/                 nginx vhost + FPM pool + webhook vhost templates
+lib/                       implementation
+hook/                      unprivileged git-forge webhook listener (Python)
+hooks/                     ops scripts run for every site (see hooks/README.md)
+generated/                 sidecar configs + DB credentials (created at runtime)
+logs/                      per-site provision/deploy logs (created at runtime)
 ```
 
 Expected to live at `/home/deploy/provisioner`. Sites are checked out

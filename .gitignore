@@ -4,3 +4,9 @@
 /phpshim/
 /docker/test/generated/
 __pycache__/
+
+# Per-server, created from the .example versions (./install.sh or
+# provision.sh configure) — never committed, so a `git pull` never
+# conflicts with what an operator has already set up on this server.
+/provisioner.conf
+/manifest

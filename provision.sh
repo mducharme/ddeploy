@@ -44,6 +44,8 @@ source "$LIB_DIR/hook.sh"
 source "$LIB_DIR/notify.sh"
 # shellcheck source=lib/preview_comment.sh
 source "$LIB_DIR/preview_comment.sh"
+# shellcheck source=lib/cmd_configure.sh
+source "$LIB_DIR/cmd_configure.sh"
 # shellcheck source=lib/cmd_init.sh
 source "$LIB_DIR/cmd_init.sh"
 # shellcheck source=lib/cmd_init_db.sh
@@ -78,6 +80,7 @@ usage() {
 usage: provision.sh <command> [args]
 
 commands:
+  configure                     create/update provisioner.conf (see -h)
   init                          set up a web server (packages, PHP, TLS, firewall)
   init-db                       set up a dedicated database server
   provision <name> [repo-url]   stand up a site (see: provision.sh provision -h)
@@ -107,6 +110,7 @@ main() {
         shift
     fi
     case "$cmd" in
+        configure)      cmd_configure "$@" ;;
         init)           cmd_init "$@" ;;
         init-db)        cmd_init_db "$@" ;;
         provision)      cmd_provision "$@" ;;
