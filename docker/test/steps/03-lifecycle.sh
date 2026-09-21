@@ -156,6 +156,25 @@ assert_contains "$out_custom" "MARKER=v1" "custom-domain vhost reaches the same 
 list_out="$(./provision.sh list)"
 assert_contains "$list_out" "testsite" "list shows testsite"
 
+step "scoped nginx extras (allowlisted knobs, not raw snippets)"
+vhost="$(cat /etc/nginx/sites-available/testsite.conf)"
+assert_contains "$vhost" 'add_header X-Content-Type-Options "nosniff" always;' "security_headers rendered into the vhost"
+assert_contains "$vhost" "location ^~ /old-home { return 301 /; }" "redirects rendered as a prefix location"
+assert_contains "$vhost" "expires 7d;" "static_cache rendered"
+assert_contains "$vhost" "location ^~ /uploads/" "deny_php_in_uploads derived /uploads from the web-accessible upload_dirs entry"
+
+hdrs="$(curl -sSk -D- -o /dev/null --resolve "testsite.staging.ddeploy.test:443:127.0.0.1" "https://testsite.staging.ddeploy.test/" | tr '[:upper:]' '[:lower:]')"
+assert_contains "$hdrs" "x-content-type-options: nosniff" "security_headers actually sent"
+redir="$(curl -sSk -o /dev/null -w '%{http_code}' --resolve "testsite.staging.ddeploy.test:443:127.0.0.1" "https://testsite.staging.ddeploy.test/old-home")"
+[[ "$redir" == "301" ]] && pass "redirect /old-home is 301" || fail "redirect /old-home returned $redir, expected 301"
+css_hdrs="$(curl -sSk -D- -o /dev/null --resolve "testsite.staging.ddeploy.test:443:127.0.0.1" "https://testsite.staging.ddeploy.test/style.css" | tr '[:upper:]' '[:lower:]')"
+assert_contains "$css_hdrs" "cache-control:" "static_cache sets Cache-Control on css"
+mkdir -p "$LIVE/web/uploads"
+printf '<?php echo "PWN";\n' > "$LIVE/web/uploads/evil.php"
+chown www-testsite:www-data "$LIVE/web/uploads/evil.php"
+php_code="$(curl -sSk -o /dev/null -w '%{http_code}' --resolve "testsite.staging.ddeploy.test:443:127.0.0.1" "https://testsite.staging.ddeploy.test/uploads/evil.php")"
+[[ "$php_code" == "403" ]] && pass "PHP under /uploads is denied" || fail "GET /uploads/evil.php returned $php_code, expected 403"
+
 step "migrating an existing flat checkout to the releases layout stays reachable"
 # Reverts testsite to look exactly like a site a pre-atomic-release
 # ddeploy build left behind: no releases/current, a vhost with a
@@ -243,6 +262,38 @@ assert_cmd_ok "FPM pool has the overridden pm.max_children" grep -q "pm.max_chil
 assert_cmd_ok "FPM pool has the php_ini override" grep -q "php_admin_value\[max_execution_time\] = 45" /etc/php/8.3/fpm/pool.d/testsite.conf
 out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "MAX_EXEC=45" "php_ini override actually applies at runtime, not just written to the pool file"
+
+step "ops-owned nginx extra (not from the client repo)"
+printf 'location = /extra-probe { default_type text/plain; return 200 extra-ok; }\n' \
+    > /etc/nginx/ddeploy-extra/testsite.conf
+chown root:root /etc/nginx/ddeploy-extra/testsite.conf
+chmod 644 /etc/nginx/ddeploy-extra/testsite.conf
+./provision.sh deploy testsite
+sleep 1
+assert_contains "$(cat /etc/nginx/sites-available/testsite.conf)" "include /etc/nginx/ddeploy-extra/testsite.conf;" "ops-owned extra is included, not copied from the repo"
+extra_out="$(curl -sSk --resolve "testsite.staging.ddeploy.test:443:127.0.0.1" "https://testsite.staging.ddeploy.test/extra-probe")"
+assert_contains "$extra_out" "extra-ok" "ops extra location is reachable"
+
+step "raw nginx from the client repo is refused (redirect injection)"
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+printf '  - from: /pwn\n    to: "/; return 200;"\n' >> "$WORK/.ddeploy/config.yaml"
+git -C "$WORK" add -A
+git -C "$WORK" commit -q -am 'poison redirect'
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+assert_cmd_fails "deploy refuses a redirect target that would inject nginx directives" ./provision.sh deploy testsite
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "MARKER=v1" "failed extras deploy left the live tree serving v1"
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+git -C "$WORK" revert --no-edit HEAD
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
 
 # --- deploy re-applies vhost/FPM config, not just provision -------------
 

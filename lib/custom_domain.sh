@@ -53,10 +53,18 @@ install_custom_domain_vhost() {
     # duplicate.
     local auth_map_block; auth_map_block="$(build_auth_map_block "$name" "_custom" "${AUTH_EXEMPT_PATHS[@]}")"
     local auth_block; auth_block="$(build_auth_block "$name" "$auth" "_custom")"
+    local security_headers_block; security_headers_block="$(build_security_headers_block)"
+    local redirects_block; redirects_block="$(build_redirects_block)"
+    local deny_php_block; deny_php_block="$(build_deny_php_block)"
+    local static_cache_block; static_cache_block="$(build_static_cache_block)"
+    local ops_extra_block; ops_extra_block="$(build_ops_extra_block "$name")"
     render_template "$PROVISIONER_DIR/templates/vhost.conf.tmpl" "$out" \
         "NAME=$name" "SERVER_NAMES=$server_names" "ROOT=$root" "CERT_NAME=$cert_name" \
         "AUTH_BLOCK=$auth_block" "MAX_BODY_SIZE=${max_body_size:-$CLIENT_MAX_BODY_SIZE}" \
-        "AUTH_MAP_BLOCK=$auth_map_block"
+        "AUTH_MAP_BLOCK=$auth_map_block" \
+        "SECURITY_HEADERS_BLOCK=$security_headers_block" "REDIRECTS_BLOCK=$redirects_block" \
+        "DENY_PHP_BLOCK=$deny_php_block" "STATIC_CACHE_BLOCK=$static_cache_block" \
+        "OPS_EXTRA_BLOCK=$ops_extra_block"
     ln -sf "$out" "/etc/nginx/sites-enabled/$name-custom.conf"
     nginx -t
     systemctl reload nginx

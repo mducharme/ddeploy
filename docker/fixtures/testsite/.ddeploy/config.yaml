@@ -14,3 +14,10 @@ backup_exclude:
 db_backup_retention_days: 14
 php_ini:
   max_execution_time: 45
+security_headers: true
+static_cache: 7d
+deny_php_in_uploads: true
+redirects:
+  - from: /old-home
+    to: /
+    code: 301

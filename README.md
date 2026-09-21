@@ -201,6 +201,13 @@ db_backup_retention_days: 30
 php_ini:
   memory_limit: 256M
   upload_max_filesize: 64M
+security_headers: true
+static_cache: 30d
+deny_php_in_uploads: true
+redirects:
+  - from: /old-page
+    to: /new-page
+    code: 301
 ```
 
 If it's absent, or doesn't declare a given key, that key falls back to
@@ -246,6 +253,37 @@ is needed on that side.
 the shared `php.ini`, so one site's override can't affect any other.
 `php_admin_value`, not `php_value`: the app itself can't override
 these back at runtime via `ini_set`, so the ceiling actually holds.
+
+Four more scoped nginx knobs. These are **not** raw snippets — a
+client repo cannot inject nginx directives. Each value is validated to
+a charset that cannot break out of the template, and the actual
+`location` / `add_header` / `expires` syntax is owned by this tool:
+
+- `security_headers: true` — sends `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: strict-origin-when-cross-origin`, and
+`X-Frame-Options: SAMEORIGIN`. Header names and values are not
+configurable from the repo. No HSTS (custom domains start HTTP-only
+until their cert issues; Cloudflare often already sets this).
+- `static_cache: 30d` — `expires` on a fixed list of static extensions
+(css/js/images/fonts). The duration is `1–9999` plus `s`/`m`/`h`/`d`;
+the location regex is not. Missing assets 404 rather than falling
+through to PHP.
+- `deny_php_in_uploads: true` — for each `upload_dirs` entry that is
+actually under the docroot (so nginx would serve it), PHP is `deny
+all` and missing files 404. A private dir like `../private-uploads`
+is skipped — it is not a URL. Extra prefixes: `deny_php_paths: [/media]`.
+`/` is refused (that would turn off PHP for the whole site).
+- `redirects` — a list of `{from, to, code}` maps. `from` is a URL
+path; `to` is a URL path or an `https://` URL; `code` is `301` or
+`302` (default 301). No `$` variables, no `http://`, no quotes or
+semicolons.
+
+Anything those four don't cover: drop a **root-owned regular file** at
+`/etc/nginx/ddeploy-extra/<name>.conf`. `init` creates that directory.
+It is included inside the site's `server{}` (wildcard and custom-domain
+vhosts). It is never read from the client repo; `.ddeploy/nginx.conf` is
+ignored if present. A symlink or a non-root-owned file is skipped with
+a warning. Invalid extra config fails `nginx -t` and the deploy aborts.
 
 ## Site lifecycle
 
@@ -784,11 +822,6 @@ Not built yet, roughly in priority order:
   `.ddeploy/config.yaml` key generating a systemd unit + timer per site,
   the same per-site-generated-config pattern the FPM pool and vhost
   already use.
-- **Custom nginx snippet injection** — an escape hatch for a project
-  that needs nginx config the standard template doesn't cover. Bigger
-  security-review lift than the other `.ddeploy/config.yaml` keys, since
-  it'd be raw server config sourced from a client repo, not a scoped
-  value substituted into one — deliberately not rushed.
 - **Secrets/credential rotation** — a site's DB password, once
   generated, lives in plaintext on disk indefinitely, protected only by
   Unix file permissions, with no command to rotate it. The shared

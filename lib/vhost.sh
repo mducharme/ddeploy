@@ -173,6 +173,92 @@ build_auth_block() {
     printf '    auth_basic %s;\n    auth_basic_user_file %s;' "$realm" "$htpasswd_file"
 }
 
+NGINX_EXTRA_DIR="/etc/nginx/ddeploy-extra"
+
+# Hardcoded header set — no client-supplied header names or values.
+# Off unless security_headers: true. `always` so they apply to error
+# responses too. No HSTS: this fleet is often behind Cloudflare and
+# custom domains start HTTP-only until the cert issues.
+build_security_headers_block() {
+    [[ "${SECURITY_HEADERS:-}" == "true" ]] || return 0
+    cat <<'EOF'
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+EOF
+}
+
+# Prefix locations that 301/302. `^~` so they win over the front-controller
+# regex. from/to/code already validated in parse_config.
+build_redirects_block() {
+    local line from to code
+    for line in "${REDIRECTS[@]+"${REDIRECTS[@]}"}"; do
+        from="${line%%$'\t'*}"
+        to="${line#*$'\t'}"; to="${to%%$'\t'*}"
+        code="${line##*$'\t'}"
+        printf '    location ^~ %s { return %s %s; }\n' "$from" "$code" "$to"
+    done
+}
+
+# Nested `deny all` for PHP under web-accessible upload (or explicit)
+# prefixes. try_files =404 so a missing file does not fall through to
+# index.php. Path `/` is rejected at parse time.
+build_deny_php_block() {
+    local path
+    for path in "${DENY_PHP_PATHS[@]+"${DENY_PHP_PATHS[@]}"}"; do
+        path="${path%/}"
+        # Prefix + trailing slash, not `location =`: nginx forbids nested
+        # locations inside an exact match. `/uploads/x.php` is the
+        # interesting request; `/uploads-other` does not match `/uploads/`.
+        cat <<EOF
+    location ^~ ${path}/ {
+        location ~ \\.php\$ { deny all; }
+        try_files \$uri \$uri/ =404;
+    }
+EOF
+    done
+}
+
+# Static-asset expires. We own the extension regex; the client only
+# picks the duration. `expires` sets Cache-Control, so this location
+# does not use add_header (which would drop the server-level security
+# headers nginx otherwise inherits).
+build_static_cache_block() {
+    local dur="${STATIC_CACHE:-}"
+    [[ -n "$dur" ]] || return 0
+    cat <<EOF
+    location ~* \\.(?:css|js|mjs|map|jpg|jpeg|gif|png|svg|webp|avif|ico|woff|woff2|ttf|otf|eot)\$ {
+        expires $dur;
+        access_log off;
+        try_files \$uri =404;
+    }
+EOF
+}
+
+# Ops-owned extra, never from the client repo. Include only a regular
+# root-owned file at the name-derived path (NAME_RE already validated
+# the site name, so this cannot escape the directory). Missing = omit.
+build_ops_extra_block() {
+    local name="$1"
+    local f="$NGINX_EXTRA_DIR/$name.conf"
+    [[ -e "$f" ]] || return 0
+    if [[ -L "$f" ]]; then
+        log_warn "ignoring $f — must be a regular file, not a symlink"
+        return 0
+    fi
+    if [[ ! -f "$f" ]]; then
+        log_warn "ignoring $f — not a regular file"
+        return 0
+    fi
+    local owner
+    owner="$(stat -c '%u' "$f" 2>/dev/null || echo x)"
+    if [[ "$owner" != "0" ]]; then
+        log_warn "ignoring $f — not root-owned (uid $owner)"
+        return 0
+    fi
+    printf '    include %s;\n' "$f"
+}
+
 # $4 (optional) client_max_body_size — defaults to the server-wide
 # CLIENT_MAX_BODY_SIZE (provisioner.conf); callers pass the site's own
 # CLIENT_MAX_BODY_SIZE_CONFIG override (.ddeploy/config.yaml) when set.
@@ -181,10 +267,18 @@ install_vhost() {
     local server_names; server_names="$(build_server_names "$name" "$@")"
     local auth_map_block; auth_map_block="$(build_auth_map_block "$name" "" "${AUTH_EXEMPT_PATHS[@]}")"
     local auth_block; auth_block="$(build_auth_block "$name" "$auth" "")"
+    local security_headers_block; security_headers_block="$(build_security_headers_block)"
+    local redirects_block; redirects_block="$(build_redirects_block)"
+    local deny_php_block; deny_php_block="$(build_deny_php_block)"
+    local static_cache_block; static_cache_block="$(build_static_cache_block)"
+    local ops_extra_block; ops_extra_block="$(build_ops_extra_block "$name")"
 
     render_template "$PROVISIONER_DIR/templates/vhost.conf.tmpl" "/etc/nginx/sites-available/$name.conf" \
         "NAME=$name" "SERVER_NAMES=$server_names" "ROOT=$root" "CERT_NAME=$BASE_DOMAIN" \
-        "AUTH_BLOCK=$auth_block" "MAX_BODY_SIZE=$max_body_size" "AUTH_MAP_BLOCK=$auth_map_block"
+        "AUTH_BLOCK=$auth_block" "MAX_BODY_SIZE=$max_body_size" "AUTH_MAP_BLOCK=$auth_map_block" \
+        "SECURITY_HEADERS_BLOCK=$security_headers_block" "REDIRECTS_BLOCK=$redirects_block" \
+        "DENY_PHP_BLOCK=$deny_php_block" "STATIC_CACHE_BLOCK=$static_cache_block" \
+        "OPS_EXTRA_BLOCK=$ops_extra_block"
 
     ln -sf "/etc/nginx/sites-available/$name.conf" "/etc/nginx/sites-enabled/$name.conf"
     nginx -t

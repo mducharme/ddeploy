@@ -26,7 +26,8 @@ assert_cmd_ok "default htpasswd has 'preview' user" grep -q '^preview:' /etc/ngi
 assert_cmd_ok "mock ufw recorded ssh allow rule" grep -q 'comment .ssh.\|comment ssh' /var/lib/ddeploy-mock-ufw/rules
 assert_cmd_ok "webhook listener is running" systemctl is-active --quiet ddeploy-hook
 assert_file_exists "/etc/ddeploy/webhook.secret" "webhook HMAC secret generated"
-assert_file_exists "/etc/nginx/sites-enabled/ddeploy-hook.conf" "webhook vhost enabled"
+assert_cmd_ok "webhook vhost enabled" test -f /etc/nginx/sites-enabled/ddeploy-hook.conf
+assert_cmd_ok "ops nginx extra dir exists (root-owned, not from a client repo)" test -d /etc/nginx/ddeploy-extra
 hook_health="$(curl -fsSk --resolve "hooks.staging.ddeploy.test:443:127.0.0.1" "https://hooks.staging.ddeploy.test/health")"
 assert_contains "$hook_health" "ok" "webhook /health through the vhost"
 

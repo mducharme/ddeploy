@@ -124,10 +124,12 @@ cmd_deploy() {
     dir="$(site_dir "$name")"
 
     # Re-applied on every deploy, not just provision — php_version,
-    # basic_auth, client_max_body_size, fpm_max_children, php_ini, and
-    # additional_hostnames/additional_fqdns are all config an operator
-    # reasonably expects a deploy to pick up. Reload after the swap so
-    # PHP's realpath cache drops the previous release path.
+    # basic_auth, client_max_body_size, fpm_max_children, php_ini,
+    # additional_hostnames/additional_fqdns, and the scoped nginx extras
+    # (redirects, security_headers, static_cache, deny_php_in_uploads)
+    # are all config an operator reasonably expects a deploy to pick up.
+    # Reload after the swap so PHP's realpath cache drops the previous
+    # release path.
     ensure_php_installed "$PHP_VERSION"
     install_fpm_pool "$name" "$PHP_VERSION" "" "" "${FPM_MAX_CHILDREN_CONFIG:-$FPM_MAX_CHILDREN}"
     local nginx_root="$dir"

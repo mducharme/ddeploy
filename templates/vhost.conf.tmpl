@@ -12,9 +12,14 @@ server {
     index index.php;
     client_max_body_size {{MAX_BODY_SIZE}};
 {{AUTH_BLOCK}}
+{{SECURITY_HEADERS_BLOCK}}
     ssl_certificate     /etc/letsencrypt/live/{{CERT_NAME}}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/{{CERT_NAME}}/privkey.pem;
 
+{{REDIRECTS_BLOCK}}
+{{DENY_PHP_BLOCK}}
+{{STATIC_CACHE_BLOCK}}
+{{OPS_EXTRA_BLOCK}}
     location / { try_files $uri $uri/ /index.php?$query_string; }
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;

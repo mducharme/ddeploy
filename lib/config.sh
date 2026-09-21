@@ -10,6 +10,8 @@
 # PHP_INI_OVERRIDES[] BASIC_AUTH_CONFIG CLIENT_MAX_BODY_SIZE_CONFIG
 # FPM_MAX_CHILDREN_CONFIG DB_BACKUP_RETENTION_DAYS_CONFIG (the scalar
 # _CONFIG ones empty unless overridden — see README ".ddeploy/config.yaml"),
+# SECURITY_HEADERS STATIC_CACHE DENY_PHP_IN_UPLOADS DENY_PHP_PATHS[]
+# REDIRECTS[] (from<TAB>to<TAB>code),
 # and writes $GENERATED_DIR/<name>.steps (TYPE<TAB>CMD per line, TYPE in
 # exec|composer|exec-host).
 #
@@ -78,6 +80,63 @@ validate_hostname() {
     local val="$1" label="$2"
     local re='^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$'
     [[ "$val" =~ $re ]] || die "$label is not a valid hostname ('$val') — refusing to use it"
+}
+
+# Absolute URL path embedded into an nginx location/return — same
+# charset as auth_exempt_paths. No spaces, quotes, braces, dollars, or
+# semicolons: those are how a client-repo value would inject extra
+# directives. $1 is the value, $2 a label for the error.
+validate_url_path() {
+    local val="$1" label="$2"
+    local re='^/[A-Za-z0-9/_.~-]*$'
+    [[ "$val" =~ $re ]] || die "$label ('$val') is not a plain absolute URL path — refusing to use it"
+}
+
+# Redirect target: an internal path (validate_url_path) or an https URL
+# whose host/path/query stay inside a charset that cannot break out of
+# `return CODE <target>;`. No `$` (nginx variables), no userinfo, no
+# protocol-relative `//`, no http:// (force https for off-site).
+validate_redirect_target() {
+    local val="$1" label="$2"
+    if [[ "$val" == /* ]]; then
+        validate_url_path "$val" "$label"
+        return 0
+    fi
+    local re='^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{2,5})?(/[A-Za-z0-9/_.~-]*)?(\?[A-Za-z0-9._~=&%-]*)?$'
+    [[ "$val" =~ $re ]] || die "$label ('$val') is not a plain URL path or https URL — refusing to use it"
+}
+
+# True/false .ddeploy knobs. Empty is false. Anything else is a typo we
+# refuse rather than silently treating as on.
+validate_bool() {
+    local val="$1" label="$2"
+    [[ -z "$val" || "$val" == "true" || "$val" == "false" ]] \
+        || die "$label ('$val') must be true or false — refusing to use it"
+}
+
+# nginx `expires` duration from the client repo. We own the location
+# regex; they only pick how long. 1–9999 + s/m/h/d.
+validate_static_cache() {
+    local val="$1" label="$2"
+    [[ -z "$val" ]] && return 0
+    local re='^[1-9][0-9]{0,3}[smhd]$'
+    [[ "$val" =~ $re ]] || die "$label ('$val') is not an nginx expires duration like 30d / 12h — refusing to use it"
+}
+
+# DOCROOT-relative URL path for a site-root-relative upload_dirs entry,
+# or empty if that dir is not web-accessible (e.g. ../private-uploads).
+upload_dir_url_path() {
+    local site_rel="$1"
+    local doc="${DOCROOT:-}"
+    if [[ -z "$doc" ]]; then
+        printf '/%s\n' "$site_rel"
+        return 0
+    fi
+    case "$site_rel" in
+        "$doc"/*) printf '/%s\n' "${site_rel#"$doc"/}" ;;
+        "$doc")   printf '/\n' ;;
+        *)        return 1 ;;
+    esac
 }
 
 # .ddeploy/config.yaml (git-tracked, sibling to .ddev/) is where ddeploy-
@@ -244,9 +303,8 @@ parse_config() {
     # rendered nginx location block, so it's constrained to a safe URL-path
     # charset rather than just banning newlines.
     mapfile -t AUTH_EXEMPT_PATHS < <(read_ext_array "$ext_cfg" "$cfg" '.auth_exempt_paths[]')
-    local path_re='^/[A-Za-z0-9/_.~-]*$'
     for v in "${AUTH_EXEMPT_PATHS[@]}"; do
-        [[ "$v" =~ $path_re ]] || die "auth_exempt_paths entry for '$name' ('$v') is not a plain absolute URL path — refusing to use it"
+        validate_url_path "$v" "auth_exempt_paths entry for '$name'"
     done
 
     # backup_exclude: rclone --exclude glob patterns (e.g. "cache/**"),
@@ -278,6 +336,89 @@ parse_config() {
         [[ "${v%%=*}" =~ $ini_key_re ]] || die "php_ini key for '$name' ('${v%%=*}') is not a plain directive name — refusing to use it"
         [[ "${v#*=}" == *$'\n'* ]] && die "php_ini value for '$name' (key '${v%%=*}') contains a newline — refusing to use it"
     done
+
+    # Scoped nginx extras — never raw snippets from the client repo.
+    # Values are validated to a charset that cannot inject extra nginx
+    # directives; the actual location/header/expires syntax is owned by
+    # lib/vhost.sh. An ops-owned file at /etc/nginx/ddeploy-extra/<name>.conf
+    # is the escape hatch (root-owned, not from git). A leftover
+    # .ddeploy/nginx.conf is ignored, not included.
+    local nginx_conf_ignored
+    nginx_conf_ignored="$(config_checkout_dir "$name")/.ddeploy/nginx.conf"
+    if [[ -e "$nginx_conf_ignored" ]]; then
+        log_warn "'$name': .ddeploy/nginx.conf is ignored — raw nginx from the client repo is not loaded. Use redirects/security_headers/static_cache/deny_php_in_uploads, or drop a root-owned file at /etc/nginx/ddeploy-extra/$name.conf"
+    fi
+
+    SECURITY_HEADERS="$(read_ext_scalar "$ext_cfg" "$cfg" '.security_headers // ""')"
+    [[ "$SECURITY_HEADERS" == "null" ]] && SECURITY_HEADERS=""
+    validate_bool "$SECURITY_HEADERS" "security_headers for '$name'"
+
+    STATIC_CACHE="$(read_ext_scalar "$ext_cfg" "$cfg" '.static_cache // ""')"
+    [[ "$STATIC_CACHE" == "null" ]] && STATIC_CACHE=""
+    STATIC_CACHE="${STATIC_CACHE//\"/}"
+    validate_static_cache "$STATIC_CACHE" "static_cache for '$name'"
+
+    DENY_PHP_IN_UPLOADS="$(read_ext_scalar "$ext_cfg" "$cfg" '.deny_php_in_uploads // ""')"
+    [[ "$DENY_PHP_IN_UPLOADS" == "null" ]] && DENY_PHP_IN_UPLOADS=""
+    validate_bool "$DENY_PHP_IN_UPLOADS" "deny_php_in_uploads for '$name'"
+
+    mapfile -t DENY_PHP_PATHS < <(read_ext_array "$ext_cfg" "$cfg" '.deny_php_paths[]')
+    local deny_url
+    for v in "${DENY_PHP_PATHS[@]}"; do
+        [[ -z "$v" ]] && continue
+        validate_url_path "$v" "deny_php_paths entry for '$name'"
+        [[ "$v" == "/" ]] && die "deny_php_paths entry for '$name' cannot be '/' — that would disable PHP for the whole site"
+    done
+    if [[ "$DENY_PHP_IN_UPLOADS" == "true" ]]; then
+        for v in "${UPLOAD_DIRS[@]}"; do
+            deny_url="$(upload_dir_url_path "$v")" || continue
+            [[ "$deny_url" == "/" ]] && continue
+            validate_url_path "$deny_url" "derived deny_php path for upload_dirs '$v'"
+            local already=0 d
+            for d in "${DENY_PHP_PATHS[@]}"; do
+                [[ "$d" == "$deny_url" ]] && { already=1; break; }
+            done
+            [[ "$already" -eq 0 ]] && DENY_PHP_PATHS+=("$deny_url")
+        done
+    fi
+    (( ${#DENY_PHP_PATHS[@]} > 30 )) && die "deny_php_paths for '$name' has more than 30 entries — refusing to use it"
+
+    REDIRECTS=()
+    local redirects_src="" redirects_tag
+    if [[ -f "$ext_cfg" ]]; then
+        redirects_tag="$(yq eval '.redirects | tag' "$ext_cfg" 2>/dev/null || true)"
+        [[ "$redirects_tag" == "!!seq" ]] && redirects_src="$ext_cfg"
+        if [[ -z "$redirects_src" && -n "$redirects_tag" && "$redirects_tag" != "!!null" ]]; then
+            die "redirects for '$name' must be a list of {from, to, code} maps — refusing to use it"
+        fi
+    fi
+    if [[ -z "$redirects_src" ]]; then
+        redirects_tag="$(yq eval '.redirects | tag' "$cfg" 2>/dev/null || true)"
+        [[ "$redirects_tag" == "!!seq" ]] && redirects_src="$cfg"
+        if [[ -z "$redirects_src" && -n "$redirects_tag" && "$redirects_tag" != "!!null" ]]; then
+            die "redirects for '$name' must be a list of {from, to, code} maps — refusing to use it"
+        fi
+    fi
+    if [[ -n "$redirects_src" ]]; then
+        local rcount ri rfrom rto rcode
+        rcount="$(yq eval '.redirects | length' "$redirects_src")"
+        [[ "$rcount" =~ ^[0-9]+$ ]] || rcount=0
+        (( rcount > 30 )) && die "redirects for '$name' has more than 30 entries — refusing to use it"
+        for ((ri = 0; ri < rcount; ri++)); do
+            rfrom="$(yq eval ".redirects[$ri].from // \"\"" "$redirects_src")"
+            rto="$(yq eval ".redirects[$ri].to // \"\"" "$redirects_src")"
+            rcode="$(yq eval ".redirects[$ri].code // 301" "$redirects_src")"
+            [[ "$rfrom" == "null" ]] && rfrom=""
+            [[ "$rto" == "null" ]] && rto=""
+            rcode="${rcode//\"/}"
+            [[ -n "$rfrom" && -n "$rto" ]] || die "redirects[$ri] for '$name' needs both from: and to:"
+            validate_url_path "$rfrom" "redirects[$ri].from for '$name'"
+            validate_redirect_target "$rto" "redirects[$ri].to for '$name'"
+            [[ "$rcode" == "301" || "$rcode" == "302" ]] \
+                || die "redirects[$ri].code for '$name' ('$rcode') must be 301 or 302"
+            REDIRECTS+=("$rfrom"$'\t'"$rto"$'\t'"$rcode")
+        done
+    fi
 
     if [[ "${#ADDITIONAL_FQDNS[@]}" -gt 0 ]]; then
         log_info "custom domain(s) for '$name': ${ADDITIONAL_FQDNS[*]} — DNS for these must already point at this server; a certificate is requested via HTTP-01 on first provision"

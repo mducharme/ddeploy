@@ -7,3 +7,4 @@ database:
   user: testsite
 upload_dirs:
   - ../private-uploads
+  - uploads
