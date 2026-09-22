@@ -22,6 +22,18 @@ GENERATED_DIR="$PROVISIONER_DIR/generated"
 # blocks.
 export NEEDRESTART_MODE=a
 
+# Every backup-uploads/backup-database run (cron or by hand) invokes
+# rclone once per site — without this, each call prints a benign
+# 'Config file "~/.config/rclone/rclone.conf" not found - using
+# defaults' NOTICE (confirmed in production: pure noise on a fleet with
+# more than a couple of sites, drowning out anything that actually
+# matters). Deliberate: this tool always builds an inline, config-file-
+# free remote spec (backup_remote_spec in lib/backup.sh) — there was
+# never meant to be an rclone.conf to find. RCLONE_QUIET only drops
+# NOTICE-and-below; confirmed a real ERROR (bad credentials, unreachable
+# endpoint) still prints and the exit code is untouched.
+export RCLONE_QUIET=true
+
 log_info()  { printf '\033[36m[info]\033[0m  %s\n' "$*" >&2; }
 log_warn()  { printf '\033[33m[warn]\033[0m  %s\n' "$*" >&2; }
 log_error() { printf '\033[31m[error]\033[0m %s\n' "$*" >&2; }

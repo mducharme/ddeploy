@@ -228,14 +228,21 @@ extract_hooks() {
     done
 }
 
-# $1 name, $2 path to a config.yaml-shaped file, $3 "check_webserver" (1/0),
-# $4 "skip_name_check" (1/0) — a preview's own .ddev/config.yaml is the
+# $1 name, $2 path to a config.yaml-shaped file, $3 "is_deploy" (1/0) —
+# gates informational messages that are only relevant when this call is
+# actually part of building/redeploying the site (webserver_type,
+# defaulting to composer install), not every read-only caller
+# (backup-uploads/backup-database/doctor/list/restore all call this
+# per-site too, and would otherwise repeat the same "defaulting to
+# composer install" line on every single run for every site with no
+# explicit hooks.post-start — confirmed noisy in production). $4
+# "skip_name_check" (1/0) — a preview's own .ddev/config.yaml is the
 # same file (same declared name:) as its parent's, since nobody edits
 # that field per-branch; resolve_preview_config passes 1 here so a
 # preview whose branch carries a real ddev config doesn't hard-fail on a
 # mismatch that's expected, not a sign of the wrong repo.
 parse_config() {
-    local name="$1" cfg="$2" check_webserver="${3:-0}" skip_name_check="${4:-0}"
+    local name="$1" cfg="$2" is_deploy="${3:-0}" skip_name_check="${4:-0}"
     require_yq
     [[ -f "$cfg" ]] || die "config not found: $cfg"
 
@@ -253,7 +260,7 @@ parse_config() {
     [[ "$DOCROOT" == "null" ]] && DOCROOT=""
     validate_relative_path "$DOCROOT" "docroot for '$name'"
 
-    if [[ "$check_webserver" == "1" ]]; then
+    if [[ "$is_deploy" == "1" ]]; then
         # Sites are always served via nginx + PHP-FPM regardless of this
         # value — it's informational only, not a compatibility gate.
         WEBSERVER_TYPE="$(yq eval '.webserver_type' "$cfg")"
@@ -543,7 +550,12 @@ parse_config() {
     # nothing".
     if [[ ! -s "$GENERATED_DIR/$name.steps" && -f "$(config_checkout_dir "$name")/composer.json" ]]; then
         printf 'composer\tinstall\n' > "$GENERATED_DIR/$name.steps"
-        log_info "'$name': no hooks.post-start declared but composer.json exists — defaulting to 'composer install' as the deploy step (add hooks.post-start to .ddev/config.yaml to override)"
+        # The steps file itself is always kept accurate (above), but the
+        # explanation is only worth printing when this parse_config call
+        # is actually about to act on it (a deploy) — every read-only
+        # caller (backup-uploads/backup-database/doctor/list/restore)
+        # would otherwise repeat this same line every single run.
+        [[ "$is_deploy" == "1" ]] && log_info "'$name': no hooks.post-start declared but composer.json exists — defaulting to 'composer install' as the deploy step (add hooks.post-start to .ddev/config.yaml to override)"
     fi
 }
 
