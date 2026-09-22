@@ -804,6 +804,22 @@ drifted credential file shows up here even when the DB server itself is
 fine. Without a name, every provisioned site is checked (previews
 included); with one, just that site.
 
+The webhook listener, uploads backup, database backup, and
+`prune-previews` are always reported — `[ok] ... disabled (...)` when
+they're off, not silence, so "off on purpose" and "doctor didn't check"
+never look the same. When either backup is on, `doctor` also tests the
+object storage bucket is actually reachable with the configured
+credentials (one check, shared by both — same bucket), and — per site —
+reports **how many database dumps are actually recoverable** and how old
+the newest one is (`list_database_backups`, the same listing
+`restore-database --from` shows you), and whether uploads have **synced
+anything at all** yet. That last one is deliberately not a freshness
+check: an upload mirror with nothing new to sync looks identical to one
+that's silently broken, from timestamps alone — "has this ever produced
+anything to restore" is what's actually checkable without false alarms.
+A shared-mode preview is skipped for both (its uploads/database are its
+parent's, already covered by the parent's own row).
+
 Each line prints `[ok]`/`[warn]`/`[fail]`; the command exits nonzero if
 anything failed — wire it into cron/monitoring rather than only running
 it by hand mid-incident. A malformed config for one site can't take the

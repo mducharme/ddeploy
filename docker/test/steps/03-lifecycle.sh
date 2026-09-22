@@ -977,7 +977,16 @@ assert_contains "$doctor_out" "testsite: php8.3-fpm" "doctor: checks testsite's 
 assert_contains "$doctor_out" "reachable as 'testsite'" "doctor: testsite database check succeeds with its OWN credentials, not the admin ones"
 assert_contains "$doctor_out" "testsite: last deploy" "doctor: reports last deploy info"
 assert_contains "$doctor_out" "testsite: cert (custom domain)" "doctor: checks the custom-domain cert too"
-assert_contains "$doctor_out" "webhook listener" "doctor: checks the git webhook listener when WEBHOOK_ENABLED=true"
+assert_contains "$doctor_out" "[ok]   webhook listener" "doctor: reports webhook listener status explicitly"
+assert_contains "$doctor_out" "[ok]   uploads backup" "doctor: reports uploads backup on/off explicitly"
+assert_contains "$doctor_out" "[ok]   database backup" "doctor: reports database backup on/off explicitly"
+assert_contains "$doctor_out" "[ok]   prune-previews" "doctor: reports prune-previews on/off explicitly"
+assert_contains "$doctor_out" "object storage" "doctor: tests object storage connectivity when backups are enabled"
+assert_contains "$doctor_out" "reachable" "doctor: object storage reachability test passed"
+assert_contains "$doctor_out" "testsite: database backups" "doctor: reports per-site recoverable database dump count"
+assert_contains "$doctor_out" "recoverable dump(s)" "doctor: database backup check found the real dump uploaded earlier"
+assert_contains "$doctor_out" "testsite: uploads backup" "doctor: reports per-site uploads backup status"
+assert_contains "$doctor_out" "has synced content" "doctor: uploads backup check found the real marker.txt uploaded earlier"
 
 step "doctor (fleet-wide, no name)"
 fleet_out="$(./provision.sh doctor)" || true

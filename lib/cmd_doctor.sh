@@ -81,12 +81,33 @@ doctor_check_infra() {
         doctor_result fail "database server ($DB_HOST)" "admin connection failed — check DB_HOST/DB_ADMIN_CREDENTIALS in provisioner.conf"
     fi
 
+    # Explicit either way, not just when something's wrong — "silent"
+    # and "off on purpose" look identical otherwise, and that ambiguity
+    # is exactly what prompted adding this.
     if [[ "$WEBHOOK_ENABLED" == "true" ]]; then
         if systemctl is-active --quiet ddeploy-hook; then
             doctor_result ok "webhook listener" "running"
         else
             doctor_result fail "webhook listener" "WEBHOOK_ENABLED=true but ddeploy-hook is not running"
         fi
+    else
+        doctor_result ok "webhook listener" "disabled (WEBHOOK_ENABLED=false)"
+    fi
+
+    if [[ "$BACKUP_ENABLED" == "true" ]]; then
+        doctor_result ok "uploads backup" "enabled, schedule '$BACKUP_SCHEDULE'"
+    else
+        doctor_result ok "uploads backup" "disabled (BACKUP_ENABLED=false)"
+    fi
+    if [[ "$DB_BACKUP_ENABLED" == "true" ]]; then
+        doctor_result ok "database backup" "enabled, schedule '$DB_BACKUP_SCHEDULE'"
+    else
+        doctor_result ok "database backup" "disabled (DB_BACKUP_ENABLED=false)"
+    fi
+    if [[ "$PREVIEW_PRUNE_ENABLED" == "true" ]]; then
+        doctor_result ok "prune-previews" "enabled, schedule '$PREVIEW_PRUNE_SCHEDULE'"
+    else
+        doctor_result ok "prune-previews" "disabled (PREVIEW_PRUNE_ENABLED=false)"
     fi
 
     if [[ "$BACKUP_ENABLED" == "true" || "$DB_BACKUP_ENABLED" == "true" || "$PREVIEW_PRUNE_ENABLED" == "true" ]]; then
@@ -94,6 +115,25 @@ doctor_check_infra() {
             doctor_result ok "cron" "running (drives /etc/cron.d/ddeploy-* — not visible in 'crontab -l')"
         else
             doctor_result fail "cron" "backup/prune schedules are written to /etc/cron.d/ but cron itself is not running — re-run 'init'"
+        fi
+    fi
+
+    # One connectivity check covers both backup types — same bucket,
+    # same credentials. Per-site recoverability (dump counts, whether
+    # uploads have synced at all) is doctor_check_site's job below; this
+    # is just "can we even reach the bucket at all."
+    if [[ "$BACKUP_ENABLED" == "true" || "$DB_BACKUP_ENABLED" == "true" ]]; then
+        if ! command -v rclone >/dev/null 2>&1; then
+            doctor_result fail "object storage" "backup is enabled but rclone is not installed — re-run 'init'"
+        elif [[ -z "$BACKUP_CREDENTIALS" || ! -f "$BACKUP_CREDENTIALS" || -z "$BACKUP_BUCKET" ]]; then
+            doctor_result fail "object storage" "BACKUP_CREDENTIALS/BACKUP_BUCKET not fully set in provisioner.conf"
+        else
+            local remote; remote="$(backup_remote_spec)"
+            if timeout 15 rclone lsd "$remote" >/dev/null 2>&1; then
+                doctor_result ok "object storage ($BACKUP_BUCKET)" "reachable"
+            else
+                doctor_result fail "object storage ($BACKUP_BUCKET)" "could not list the bucket with the configured credentials"
+            fi
         fi
     fi
 
@@ -107,6 +147,78 @@ doctor_check_infra() {
 }
 
 # $1 site name, already known to be provisioned.
+# $1 site name (already resolved to config — DB_BACKUP_ENABLED,
+# BACKUP_CREDENTIALS etc. are globals from load_conf, not per-site).
+# Reports how many dump backups this site actually has, and how old the
+# newest one is — "is backup-database configured" is doctor_check_infra's
+# job; this is "has it actually produced anything recoverable."
+doctor_check_db_backup() {
+    local name="$1"
+    command -v rclone >/dev/null 2>&1 || return 0
+    [[ -n "$BACKUP_CREDENTIALS" && -f "$BACKUP_CREDENTIALS" && -n "$BACKUP_BUCKET" ]] || return 0
+
+    local remote; remote="$(backup_remote_spec)"
+    local target; target="$(restore_target "$name")"
+    # No `timeout` wrapper here — list_database_backups is a shell
+    # function, not an executable, and `timeout <name>` silently fails
+    # to find it as a command (confirmed: this returned "no dumps"
+    # every time in testing, even against a bucket with real dumps in
+    # it, until this was caught). Matches how the same function is
+    # already called, un-timed-out, everywhere else it's used.
+    local dumps; dumps="$(list_database_backups "$target" "$remote" 2>/dev/null)"
+    local count=0
+    [[ -n "$dumps" ]] && count="$(grep -c . <<< "$dumps")"
+
+    if [[ "$count" -eq 0 ]]; then
+        doctor_result warn "$name: database backups" "0 recoverable dumps in $BACKUP_BUCKET/$target/db/ — has backup-database run yet?"
+        return
+    fi
+
+    # Filenames encode <db>-YYYYMMDD-HHMMSS.sql.gz (db_backup.sh); parse
+    # the newest one's timestamp to report its age, not just its count.
+    # Reported as fact, not judged against a threshold — DB_BACKUP_SCHEDULE
+    # is an arbitrary cron expression (hourly by default, but could just
+    # as validly be daily/weekly), and doctor has no reliable way to
+    # derive "how old is too old" from that without a real cron-expression
+    # parser; guessing a fixed threshold would just false-warn anyone not
+    # on the default schedule.
+    local newest ts age_desc epoch
+    newest="$(head -n1 <<< "$dumps")"
+    ts="$(grep -oE '[0-9]{8}-[0-9]{6}' <<< "$newest" | head -1)"
+    age_desc="age unknown"
+    if [[ -n "$ts" ]]; then
+        epoch="$(date -u -d "${ts:0:4}-${ts:4:2}-${ts:6:2} ${ts:9:2}:${ts:11:2}:${ts:13:2}" +%s 2>/dev/null || echo 0)"
+        if [[ "$epoch" -gt 0 ]]; then
+            age_desc="newest is $(( ($(date -u +%s) - epoch) / 3600 ))h old"
+        fi
+    fi
+    doctor_result ok "$name: database backups" "$count recoverable dump(s), $age_desc"
+}
+
+# $1 site name — a weaker signal than the database check above: this is
+# a live mirror, not a dated series, so a remote file's timestamp
+# doesn't reliably indicate staleness (nothing changing locally also
+# means nothing changing remotely, even with sync working perfectly).
+# "has anything ever synced at all" is what's actually checkable here.
+doctor_check_uploads_backup() {
+    local name="$1"
+    command -v rclone >/dev/null 2>&1 || return 0
+    [[ -n "$BACKUP_CREDENTIALS" && -f "$BACKUP_CREDENTIALS" && -n "$BACKUP_BUCKET" ]] || return 0
+    [[ "${#UPLOAD_DIRS[@]}" -gt 0 ]] || return 0
+
+    local remote; remote="$(backup_remote_spec)"
+    local target; target="$(restore_target "$name")"
+    local dir="${UPLOAD_DIRS[0]}"
+    local suffix=""
+    [[ "${#UPLOAD_DIRS[@]}" -gt 1 ]] && suffix=" (checked 1 of ${#UPLOAD_DIRS[@]} upload_dirs)"
+
+    if timeout 15 rclone lsf "${remote}/${target}/${dir}/" 2>/dev/null | grep -q .; then
+        doctor_result ok "$name: uploads backup" "'$dir' has synced content$suffix"
+    else
+        doctor_result warn "$name: uploads backup" "'$dir' has no synced content in $BACKUP_BUCKET/$target/$dir/ yet — has backup-uploads run yet?$suffix"
+    fi
+}
+
 doctor_check_site() {
     local name="$1"
     local dir; dir="$(site_dir "$name")"
@@ -157,6 +269,14 @@ doctor_check_site() {
 
     if [[ "${#ADDITIONAL_FQDNS[@]}" -gt 0 ]]; then
         doctor_check_cert "${ADDITIONAL_FQDNS[0]}" "$name: cert (custom domain)"
+    fi
+
+    # Skipped for a shared-mode preview: its uploads/database ARE its
+    # parent's, not its own — already covered by the parent's own row,
+    # same skip cmd_backup.sh/cmd_db_backup.sh themselves already apply.
+    if ! { is_preview "$name" && [[ "$PREVIEW_MODE" == "shared" ]]; }; then
+        [[ "$DB_BACKUP_ENABLED" == "true" ]] && doctor_check_db_backup "$name"
+        [[ "$BACKUP_ENABLED" == "true" ]] && doctor_check_uploads_backup "$name"
     fi
 }
 

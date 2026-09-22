@@ -242,7 +242,11 @@ unauthenticated health/webhook endpoint:** add its path to
 **Server-wide, one-time:** `doctor [name]` (no args = every site) checks
 nginx, PHP-FPM, disk, cert expiry, and each site's own DB connection —
 run it by hand any time, or wire it into cron/monitoring since it exits
-nonzero on any `[fail]`. Point `NOTIFY_WEBHOOK` (in `provisioner.conf`)
+nonzero on any `[fail]`. It's also explicit about webhook/backup/pruning
+status either way (on or off, never silent), tests the backup bucket is
+actually reachable when either backup is on, and — per site — reports
+how many database dumps are recoverable (with the newest one's age) and
+whether uploads have synced anything at all. Point `NOTIFY_WEBHOOK` (in `provisioner.conf`)
 at a Slack/Discord incoming webhook URL and a failure from `doctor`, the
 backup cron, `prune-previews`, or the git-push worker pages it — success
 stays silent,
