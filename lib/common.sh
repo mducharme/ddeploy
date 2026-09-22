@@ -11,6 +11,17 @@ PROVISIONER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$PROVISIONER_DIR/logs"
 GENERATED_DIR="$PROVISIONER_DIR/generated"
 
+# Ubuntu 24.04 ships needrestart, which hooks apt/dpkg and, left in its
+# default interactive mode, can ask "which services should be
+# restarted?" on an apt-get install that touches a running service
+# (mariadb-server, nginx, php-fpm all qualify). This alone did NOT stop
+# the actual hang confirmed in testing (cmd_init.sh has the real fix —
+# closing stdin) but it's a legitimate, harmless belt-and-suspenders: if
+# something in this tool's apt-get sequence ever runs without stdin
+# closed, this still keeps needrestart itself from being the thing that
+# blocks.
+export NEEDRESTART_MODE=a
+
 log_info()  { printf '\033[36m[info]\033[0m  %s\n' "$*" >&2; }
 log_warn()  { printf '\033[33m[warn]\033[0m  %s\n' "$*" >&2; }
 log_error() { printf '\033[31m[error]\033[0m %s\n' "$*" >&2; }

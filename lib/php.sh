@@ -29,7 +29,12 @@ ensure_php_installed() {
 
     if [[ "${#missing[@]}" -gt 0 ]]; then
         log_info "installing ${missing[*]}"
-        DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}"
+        # < /dev/null: this can run mid-provision/deploy (a project
+        # asking for a PHP version init's baseline loop didn't cover),
+        # not just during init — see cmd_init.sh for why stdin must be
+        # closed before installing a package that owns a running service
+        # (here, php<ver>-fpm).
+        DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}" < /dev/null
     else
         log_info "php${ver}-fpm and configured extensions already installed"
     fi

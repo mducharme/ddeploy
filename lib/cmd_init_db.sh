@@ -8,6 +8,11 @@ cmd_init_db() {
     require_root
     load_db_conf
 
+    # See cmd_init.sh for why — apt-get installing mariadb-server (a
+    # running-service-owning package) hangs waiting on a terminal read
+    # in the foreground of a real SSH session unless stdin is closed.
+    exec < /dev/null
+
     log_info "== base packages =="
     apt-get update -y
     DEBIAN_FRONTEND=noninteractive apt-get install -y mariadb-server curl ufw

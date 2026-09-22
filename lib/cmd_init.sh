@@ -11,6 +11,20 @@ cmd_init() {
     require_root
     load_conf
 
+    # Fully unattended from here on — no prompt in this function ever
+    # expects real input. Closing stdin isn't just belt-and-suspenders:
+    # confirmed in a real Ubuntu 24.04 container that apt-get installing
+    # a package that owns a running service (nginx, mariadb-server,
+    # php-fpm) hangs indefinitely waiting on a terminal read whenever
+    # run in the foreground of a real SSH session, even with
+    # DEBIAN_FRONTEND=noninteractive AND NEEDRESTART_MODE=a both set —
+    # something downstream (invoke-rc.d/needrestart/polkit, the exact
+    # culprit varied by environment) still probes the controlling
+    # terminal. Redirecting stdin from /dev/null makes that probe hit
+    # EOF immediately instead of blocking, which is what actually fixed
+    # it in testing; the env vars alone did not.
+    exec < /dev/null
+
     log_info "== apt sources & base packages =="
     # add-apt-repository itself comes from software-properties-common,
     # which a minimal base image (a bare Docker image; some providers'
