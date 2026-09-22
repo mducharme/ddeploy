@@ -172,32 +172,43 @@ upload_dir_url_path() {
 # from DDEV's tooling) — so nothing already relying on that breaks.
 ext_config_path() { echo "$(config_checkout_dir "$1")/.ddeploy/config.yaml"; }
 
-# Reads array expression $3 from $1 (extension config, may not exist) if
-# it declares the key, else from $2 (the site's primary config).
+# Operator-side override (`provision.sh override`, see README "Overriding
+# a project's config without touching the repo") — same key vocabulary
+# as .ddeploy/config.yaml, but lives server-side under $GENERATED_DIR,
+# never in the client's checkout. Highest precedence of the three: an
+# operator flipping a setting shouldn't need repo write access or wait
+# for a deploy to pick it up, and shouldn't have their override silently
+# lost the next time someone edits .ddeploy/config.yaml either.
+override_config_path() { echo "$GENERATED_DIR/$1.override.yaml"; }
+
+# Reads array expression $4 from $1 (operator override, highest
+# precedence), else $2 (extension config), else $3 (the site's primary
+# config) — first of the three that exists AND actually declares a
+# non-empty value for $4 wins. Any of $1/$2/$3 can be empty/nonexistent;
+# skipped, not an error.
 read_ext_array() {
-    local ext="$1" cfg="$2" expr="$3"
-    if [[ -f "$ext" ]]; then
-        local vals; vals="$(yq eval "$expr" "$ext" 2>/dev/null | grep -vx 'null' || true)"
+    local override="$1" ext="$2" cfg="$3" expr="$4"
+    local f vals
+    for f in "$override" "$ext" "$cfg"; do
+        [[ -n "$f" && -f "$f" ]] || continue
+        vals="$(yq eval "$expr" "$f" 2>/dev/null | grep -vx 'null' || true)"
         if [[ -n "$vals" ]]; then
             printf '%s\n' "$vals"
             return
         fi
-    fi
-    yq eval "$expr" "$cfg" 2>/dev/null | grep -vx 'null' || true
+    done
 }
 
 # Same precedence as read_ext_array, for a scalar expression.
 read_ext_scalar() {
-    local ext="$1" cfg="$2" expr="$3"
-    local val=""
-    if [[ -f "$ext" ]]; then
-        val="$(yq eval "$expr" "$ext" 2>/dev/null)"
+    local override="$1" ext="$2" cfg="$3" expr="$4"
+    local f val=""
+    for f in "$override" "$ext" "$cfg"; do
+        [[ -n "$f" && -f "$f" ]] || continue
+        val="$(yq eval "$expr" "$f" 2>/dev/null)"
         [[ "$val" == "null" ]] && val=""
-    fi
-    if [[ -z "$val" ]]; then
-        val="$(yq eval "$expr" "$cfg" 2>/dev/null)"
-        [[ "$val" == "null" ]] && val=""
-    fi
+        [[ -n "$val" ]] && break
+    done
     printf '%s' "$val"
 }
 
@@ -253,8 +264,9 @@ parse_config() {
     fi
 
     local ext_cfg; ext_cfg="$(ext_config_path "$name")"
-    mapfile -t ADDITIONAL_HOSTNAMES < <(read_ext_array "$ext_cfg" "$cfg" '.additional_hostnames[]')
-    mapfile -t ADDITIONAL_FQDNS    < <(read_ext_array "$ext_cfg" "$cfg" '.additional_fqdns[]')
+    local override_cfg; override_cfg="$(override_config_path "$name")"
+    mapfile -t ADDITIONAL_HOSTNAMES < <(read_ext_array "$override_cfg" "$ext_cfg" "$cfg" '.additional_hostnames[]')
+    mapfile -t ADDITIONAL_FQDNS    < <(read_ext_array "$override_cfg" "$ext_cfg" "$cfg" '.additional_fqdns[]')
 
     # Operator-set (README "Default branch"), never read from the repo
     # itself — see lib/releases.sh. Informational at this point: the
@@ -281,11 +293,11 @@ parse_config() {
     # (cmd_provision.sh/cmd_preview.sh), not here, since the default
     # itself (BASIC_AUTH_DEFAULT vs. previews' own true-by-default, say)
     # varies by caller.
-    BASIC_AUTH_CONFIG="$(read_ext_scalar "$ext_cfg" "$cfg" '.basic_auth // ""')"
+    BASIC_AUTH_CONFIG="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.basic_auth // ""')"
     [[ "$BASIC_AUTH_CONFIG" == "null" ]] && BASIC_AUTH_CONFIG=""
-    CLIENT_MAX_BODY_SIZE_CONFIG="$(read_ext_scalar "$ext_cfg" "$cfg" '.client_max_body_size // ""')"
+    CLIENT_MAX_BODY_SIZE_CONFIG="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.client_max_body_size // ""')"
     [[ "$CLIENT_MAX_BODY_SIZE_CONFIG" == "null" ]] && CLIENT_MAX_BODY_SIZE_CONFIG=""
-    FPM_MAX_CHILDREN_CONFIG="$(read_ext_scalar "$ext_cfg" "$cfg" '.fpm_max_children // ""')"
+    FPM_MAX_CHILDREN_CONFIG="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.fpm_max_children // ""')"
     [[ "$FPM_MAX_CHILDREN_CONFIG" == "null" ]] && FPM_MAX_CHILDREN_CONFIG=""
 
     local v
@@ -323,7 +335,7 @@ parse_config() {
     # ban) validator is right here, unlike upload_dirs' docroot-relative
     # one — no external convention to honor for a key this tool invented.
     # A trailing '/' marks a directory; without one, a file.
-    mapfile -t PERSISTENT_FILES < <(read_ext_array "$ext_cfg" "$cfg" '.persistent_files[]')
+    mapfile -t PERSISTENT_FILES < <(read_ext_array "$override_cfg" "$ext_cfg" "$cfg" '.persistent_files[]')
     for v in "${PERSISTENT_FILES[@]}"; do validate_relative_path "${v%/}" "persistent_files entry for '$name'"; done
 
     # auth_exempt_paths: URL path prefixes (e.g. a webhook endpoint) that
@@ -331,7 +343,7 @@ parse_config() {
     # build_auth_exempt_block in lib/vhost.sh. Each gets embedded into a
     # rendered nginx location block, so it's constrained to a safe URL-path
     # charset rather than just banning newlines.
-    mapfile -t AUTH_EXEMPT_PATHS < <(read_ext_array "$ext_cfg" "$cfg" '.auth_exempt_paths[]')
+    mapfile -t AUTH_EXEMPT_PATHS < <(read_ext_array "$override_cfg" "$ext_cfg" "$cfg" '.auth_exempt_paths[]')
     for v in "${AUTH_EXEMPT_PATHS[@]}"; do
         validate_url_path "$v" "auth_exempt_paths entry for '$name'"
     done
@@ -342,13 +354,13 @@ parse_config() {
     # Passed to rclone as real argv array elements (lib/backup.sh), never
     # shell-interpolated, so only a newline sanity check is needed, not
     # full path validation — these are glob patterns, not paths.
-    mapfile -t BACKUP_EXCLUDE < <(read_ext_array "$ext_cfg" "$cfg" '.backup_exclude[]')
+    mapfile -t BACKUP_EXCLUDE < <(read_ext_array "$override_cfg" "$ext_cfg" "$cfg" '.backup_exclude[]')
     for v in "${BACKUP_EXCLUDE[@]}"; do
         [[ "$v" == *$'\n'* ]] && die "backup_exclude entry for '$name' contains a newline — refusing to use it ('$v')"
     done
 
     # db_backup_retention_days: per-site override of DB_BACKUP_RETENTION_DAYS.
-    DB_BACKUP_RETENTION_DAYS_CONFIG="$(read_ext_scalar "$ext_cfg" "$cfg" '.db_backup_retention_days // ""')"
+    DB_BACKUP_RETENTION_DAYS_CONFIG="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.db_backup_retention_days // ""')"
     [[ "$DB_BACKUP_RETENTION_DAYS_CONFIG" == "null" ]] && DB_BACKUP_RETENTION_DAYS_CONFIG=""
 
     # php_ini: a map of PHP directive -> value, rendered as php_admin_value
@@ -378,20 +390,20 @@ parse_config() {
         log_warn "'$name': .ddeploy/nginx.conf is ignored — raw nginx from the client repo is not loaded. Use redirects/security_headers/static_cache/deny_php_in_uploads, or drop a root-owned file at /etc/nginx/ddeploy-extra/$name.conf"
     fi
 
-    SECURITY_HEADERS="$(read_ext_scalar "$ext_cfg" "$cfg" '.security_headers // ""')"
+    SECURITY_HEADERS="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.security_headers // ""')"
     [[ "$SECURITY_HEADERS" == "null" ]] && SECURITY_HEADERS=""
     validate_bool "$SECURITY_HEADERS" "security_headers for '$name'"
 
-    STATIC_CACHE="$(read_ext_scalar "$ext_cfg" "$cfg" '.static_cache // ""')"
+    STATIC_CACHE="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.static_cache // ""')"
     [[ "$STATIC_CACHE" == "null" ]] && STATIC_CACHE=""
     STATIC_CACHE="${STATIC_CACHE//\"/}"
     validate_static_cache "$STATIC_CACHE" "static_cache for '$name'"
 
-    DENY_PHP_IN_UPLOADS="$(read_ext_scalar "$ext_cfg" "$cfg" '.deny_php_in_uploads // ""')"
+    DENY_PHP_IN_UPLOADS="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.deny_php_in_uploads // ""')"
     [[ "$DENY_PHP_IN_UPLOADS" == "null" ]] && DENY_PHP_IN_UPLOADS=""
     validate_bool "$DENY_PHP_IN_UPLOADS" "deny_php_in_uploads for '$name'"
 
-    mapfile -t DENY_PHP_PATHS < <(read_ext_array "$ext_cfg" "$cfg" '.deny_php_paths[]')
+    mapfile -t DENY_PHP_PATHS < <(read_ext_array "$override_cfg" "$ext_cfg" "$cfg" '.deny_php_paths[]')
     local deny_url
     for v in "${DENY_PHP_PATHS[@]}"; do
         [[ -z "$v" ]] && continue
@@ -488,7 +500,7 @@ parse_config() {
     # config that recorded one (.ddeploy/config.yaml, or our sidecar)
     # wins; otherwise detect from the checked-out repo, so a real
     # .ddev/config.yaml (which never has this field) still gets it right.
-    DB_ENV_SCHEME="$(read_ext_scalar "$ext_cfg" "$cfg" '.db_env_scheme // ""')"
+    DB_ENV_SCHEME="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.db_env_scheme // ""')"
     [[ "$DB_ENV_SCHEME" == "null" ]] && DB_ENV_SCHEME=""
     if [[ -z "$DB_ENV_SCHEME" ]]; then
         local detected_cms; detected_cms="$(detect_cms "$(config_checkout_dir "$name")")"

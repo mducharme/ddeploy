@@ -59,28 +59,48 @@ packages and a few real API calls).
 
 ## Quickstart: a real server
 
-1. `git clone` this repo onto the server, at `/home/deploy/provisioner`
-  (`provisioner.example.conf`'s defaults assume this path).
-2. `./provision.sh configure` — creates `provisioner.conf` from
+On a fresh droplet with nothing on it yet — no `deploy` user, no git,
+this repo not cloned anywhere — copy `bootstrap.sh` onto it (scp, paste,
+however) and run it once as root:
+
+```
+./bootstrap.sh <your-ddeploy-repo-url>
+```
+
+That installs git, creates the `deploy` user (added to `sudo`), and
+clones this repo to `/home/deploy/provisioner`
+(`provisioner.example.conf`'s defaults assume this path). It deliberately
+does not touch SSH access for `deploy` — get yourself a way in (your own
+key, cloud-init, whatever your org does) before you need it. Not meant to
+be curl-piped: the repo is presumably private, and the next step needs a
+real terminal, not a pipe's stdin.
+
+Already have `deploy`, git, and a clone of this repo some other way?
+Start here instead — same steps either way, as the `deploy` user:
+
+1. `./provision.sh configure` — creates `provisioner.conf` from
   `provisioner.example.conf` and interactively sets domain, paths, PHP
   versions, and where the two credential files below will live.
   `provisioner.conf` (like `manifest`) is gitignored: it's per-server, so
   it never conflicts with a later `git pull` on this same checkout.
-3. Place a Cloudflare API token at `CF_CREDENTIALS` (`chmod 600`).
-4. Place a shared git SSH key at `GIT_DEPLOY_KEY` (`chmod 600`) — see
+2. Place a Cloudflare API token at `CF_CREDENTIALS` (`chmod 600`).
+3. Place a shared git SSH key at `GIT_DEPLOY_KEY` (`chmod 600`) — see
   "Git access."
-5. `sudo ./provision.sh init` — installs nginx/PHP/MariaDB/certbot,
+4. `sudo ./provision.sh init` — installs nginx/PHP/MariaDB/certbot,
   issues the wildcard cert, sets up the firewall.
-6. `sudo ./provision.sh provision <name> <repo-url>` — clones, detects
+5. `sudo ./provision.sh provision <name> <repo-url>` — clones, detects
   or asks for config, stands up the vhost/FPM pool/database, runs the
    first deploy.
 
-Steps 2 and 5 are also just `./install.sh` (skips step 2 if
+Steps 1 and 4 are also just `./install.sh` (skips step 1 if
 `provisioner.conf` already exists).
 
 From there: `deploy <name>` on every push (or set up "Deploy on git
 push" so that happens on its own), `list` to see the fleet, `doctor` to
-check on it.
+check on it. To turn on everything else a project can use — custom
+domain, a non-default branch, auto-deploy, branch previews with PR
+comments, backups, health-check paging — see
+[docs/new-project.md](docs/new-project.md).
 
 ## Commands
 
@@ -112,7 +132,7 @@ doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
 
 ## Configuration
 
-Five places a setting can come from, in increasing order of "how
+Six places a setting can come from, in increasing order of "how
 permanent is this":
 
 | Where                                            | What goes here                                                                              | Lives in                               | Git-tracked                           |
@@ -121,16 +141,18 @@ permanent is this":
 | `.ddev/config.yaml`                              | Real DDEV fields: `php_version`, `docroot`, `upload_dirs`, `hooks.post-start`, `database.*` | the client's repo                      | yes — it's DDEV's own file            |
 | `.ddeploy/config.yaml`                           | ddeploy-only per-site keys that aren't real DDEV fields (below)                             | the client's repo, sibling to `.ddev/` | yes                                   |
 | `generated/<name>.yaml`                          | Sidecar ddeploy writes itself for a repo with no `.ddev/config.yaml` yet                    | this repo, on the server               | no — `generated/` is gitignored       |
+| `generated/<name>.override.yaml`                 | Operator override (`provision.sh override`, see "Overriding a project's config" below), wins over both of the above | this repo, on the server               | no — `generated/` is gitignored       |
 | CLI flags (`--db`, `--hostnames`, `--auth`, ...) | A one-off override for this run of `provision`, always wins                                 | the terminal                           | n/a                                   |
 
 **Precedence, per key:** an explicit CLI flag on `provision` always
 wins, even against a project that already has a real `.ddev/config.yaml`
 — `--db`, `--hostnames`, `--custom-domains`, `--upload-dirs`, and
 `--deploy-cmd` aren't just "what to use the first time a site is
-provisioned," they override every run they're passed on (see `provision -h`). Short of an explicit flag: `.ddeploy/config.yaml` wins for any key
-it declares; otherwise whichever of `.ddev/config.yaml` or the sidecar
-was actually used (`.ddev/config.yaml` if the repo has one, else the
-sidecar ddeploy already wrote for it).
+provisioned," they override every run they're passed on (see `provision -h`). Short of an explicit flag: an operator override
+(`provision.sh override`) wins for any key it sets; otherwise
+`.ddeploy/config.yaml` wins for any key it declares; otherwise whichever
+of `.ddev/config.yaml` or the sidecar was actually used (`.ddev/config.yaml`
+if the repo has one, else the sidecar ddeploy already wrote for it).
 
 **When does a config change actually take effect?** `php_version`,
 `docroot`, `basic_auth`, `client_max_body_size`, `fpm_max_children`,
@@ -294,6 +316,43 @@ vhosts). It is never read from the client repo; `.ddeploy/nginx.conf` is
 ignored if present. A symlink or a non-root-owned file is skipped with
 a warning. Invalid extra config fails `nginx -t` and the deploy aborts.
 
+### Overriding a project's config without touching the repo
+
+Everything above lives in the client's repo — normal, since a dev team
+owns `.ddev/config.yaml` and often `.ddeploy/config.yaml` too. Sometimes
+an operator needs to change one of these settings without repo write
+access, or without waiting for someone to commit and push: a client's
+uploads suddenly need a bigger `client_max_body_size`, basic auth needs
+to go on right now, a custom domain needs adding before the dev team can
+get to it.
+
+```
+sudo ./provision.sh override <name> key=value [key=value ...]
+```
+
+Writes `generated/<name>.override.yaml` — server-side only, never in the
+client's checkout — and it's the **highest-precedence** of the three
+config sources: override beats `.ddeploy/config.yaml` beats
+`.ddev/config.yaml`/the sidecar. Takes effect on the site's next
+`deploy` (re-run it yourself for it to apply immediately).
+
+Scalar keys, one value each: `basic_auth`, `client_max_body_size`,
+`fpm_max_children`, `db_env_scheme`, `security_headers`, `static_cache`,
+`deny_php_in_uploads`, `db_backup_retention_days`. List keys,
+space-separated (quote the value): `additional_hostnames`,
+`additional_fqdns`, `persistent_files`, `auth_exempt_paths`,
+`backup_exclude`, `deny_php_paths`. Each is validated the same way it
+would be coming from the repo. `redirects` and `php_ini` aren't
+supported here — they're structured data that doesn't fit a flat
+`key=value`, so those still need `.ddeploy/config.yaml` in the repo.
+
+```
+sudo ./provision.sh override client "additional_hostnames=alt-name alt2"
+sudo ./provision.sh override client --show      # print current overrides
+sudo ./provision.sh override client --unset basic_auth
+sudo ./provision.sh override client --clear     # remove every override
+```
+
 ## Site lifecycle
 
 ### Custom domains
@@ -411,25 +470,63 @@ safety and the symlink-safe file cleanup apply automatically.
 
 ### Deploy on git push
 
-Set `WEBHOOK_ENABLED=true` in `provisioner.conf` and re-run `init`. That
+`sudo ./provision.sh configure webhook` does the whole thing: sets
+`WEBHOOK_ENABLED=true`, generates `$WEBHOOK_SECRET` (default
+`/etc/ddeploy/webhook.secret`, chmod 600 — `init`'s own `install_webhook`
+fixes its ownership to `root:ddeploy-hook` on the next run regardless of
+who created it), and offers to **register the webhook itself**, via each
+forge's REST API — prompting for a token/app-password that's used once
+for that one API call and never saved. Then `sudo ./provision.sh init`
 stands up `https://hooks.$BASE_DOMAIN` (wildcard cert) proxying to an
-unprivileged listener on localhost. A root systemd worker then runs the
-existing CLI — nothing in the HTTP request is executed as a command.
+unprivileged listener on localhost; a root systemd worker runs the
+existing CLI from there — nothing in the HTTP request is executed as a
+command.
 
 | Forge           | URL                                    | Events                                                                 |
 | --------------- | -------------------------------------- | ---------------------------------------------------------------------- |
 | GitHub          | `https://hooks.$BASE_DOMAIN/github`    | `push`, `pull_request`                                                 |
 | Bitbucket Cloud | `https://hooks.$BASE_DOMAIN/bitbucket` | `repo:push`, `pullrequest:created`, `updated`, `fulfilled`, `rejected` |
 
-HMAC secret is generated at `$WEBHOOK_SECRET` (default
-`/etc/ddeploy/webhook.secret`, chmod 640). Paste it into the GitHub org
-webhook and/or the Bitbucket workspace webhook. Optional
-`WEBHOOK_SECRET_BITBUCKET` if the two forges should not share a secret.
+**Why the API, not the web UI, for both:** Bitbucket Cloud has no
+workspace-level webhook screen in its UI at all — only per-repository,
+which doesn't scale to "one hook covers every client repo." GitHub's org
+webhook UI does work, but `configure webhook` drives both the same way
+for consistency and so the whole thing is scriptable. To do it by hand
+instead of through the wizard, `lib/register_webhook.py` is what it
+calls — read it for the exact request shape, or use these directly:
+
+```
+# GitHub: an org-owned PAT (classic, admin:org_hook scope) or a
+# fine-grained token with organization "Webhooks" write access.
+curl -X POST https://api.github.com/orgs/<org>/hooks \
+  -H "Authorization: Bearer <token>" -H "Accept: application/vnd.github+json" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"web","active":true,"events":["push","pull_request"],
+       "config":{"url":"https://hooks.'"$BASE_DOMAIN"'/github","content_type":"json",
+                  "secret":"<the-webhook-secret>","insecure_ssl":"0"}}'
+
+# Bitbucket: an app password with "Webhooks: Read and write", belonging
+# to a workspace admin.
+curl -X POST https://api.bitbucket.org/2.0/workspaces/<workspace>/hooks \
+  -u "<username>:<app-password>" -H "Content-Type: application/json" \
+  -d '{"description":"ddeploy","url":"https://hooks.'"$BASE_DOMAIN"'/bitbucket","active":true,
+       "secret":"<the-webhook-secret>",
+       "events":["repo:push","pullrequest:created","pullrequest:updated","pullrequest:fulfilled","pullrequest:rejected"]}'
+```
+
+Both are organization/workspace-level, so registering once covers every
+client repo on the box, current and future — nothing to repeat per
+project. Optional `WEBHOOK_SECRET_BITBUCKET` if the two forges should not
+share a secret — the listener falls back to `$WEBHOOK_SECRET` for
+Bitbucket whenever it isn't set, so most setups only ever need the one.
 
 What actually runs:
 
 - Push to the branch a provisioned (non-preview) site currently has
-checked out → `deploy <name>`. Other branches are ignored on push.
+checked out → `deploy <name>`. Other branches are ignored on push,
+except a site's configured `deploy_branch` override if it has one (see
+"Default branch") — that's still recognized even before the site has
+switched onto it.
 - PR opened / synced (same-repo only) → `provision-preview` or
 `deploy-preview` of that parent site.
 - PR closed / merged / declined → `remove-preview --purge-files`
@@ -603,6 +700,35 @@ BACKUP_ENDPOINT="https://nyc3.digitaloceanspaces.com"
 BACKUP_ACCESS_KEY="..."
 BACKUP_SECRET_KEY="..."
 ```
+
+`sudo ./provision.sh configure backups` walks through all of this
+interactively — provider choice, bucket, keys — and writes both this
+file (chmod 600) and the `provisioner.conf` fields above, including
+turning `BACKUP_ENABLED`/`DB_BACKUP_ENABLED` on. To do it by hand instead,
+or to understand what the wizard is actually setting:
+
+- **DigitalOcean Spaces**: `BACKUP_ENDPOINT` is
+  `https://<region>.digitaloceanspaces.com` — the region (`nyc3`, `sfo3`,
+  `ams3`, `sgp1`, `fra1`, ...) is shown on the Space's own settings page,
+  and must match where the Space was actually created. Generate the
+  access/secret key pair under "API" → "Spaces access keys" in the DO
+  control panel; a key pair is account-wide, not per-Space, so the same
+  one works for every project's bucket on this server (a single bucket
+  with a `<name>/` prefix per site is the norm, not one Space per site).
+- **AWS S3**: `BACKUP_ENDPOINT` is `https://s3.<region>.amazonaws.com` —
+  the region the bucket was actually created in. Generate an access key
+  under IAM for a user (or role) scoped to just that bucket
+  (`s3:GetObject`/`PutObject`/`DeleteObject`/`ListBucket` is enough — this
+  tool never needs bucket-admin permissions). This tool connects generically
+  (rclone's S3-compatible mode, not AWS-specific auth extensions), which
+  is enough for sync/dump — it doesn't touch storage classes, KMS, or
+  other AWS-only S3 features.
+- **Any other S3-compatible endpoint** (MinIO, Backblaze B2's S3 API,
+  Wasabi, ...): the same three fields, whatever that provider calls its
+  endpoint URL/access key/secret key.
+
+One set of credentials and one bucket covers every project on the
+server — nothing provider-specific to configure per site.
 
 **Uploads** (`BACKUP_ENABLED`, `BACKUP_SCHEDULE`, default hourly): a
 site's upload dirs — `.ddev/config.yaml`'s own `upload_dirs:` key, or
@@ -830,6 +956,7 @@ Set the domain's SSL/TLS mode to "Full (strict)" in Cloudflare once
 ## Layout
 
 ```
+bootstrap.sh               deploy user + packages + clone, for a droplet with nothing on it yet
 install.sh                 configure (if needed) + init, chained for a fresh server
 provision.sh               entrypoint
 provisioner.example.conf   tracked template; `configure` copies it to provisioner.conf
@@ -838,6 +965,7 @@ manifest.example           tracked template; copy to manifest yourself if you wa
 manifest                   name -> repo-url -> optional branch, used by provision-all, gitignored
 templates/                 nginx vhost + FPM pool + webhook vhost templates
 lib/                       implementation
+docs/                      task-oriented guides (see docs/new-project.md)
 hook/                      unprivileged git-forge webhook listener (Python)
 hooks/                     ops scripts run for every site (see hooks/README.md)
 generated/                 sidecar configs + DB credentials (created at runtime)

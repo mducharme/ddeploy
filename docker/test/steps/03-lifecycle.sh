@@ -799,6 +799,36 @@ assert_contains "$out" "MARKER=v2" "back on main, serving its content again"
 resolved_out="$(./provision.sh provision testsite 2>&1)"
 assert_not_contains "$resolved_out" "deploy_branch=" "--clear-branch removed the override"
 
+step "override: operator-side config override wins over .ddeploy/config.yaml"
+
+# testsite's repo-side .ddeploy/config.yaml has client_max_body_size:
+# 512m as of the "deploy re-applies vhost/FPM config" step above — no
+# repo commit needed for this test, the override alone should win.
+./provision.sh override testsite client_max_body_size=333m
+show_out="$(./provision.sh override testsite --show)"
+assert_contains "$show_out" "client_max_body_size: 333m" "override --show reflects what was just set"
+
+./provision.sh deploy testsite
+sleep 1
+assert_cmd_ok "vhost uses the OVERRIDE value (333m), not the repo's 512m" grep -q "client_max_body_size 333m;" /etc/nginx/sites-available/testsite.conf
+
+# Unsetting it falls back to whatever the repo itself declares (512m),
+# not the built-in server default (64m) — the override is a 3rd,
+# highest-precedence tier, not a replacement for the other two.
+./provision.sh override testsite --unset client_max_body_size
+./provision.sh deploy testsite
+sleep 1
+assert_cmd_ok "vhost falls back to the repo's own 512m once the override is unset" grep -q "client_max_body_size 512m;" /etc/nginx/sites-available/testsite.conf
+
+# An unknown key and an invalid value are both rejected outright, not
+# silently ignored or written as garbage.
+assert_cmd_fails "override refuses an unknown key" ./provision.sh override testsite not_a_real_key=x
+assert_cmd_fails "override refuses an invalid value for a validated key" ./provision.sh override testsite basic_auth=maybe
+
+./provision.sh override testsite --clear
+show_out="$(./provision.sh override testsite --show 2>&1)"
+assert_contains "$show_out" "no overrides set" "override --clear removed everything"
+
 # --- branch preview (shared mode, the default) -------------------------
 
 step "provision-preview testsite feature-a via Bitbucket webhook"
