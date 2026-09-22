@@ -114,12 +114,47 @@ cmd_configure_backups() {
     secret_key="$(prompt_secret "Secret key")"
     cred_path="$(prompt_value "Write credentials to" "/etc/ddeploy/backup-credentials.env")"
 
-    mkdir -p "$(dirname "$cred_path")"
-    cat > "$cred_path" <<EOF
+    # Stage first, test, only move into place on success (or on an
+    # explicit "write anyway") — a typo'd key silently written and not
+    # caught until the cron job fails days later is worse than asking
+    # once here.
+    local staged; staged="$(mktemp)"
+    cat > "$staged" <<EOF
 BACKUP_ENDPOINT="$endpoint"
 BACKUP_ACCESS_KEY="$access_key"
 BACKUP_SECRET_KEY="$secret_key"
 EOF
+    chmod 600 "$staged"
+
+    if ! command -v rclone >/dev/null 2>&1; then
+        log_warn "rclone isn't installed yet (that's 'init's job) — skipping the credential test; verify later with 'backup-uploads'/'backup-database'"
+    else
+        log_info "testing credentials against '$bucket'..."
+        local test_err; test_err="$(mktemp)"
+        local test_ok=1
+        (
+            BACKUP_CREDENTIALS="$staged" BACKUP_BUCKET="$bucket"
+            remote="$(backup_remote_spec)"
+            timeout 15 rclone lsd "$remote" >/dev/null 2>"$test_err"
+        ) || test_ok=0
+        if [[ "$test_ok" -eq 1 ]]; then
+            log_info "credentials OK — '$bucket' is reachable and listable"
+            rm -f "$test_err"
+        else
+            log_warn "could not list '$bucket' with these credentials:"
+            sed 's/^/  /' "$test_err" >&2
+            rm -f "$test_err"
+            local yn
+            read -rp "Write them anyway? (the bucket may just not exist yet) [y/N]: " yn
+            if [[ ! "$yn" =~ ^[Yy] ]]; then
+                rm -f "$staged"
+                die "aborted — nothing written"
+            fi
+        fi
+    fi
+
+    mkdir -p "$(dirname "$cred_path")"
+    mv "$staged" "$cred_path"
     chmod 600 "$cred_path"
     log_info "wrote $cred_path (chmod 600)"
 

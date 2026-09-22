@@ -89,6 +89,14 @@ doctor_check_infra() {
         fi
     fi
 
+    if [[ "$BACKUP_ENABLED" == "true" || "$DB_BACKUP_ENABLED" == "true" || "$PREVIEW_PRUNE_ENABLED" == "true" ]]; then
+        if systemctl is-active --quiet cron; then
+            doctor_result ok "cron" "running (drives /etc/cron.d/ddeploy-* — not visible in 'crontab -l')"
+        else
+            doctor_result fail "cron" "backup/prune schedules are written to /etc/cron.d/ but cron itself is not running — re-run 'init'"
+        fi
+    fi
+
     doctor_check_cert "$BASE_DOMAIN" "cert (wildcard, $BASE_DOMAIN)"
 
     if systemctl is-active --quiet certbot.timer; then

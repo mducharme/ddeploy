@@ -42,7 +42,7 @@ cmd_init() {
     apt-get update -y
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         nginx mariadb-server certbot python3-certbot-dns-cloudflare software-properties-common \
-        curl ufw apache2-utils python3
+        curl ufw apache2-utils python3 cron
 
     log_info "== yq (must be the Go/mikefarah build, not the Python one) =="
     local yq_path
@@ -152,7 +152,7 @@ EOF
     fi
 
     log_info "== services =="
-    systemctl enable --now nginx mariadb
+    systemctl enable --now nginx mariadb cron
     for ver in $BASELINE_PHP; do
         systemctl enable --now "php${ver}-fpm"
     done
@@ -189,7 +189,7 @@ EOF
 $BACKUP_SCHEDULE root $PROVISIONER_DIR/provision.sh backup-uploads >> $LOG_DIR/backup-uploads.log 2>&1
 EOF
         chmod 644 /etc/cron.d/ddeploy-backup-uploads
-        log_info "cron: backup-uploads runs on schedule '$BACKUP_SCHEDULE'"
+        log_info "cron: backup-uploads runs on schedule '$BACKUP_SCHEDULE' as root, via /etc/cron.d/ddeploy-backup-uploads — this is NOT in 'crontab -l' for any user, that only shows per-user crontabs"
     else
         rm -f /etc/cron.d/ddeploy-backup-uploads
         log_info "BACKUP_ENABLED=false — skipping uploads backup cron"
@@ -200,7 +200,7 @@ EOF
 $DB_BACKUP_SCHEDULE root $PROVISIONER_DIR/provision.sh backup-database >> $LOG_DIR/backup-database.log 2>&1
 EOF
         chmod 644 /etc/cron.d/ddeploy-backup-database
-        log_info "cron: backup-database runs on schedule '$DB_BACKUP_SCHEDULE'"
+        log_info "cron: backup-database runs on schedule '$DB_BACKUP_SCHEDULE' as root, via /etc/cron.d/ddeploy-backup-database"
     else
         rm -f /etc/cron.d/ddeploy-backup-database
         log_info "DB_BACKUP_ENABLED=false — skipping database backup cron"
@@ -211,7 +211,7 @@ EOF
 $PREVIEW_PRUNE_SCHEDULE root $PROVISIONER_DIR/provision.sh prune-previews >> $LOG_DIR/prune-previews.log 2>&1
 EOF
         chmod 644 /etc/cron.d/ddeploy-prune-previews
-        log_info "cron: prune-previews runs on schedule '$PREVIEW_PRUNE_SCHEDULE'"
+        log_info "cron: prune-previews runs on schedule '$PREVIEW_PRUNE_SCHEDULE' as root, via /etc/cron.d/ddeploy-prune-previews"
     else
         rm -f /etc/cron.d/ddeploy-prune-previews
         log_info "PREVIEW_PRUNE_ENABLED=false — skipping preview-prune cron"

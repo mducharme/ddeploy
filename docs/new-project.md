@@ -210,7 +210,10 @@ endpoint URL that provider gives you. See README "Backups" for where to
 generate each provider's access/secret key pair. One set of credentials
 and one bucket (with a `<name>/` prefix per site) covers every project.
 
-Either way, re-run `init` — it installs `rclone` and the cron entries.
+Either way, re-run `init` — it installs `rclone` and `cron` itself, and
+writes the schedule to `/etc/cron.d/ddeploy-backup-uploads` / `-database`
+(root, not any user's `crontab -l` — check `sudo ./provision.sh doctor`
+or `cat` the file directly).
 
 **Per-project, for uploads only:** declare `upload_dirs:` in
 `.ddev/config.yaml` (or `--upload-dirs "a b"` at provision time) — a

@@ -702,10 +702,16 @@ BACKUP_SECRET_KEY="..."
 ```
 
 `sudo ./provision.sh configure backups` walks through all of this
-interactively — provider choice, bucket, keys — and writes both this
-file (chmod 600) and the `provisioner.conf` fields above, including
-turning `BACKUP_ENABLED`/`DB_BACKUP_ENABLED` on. To do it by hand instead,
-or to understand what the wizard is actually setting:
+interactively — provider choice, bucket, keys — and, if `rclone` is
+already installed (`init` hasn't necessarily run yet at this point, so
+this is skipped with a warning if it isn't), **tests the credentials
+against the real bucket** (`rclone lsd`) before writing anything: a wrong
+key or a bucket that doesn't exist yet is caught right here, with the
+option to write anyway if the bucket genuinely just hasn't been created.
+Only then does it write the credentials file (chmod 600) and the
+`provisioner.conf` fields above, including turning
+`BACKUP_ENABLED`/`DB_BACKUP_ENABLED` on. To do it by hand instead, or to
+understand what the wizard is actually setting:
 
 - **DigitalOcean Spaces**: `BACKUP_ENDPOINT` is
   `https://<region>.digitaloceanspaces.com` — the region (`nyc3`, `sfo3`,
@@ -747,8 +753,14 @@ a dated series rather than mirroring current state. Dumps older than
 against a local or remote (`init-db`) database, same as `provision`. Run
 `backup-database [name]` directly to dump on demand.
 
-`init` installs `rclone` (once, if either backup is enabled) and the
-cron entries for whichever are turned on.
+`init` installs `rclone` and `cron` itself (once, if either backup is
+enabled — neither is assumed to already be on the box), and writes the
+schedule for whichever backup(s) are turned on to
+`/etc/cron.d/ddeploy-backup-uploads` / `-database`, running as root.
+These are **not** in `crontab -l` for any user — `/etc/cron.d/` is a
+separate mechanism from a per-user crontab, so check
+`cat /etc/cron.d/ddeploy-backup-uploads` (or `sudo ./provision.sh doctor`,
+which verifies `cron` itself is actually running) instead.
 
 Both are preview-aware: a shared-mode preview is skipped by both (its
 uploads are a symlink into its parent's, and its database *is* its
