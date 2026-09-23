@@ -130,6 +130,13 @@ cmd_restore_database() {
         parse_config "$target" "$cfg_path" 0
     fi
     local db_name="$DB_NAME"
+    # Imported as the site's own DB user, never admin — see
+    # load_sql_dump_into_db (lib/db.sh). Same credentials the site's own
+    # app already connects with, just read back rather than newly
+    # exposed.
+    local target_dir; target_dir="$(site_dir "$target")"
+    local db_pass; db_pass="$(read_db_password "$target" "$target_dir" "$DB_ENV_SCHEME")"
+    [[ -n "$db_pass" ]] || die "no existing DB credentials found for '$target' — provision it first"
 
     # --from-file skips object storage entirely — a local dump (e.g. a
     # client-provided export) loaded straight into the database, for
@@ -140,7 +147,7 @@ cmd_restore_database() {
             return 0
         fi
         log_info "importing '$from_file' into '$db_name' for '$target' (OVERWRITING it)"
-        if load_sql_dump_into_db "$from_file" "$db_name"; then
+        if load_sql_dump_into_db "$from_file" "$db_name" "$DB_USER" "$db_pass"; then
             log_info "imported '$from_file' into '$db_name' for '$target'"
         else
             die "import failed for '$target'"
@@ -162,7 +169,7 @@ cmd_restore_database() {
         return 0
     fi
 
-    if restore_site_database "$target" "$db_name" "$from"; then
+    if restore_site_database "$target" "$db_name" "$from" "$DB_USER" "$db_pass"; then
         log_info "restored '$db_name' for '$target'"
     else
         die "restore failed for '$target'"

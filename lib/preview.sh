@@ -162,10 +162,13 @@ link_shared_uploads() {
 
 # --- isolated mode: one-time seed from the parent's current state ---
 
-# Dumps the parent's DB and restores it into the preview's own
-# (already-created) database. Reuses dump_database from lib/db_backup.sh.
+# Dumps the parent's DB (as admin — that dump is this tool's own trusted
+# output) and restores it into the preview's own (already-created)
+# database as THAT database's own user/pass ($3/$4 — never admin, see
+# load_sql_dump_into_db in lib/db.sh for why), via the same shared import
+# path restore/backup use — not a separate admin pipe of its own.
 seed_preview_database() {
-    local project_db="$1" preview_db="$2"
+    local project_db="$1" preview_db="$2" preview_user="$3" preview_pass="$4"
     local tmp; tmp="$(mktemp -d)"
     local dump="$tmp/seed.sql.gz"
     log_info "seeding '$preview_db' from '$project_db'"
@@ -174,12 +177,10 @@ seed_preview_database() {
         rm -rf "$tmp"
         return 1
     fi
-    if [[ ( "$DB_HOST" == "127.0.0.1" || "$DB_HOST" == "localhost" ) && -z "$DB_ADMIN_CREDENTIALS" ]]; then
-        gunzip -c "$dump" | mysql "$preview_db"
-    else
-        gunzip -c "$dump" | mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" "$preview_db"
-    fi
+    local ok=1
+    load_sql_dump_into_db "$dump" "$preview_db" "$preview_user" "$preview_pass" || ok=0
     rm -rf "$tmp"
+    [[ "$ok" -eq 1 ]]
 }
 
 # Copies (not links — isolated means isolated) the parent's current

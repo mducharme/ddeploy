@@ -205,13 +205,38 @@ SQL
 
 # Pipes $1 (a .sql or .sql.gz file already on local disk) into database
 # $2, OVERWRITING it — the shared "load a dump into a database" mechanics
-# behind both restore_site_database (lib/db_backup.sh, from a downloaded
-# object-storage backup) and cmd_restore_database's --from-file path
-# (lib/cmd_restore.sh, from an arbitrary local file) — same local-vs-
-# remote connection logic as db_admin_mysql, so it works whether the
-# database is co-located or on a dedicated init-db server.
+# behind restore_site_database (lib/db_backup.sh, from a downloaded
+# object-storage backup), cmd_restore_database's --from-file path
+# (lib/cmd_restore.sh, explicitly documented as "e.g. a client-provided
+# export"), and seed_preview_database (lib/preview.sh).
+#
+# $3/$4 are the SITE'S OWN db_user/db_pass (read_db_password, or
+# freshly minted by db_ensure) — deliberately NEVER the admin connection.
+# A dump is content, not something this tool wrote and controls (most
+# clearly true for --from-file, but the same file-format applies to
+# every source here) — connecting as admin/root to "just set the default
+# schema" would let arbitrary SQL in it DROP a different database,
+# CREATE USER, GRANT itself more privileges, or read mysql.* directly,
+# none of which the schema-selection argument has any bearing on. The
+# site's own DB user is scoped to exactly this one database and was
+# never granted WITH GRANT OPTION (see db_ensure), so none of that is
+# reachable no matter what the dump contains. Same local-vs-remote
+# connection logic as db_admin_mysql, so it works whether the database
+# is co-located or on a dedicated init-db server; MYSQL_PWD, same
+# pattern cmd_doctor.sh already uses for a site's own credentials.
+#
+# Strips mysqldump's own DEFINER=`user`@`host` (emitted for every view/
+# routine/trigger/event when --routines/--triggers/--events are set —
+# see dump_database) down to DEFINER=CURRENT_USER first. Two reasons:
+# a scoped, non-SUPER user typically can't even CREATE an object naming
+# someone ELSE as DEFINER in the first place — left unstripped, importing
+# our OWN backups (dumped by the admin account) would just fail outright
+# under the new scoped connection; and for a hostile dump specifically,
+# this closes the "routine/view keeps running with an elevated definer's
+# privileges forever after" angle, on top of (not instead of) the scoped
+# connection itself already blocking it at import time.
 load_sql_dump_into_db() {
-    local file="$1" db_name="$2"
+    local file="$1" db_name="$2" db_user="$3" db_pass="$4"
     local -a reader
     if [[ "$file" == *.gz ]]; then
         reader=(gunzip -c "$file")
@@ -219,10 +244,12 @@ load_sql_dump_into_db() {
         reader=(cat "$file")
     fi
     local ok=1
-    if [[ ( "$DB_HOST" == "127.0.0.1" || "$DB_HOST" == "localhost" ) && -z "$DB_ADMIN_CREDENTIALS" ]]; then
-        "${reader[@]}" | mysql "$db_name" || ok=0
+    if [[ "$DB_HOST" == "127.0.0.1" || "$DB_HOST" == "localhost" ]]; then
+        "${reader[@]}" | sed -E 's/DEFINER=`[^`]*`@`[^`]*`/DEFINER=CURRENT_USER/g' \
+            | MYSQL_PWD="$db_pass" mysql -u "$db_user" "$db_name" || ok=0
     else
-        "${reader[@]}" | mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" "$db_name" || ok=0
+        "${reader[@]}" | sed -E 's/DEFINER=`[^`]*`@`[^`]*`/DEFINER=CURRENT_USER/g' \
+            | MYSQL_PWD="$db_pass" mysql -u "$db_user" -h "$DB_HOST" "$db_name" || ok=0
     fi
     [[ "$ok" -eq 1 ]]
 }

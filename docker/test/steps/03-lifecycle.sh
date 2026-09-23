@@ -929,6 +929,58 @@ rm -f "$DUMP"
 probe_val="$(mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" -N -B testsite -e "SELECT id FROM probe;")"
 [[ "$probe_val" == "42" ]] && pass "restore-database --from-file loaded the local dump" || fail "probe table wrong/missing after --from-file (got: $probe_val)"
 
+# --- security: a dump is imported as the site's own scoped DB user, ------
+# --- never admin (S4) -----------------------------------------------------
+# load_sql_dump_into_db (lib/db.sh) used to connect as admin/root and
+# just set the default schema — any SQL in the dump ran with full admin
+# privileges. It now connects as the target database's own user, whose
+# grant (db_ensure) is scoped to exactly that one database with no WITH
+# GRANT OPTION. Calls the sourced function directly (this script already
+# `source`s lib/db.sh) rather than going through provision.sh, so the
+# test is exactly what a client-provided --from-file export exercises,
+# without touching preview machinery.
+
+step "a malicious dump's admin-only statements fail, instead of quietly succeeding"
+TS_DB_PASS="$(grep '^DB_PASSWORD=' "$LIVE/.env" | cut -d= -f2-)"
+[[ -n "$TS_DB_PASS" ]] || fail "couldn't read testsite's own DB_PASSWORD from .env for this test"
+
+EVIL_DUMP="$(mktemp)"
+cat > "$EVIL_DUMP" <<'SQL'
+DROP TABLE IF EXISTS probe;
+CREATE TABLE probe (id INT);
+INSERT INTO probe VALUES (7);
+CREATE USER 'evilpwn'@'%' IDENTIFIED BY 'pwned';
+GRANT ALL PRIVILEGES ON *.* TO 'evilpwn'@'%' WITH GRANT OPTION;
+SQL
+if load_sql_dump_into_db "$EVIL_DUMP" testsite testsite "$TS_DB_PASS"; then
+    fail "malicious dump imported successfully — CREATE USER/GRANT should have failed under the scoped site user"
+else
+    pass "malicious dump's CREATE USER/GRANT failed (scoped user has no such privilege)"
+fi
+rm -f "$EVIL_DUMP"
+
+evil_exists="$(mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" -N -B -e "SELECT COUNT(*) FROM mysql.user WHERE User='evilpwn';")"
+[[ "$evil_exists" == "0" ]] && pass "no 'evilpwn' user was created anywhere on the server" || fail "'evilpwn' user exists — admin-level escalation from a dump succeeded"
+
+step "a dump with a view/routine DEFINER still imports cleanly (DEFINER stripped to CURRENT_USER)"
+DEFINER_DUMP="$(mktemp)"
+cat > "$DEFINER_DUMP" <<'SQL'
+DROP TABLE IF EXISTS probe;
+CREATE TABLE probe (id INT);
+INSERT INTO probe VALUES (55);
+DROP VIEW IF EXISTS probe_view;
+CREATE DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW probe_view AS SELECT id FROM probe;
+SQL
+if load_sql_dump_into_db "$DEFINER_DUMP" testsite testsite "$TS_DB_PASS"; then
+    pass "dump containing a DEFINER=\`root\`@\`localhost\` view imported as the scoped user"
+else
+    fail "import failed — DEFINER stripping isn't working, a legitimate backup (dumped by admin) would no longer restore"
+fi
+rm -f "$DEFINER_DUMP"
+view_val="$(mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" -N -B testsite -e "SELECT id FROM probe_view;")"
+[[ "$view_val" == "55" ]] && pass "the view (with its DEFINER neutralized) actually works" || fail "probe_view missing/wrong after import (got: $view_val)"
+mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" testsite -e "DROP VIEW IF EXISTS probe_view; DROP TABLE IF EXISTS probe;"
+
 # --- prune-previews: real git-ls-remote-exit-code path ------------------
 
 step "prune-previews (feature-a branch deleted upstream)"

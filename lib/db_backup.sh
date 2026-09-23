@@ -79,9 +79,11 @@ list_database_backups() {
 # newest available) and restores it into $2, OVERWRITING that database.
 # $1 name (the bucket prefix backups are filed under — not necessarily
 # $2's own name, see restore_target in lib/cmd_restore.sh for why a
-# shared-mode preview's restore targets its parent's prefix).
+# shared-mode preview's restore targets its parent's prefix). $4/$5: the
+# target database's own user/pass — see load_sql_dump_into_db (lib/db.sh)
+# for why this imports as that scoped user, never admin.
 restore_site_database() {
-    local name="$1" db_name="$2" filename="$3"
+    local name="$1" db_name="$2" filename="$3" db_user="$4" db_pass="$5"
     require_rclone
     require_backup_credentials
     local remote; remote="$(backup_remote_spec)"
@@ -101,7 +103,7 @@ restore_site_database() {
 
     log_info "restore: $name: restoring '$filename' into database '$db_name' (OVERWRITING it)"
     local ok=1
-    load_sql_dump_into_db "$tmp_dir/$filename" "$db_name" || ok=0
+    load_sql_dump_into_db "$tmp_dir/$filename" "$db_name" "$db_user" "$db_pass" || ok=0
     rm -rf "$tmp_dir"
     [[ "$ok" -eq 1 ]]
 }

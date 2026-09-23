@@ -150,7 +150,10 @@ cmd_provision_preview() {
         db_ensure "$name" "$dir"
         if [[ "$seed" == "true" ]]; then
             if [[ -n "$PREVIEW_PROJECT_DB_NAME" ]]; then
-                seed_preview_database "$PREVIEW_PROJECT_DB_NAME" "$DB_NAME"
+                # Read back what db_ensure (just above) wrote — the
+                # preview's own, already-scoped credentials.
+                local preview_pass; preview_pass="$(read_db_password "$name" "$dir" "$DB_ENV_SCHEME")"
+                seed_preview_database "$PREVIEW_PROJECT_DB_NAME" "$DB_NAME" "$DB_USER" "$preview_pass"
                 seed_preview_uploads "$dir" "$project_dir" "${UPLOAD_DIRS[@]}"
             else
                 log_info "seed requested but '$project' isn't provisioned yet — leaving '$name' empty"
