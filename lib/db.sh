@@ -127,13 +127,22 @@ write_db_credentials() {
     local owner="${7:-www-$name}"
     case "$scheme" in
         craft)
+            # Pre-create at 600 before the writes below — write_env_var's
+            # own `touch` would otherwise briefly create it at the
+            # process umask's default (commonly world-readable) for the
+            # few milliseconds until the chmod at the end of this case.
+            touch "$dir/.env" && chmod 600 "$dir/.env"
             write_env_var "$dir/.env" CRAFT_DB_DRIVER "mysql"
             write_env_var "$dir/.env" CRAFT_DB_SERVER "$DB_HOST"
             write_env_var "$dir/.env" CRAFT_DB_DATABASE "$db_name"
             write_env_var "$dir/.env" CRAFT_DB_USER "$db_user"
             write_env_var "$dir/.env" CRAFT_DB_PASSWORD "$db_pass"
             chown "$owner:www-data" "$dir/.env"
-            chmod 640 "$dir/.env"
+            # 600, not 640 — nginx (www-data, the group here) never opens
+            # this file itself; only PHP-FPM, running as $owner, does. See
+            # apply_permissions (lib/vhost.sh) for why this stays 600
+            # across every later deploy too, not just this write.
+            chmod 600 "$dir/.env"
             ;;
         none)
             mkdir -p "$GENERATED_DIR"
@@ -143,15 +152,23 @@ write_db_credentials() {
             ;;
         charcoal)
             local charcoal_json="$dir/config/config.local.json"
-            local key; key="$(charcoal_db_key "$charcoal_json")"
             mkdir -p "$dir/config"
+            # Same reasoning as the craft case above — pre-create at 600
+            # before json_write's writes. Mirrors json_write's own `{}`
+            # init (lib/db.sh) rather than a bare touch: json_write skips
+            # that init once the file already exists, so an empty (not
+            # valid-JSON) file here would break its first yq eval -i.
+            [[ -f "$charcoal_json" ]] || printf '{}\n' > "$charcoal_json"
+            chmod 600 "$charcoal_json"
+            local key; key="$(charcoal_db_key "$charcoal_json")"
             json_write "$charcoal_json" '.default_database' "$key"
             json_write "$charcoal_json" ".databases.${key}.hostname" "$DB_HOST"
             json_write "$charcoal_json" ".databases.${key}.database" "$db_name"
             json_write "$charcoal_json" ".databases.${key}.username" "$db_user"
             json_write "$charcoal_json" ".databases.${key}.password" "$db_pass"
             chown "$owner:www-data" "$charcoal_json"
-            chmod 640 "$charcoal_json"
+            # 600, not 640 — see the craft case above.
+            chmod 600 "$charcoal_json"
             ;;
         *)
             write_env_var "$dir/.env" DB_HOST "$DB_HOST"
@@ -159,7 +176,8 @@ write_db_credentials() {
             write_env_var "$dir/.env" DB_USERNAME "$db_user"
             write_env_var "$dir/.env" DB_PASSWORD "$db_pass"
             chown "$owner:www-data" "$dir/.env"
-            chmod 640 "$dir/.env"
+            # 600, not 640 — see the craft case above.
+            chmod 600 "$dir/.env"
             ;;
     esac
 }

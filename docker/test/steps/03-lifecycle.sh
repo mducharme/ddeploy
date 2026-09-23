@@ -286,6 +286,19 @@ assert_cmd_ok "uploads dir is a symlink" test -L "$LIVE/private-uploads"
 assert_contains "$(readlink "$LIVE/private-uploads")" "$PERSISTENT_ROOT/testsite/private-uploads" "uploads symlinked into PERSISTENT_ROOT"
 assert_cmd_ok ".env is a symlink" test -L "$LIVE/.env"
 assert_contains "$(readlink "$LIVE/.env")" "$PERSISTENT_ROOT/testsite/.env" ".env symlinked into PERSISTENT_ROOT"
+env_mode="$(stat -L -c %a "$LIVE/.env")"
+[[ "$env_mode" == "600" ]] && pass ".env is 600, not group-readable by www-data (S9)" || fail ".env mode is $env_mode, expected 600"
+
+# S9 self-heal: an already-provisioned site's credential file must not
+# stay stuck at the old, group-readable 640 forever — link_persistent_files
+# (which runs on every deploy, not just provision) re-tightens it even
+# when write_db_credentials itself isn't called this time.
+chmod 640 "$PERSISTENT_ROOT/testsite/.env"
+./provision.sh deploy testsite
+env_mode_after="$(stat -L -c %a "$LIVE/.env")"
+[[ "$env_mode_after" == "600" ]] \
+    && pass "a plain deploy re-tightens a stale 640 .env back to 600" \
+    || fail ".env mode after redeploy is $env_mode_after, expected 600 (self-heal didn't run)"
 assert_cmd_ok "persistent_files entry (shared-notes.txt) is a symlink" test -L "$LIVE/shared-notes.txt"
 assert_contains "$(readlink "$LIVE/shared-notes.txt")" "$PERSISTENT_ROOT/testsite/shared-notes.txt" "persistent_files entry symlinked into PERSISTENT_ROOT"
 echo "important client note" > "$LIVE/shared-notes.txt"

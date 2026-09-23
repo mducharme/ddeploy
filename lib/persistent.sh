@@ -83,5 +83,24 @@ link_persistent_files() {
     local cred_path; cred_path="$(persistent_db_credential_path "$DB_ENV_SCHEME")"
     if [[ -n "$cred_path" ]]; then
         ensure_persistent_link "$name" "$dir" "$cred_path" "file" "$owner"
+        # write_db_credentials (lib/db.sh) already writes this 600, but
+        # only runs at provision/preview-creation time, not on every
+        # ordinary deploy — self-heal it here too (this DOES run on every
+        # deploy) so a site provisioned before this was fixed doesn't
+        # stay stuck at the old, group-readable 640 forever. chmod
+        # follows the symlink to the real file in the persistent store;
+        # harmless no-op once it's already 600. Scoped to just this one
+        # known credential path — upload_dirs/persistent_files entries
+        # above are untouched, some of those (an upload dir nginx serves)
+        # legitimately need www-data group read. NOT a bare `[[ ]] &&`
+        # statement — on a brand-new site this runs before
+        # write_db_credentials has ever created the real file (still a
+        # dangling symlink at this point, by design — see
+        # ensure_persistent_link), so the condition is routinely false;
+        # under set -e a bare statement here would silently kill the
+        # whole provision the moment that happens.
+        if [[ -e "$dir/$cred_path" ]]; then
+            chmod 600 "$dir/$cred_path"
+        fi
     fi
 }
