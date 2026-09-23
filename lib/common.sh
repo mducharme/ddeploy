@@ -23,16 +23,23 @@ GENERATED_DIR="$PROVISIONER_DIR/generated"
 export NEEDRESTART_MODE=a
 
 # Every backup-uploads/backup-database run (cron or by hand) invokes
-# rclone once per site — without this, each call prints a benign
-# 'Config file "~/.config/rclone/rclone.conf" not found - using
-# defaults' NOTICE (confirmed in production: pure noise on a fleet with
-# more than a couple of sites, drowning out anything that actually
-# matters). Deliberate: this tool always builds an inline, config-file-
-# free remote spec (backup_remote_spec in lib/backup.sh) — there was
-# never meant to be an rclone.conf to find. RCLONE_QUIET only drops
-# NOTICE-and-below; confirmed a real ERROR (bad credentials, unreachable
-# endpoint) still prints and the exit code is untouched.
+# rclone once per site — RCLONE_QUIET only drops NOTICE-and-below;
+# confirmed a real ERROR (bad credentials, unreachable endpoint) still
+# prints and the exit code is untouched.
 export RCLONE_QUIET=true
+
+# backup_remote_spec (lib/backup.sh) writes BACKUP_CREDENTIALS'
+# access_key_id/secret_access_key into a real rclone config file here
+# (mode 600, regenerated fresh on every call) instead of putting them
+# directly on rclone's own argv via an inline `:s3,access_key_id=...:`
+# connection string — an older version of this tool did exactly that,
+# which put both secrets in `ps aux` output (visible to any user who can
+# see process listings, for the whole duration of every backup/restore/
+# list call) rather than just this one root-only file. Set globally,
+# not per-call, so every rclone invocation anywhere in this tool picks
+# it up automatically — see backup_remote_spec for why nothing else
+# needs to change.
+export RCLONE_CONFIG="/etc/ddeploy/rclone-backup.conf"
 
 log_info()  { printf '\033[36m[info]\033[0m  %s\n' "$*" >&2; }
 log_warn()  { printf '\033[33m[warn]\033[0m  %s\n' "$*" >&2; }

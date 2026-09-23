@@ -15,21 +15,38 @@ require_backup_credentials() {
     [[ -n "$BACKUP_BUCKET" ]] || die "provisioner.conf: BACKUP_BUCKET not set"
 }
 
-# Builds an inline S3-compatible rclone remote from BACKUP_CREDENTIALS (a
+# Regenerates $RCLONE_CONFIG (lib/common.sh) from BACKUP_CREDENTIALS (a
 # shell file defining BACKUP_ENDPOINT/BACKUP_ACCESS_KEY/BACKUP_SECRET_KEY)
-# — no persistent rclone config file needed. provider=Other + an explicit
-# endpoint works generically across S3/Spaces/B2/MinIO/etc. Values are
-# double-quoted: rclone's inline connection-string syntax treats ':' as a
-# structural delimiter, which an unquoted "https://..." endpoint collides
-# with (confirmed — an unquoted endpoint fails with "Custom endpoint
-# `https` was not a valid URI").
+# on every call — always fresh, so a rotated key in BACKUP_CREDENTIALS
+# takes effect on the very next backup/restore/list without a separate
+# sync step, same property the old inline-spec version of this function
+# had. provider=Other + an explicit endpoint works generically across
+# S3/Spaces/B2/MinIO/etc. Prints "<remote-name>:<bucket>" — every caller
+# already just interpolates this into "${remote}/..." unchanged, so
+# nothing else needed to change to stop building an inline connection
+# string (see RCLONE_CONFIG's own comment for why that was a problem).
+BACKUP_RCLONE_REMOTE="ddeploy-backup"
+
 backup_remote_spec() {
     # shellcheck source=/dev/null
     source "$BACKUP_CREDENTIALS"
     : "${BACKUP_ENDPOINT:?$BACKUP_CREDENTIALS: BACKUP_ENDPOINT not set}"
     : "${BACKUP_ACCESS_KEY:?$BACKUP_CREDENTIALS: BACKUP_ACCESS_KEY not set}"
     : "${BACKUP_SECRET_KEY:?$BACKUP_CREDENTIALS: BACKUP_SECRET_KEY not set}"
-    echo ":s3,provider=Other,env_auth=false,access_key_id=\"${BACKUP_ACCESS_KEY}\",secret_access_key=\"${BACKUP_SECRET_KEY}\",endpoint=\"${BACKUP_ENDPOINT}\":${BACKUP_BUCKET}"
+    mkdir -p "$(dirname "$RCLONE_CONFIG")"
+    local tmp; tmp="$(mktemp)"
+    cat > "$tmp" <<EOF
+[$BACKUP_RCLONE_REMOTE]
+type = s3
+provider = Other
+env_auth = false
+access_key_id = $BACKUP_ACCESS_KEY
+secret_access_key = $BACKUP_SECRET_KEY
+endpoint = $BACKUP_ENDPOINT
+EOF
+    chmod 600 "$tmp"
+    mv "$tmp" "$RCLONE_CONFIG"
+    echo "${BACKUP_RCLONE_REMOTE}:${BACKUP_BUCKET}"
 }
 
 # $1 name, $2 site dir, remaining args: upload dirs (relative to $2).

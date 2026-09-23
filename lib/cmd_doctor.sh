@@ -261,7 +261,7 @@ doctor_check_site() {
     local pass; pass="$(read_db_password "$name" "$dir" "$DB_ENV_SCHEME")"
     if [[ -z "$pass" ]]; then
         doctor_result warn "$name: database" "no credentials on file yet (re-run provision?)"
-    elif MYSQL_PWD="$pass" mysql -h "$DB_HOST" -u "$DB_USER" "$DB_NAME" -e "SELECT 1" >/dev/null 2>&1; then
+    elif mysql_as_user "$DB_USER" "$pass" -h "$DB_HOST" "$DB_NAME" -e "SELECT 1" >/dev/null 2>&1; then
         doctor_result ok "$name: database" "reachable as '$DB_USER'"
     else
         doctor_result fail "$name: database" "connection failed as '$DB_USER'@'$DB_HOST' — credentials may be stale"

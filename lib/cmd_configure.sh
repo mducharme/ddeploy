@@ -139,12 +139,21 @@ EOF
     else
         log_info "testing credentials against '$bucket'..."
         local test_err; test_err="$(mktemp)"
+        local test_rclone_conf; test_rclone_conf="$(mktemp)"
         local test_ok=1
         (
+            # RCLONE_CONFIG override, scoped to this subshell only — these
+            # are still-staged, not-yet-confirmed credentials being tested
+            # (possibly rejected below); backup_remote_spec (lib/backup.sh)
+            # writes $RCLONE_CONFIG as a real side effect now, not just an
+            # inline argv string, so testing them must not overwrite the
+            # real, currently-working rclone config out from under it.
+            export RCLONE_CONFIG="$test_rclone_conf"
             BACKUP_CREDENTIALS="$staged" BACKUP_BUCKET="$bucket"
             remote="$(backup_remote_spec)"
             timeout 15 rclone lsd "$remote" >/dev/null 2>"$test_err"
         ) || test_ok=0
+        rm -f "$test_rclone_conf"
         if [[ "$test_ok" -eq 1 ]]; then
             log_info "credentials OK — '$bucket' is reachable and listable"
             rm -f "$test_err"

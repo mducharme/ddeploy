@@ -938,6 +938,18 @@ assert_contains "$db_backup_out" "skipping 'testsite-feature-a'" "backup-databas
 assert_not_contains "$db_backup_out" "backup-database failed" "backup-database succeeded for testsite"
 
 remote="$(backup_remote_spec)"
+
+# S12: rclone's remote is a named reference into a real config file now,
+# never an inline connection string carrying the access/secret key
+# straight on rclone's own argv (visible via `ps aux` to any user for as
+# long as that one call runs).
+assert_not_contains "$remote" "access_key_id" "backup_remote_spec's remote reference doesn't carry the access key"
+assert_not_contains "$remote" "secret_access_key" "backup_remote_spec's remote reference doesn't carry the secret key"
+assert_file_exists "$RCLONE_CONFIG" "rclone config file exists"
+rclone_conf_mode="$(stat -L -c %a "$RCLONE_CONFIG")"
+[[ "$rclone_conf_mode" == "600" ]] && pass "rclone config file is 600" || fail "rclone config file mode is $rclone_conf_mode, expected 600"
+assert_cmd_ok "rclone config file has the ddeploy-backup remote" grep -q '^\[ddeploy-backup\]' "$RCLONE_CONFIG"
+
 uploads_listing="$(rclone lsf "${remote}/testsite/private-uploads/" 2>/dev/null || true)"
 assert_contains "$uploads_listing" "marker.txt" "uploaded marker.txt is actually in object storage"
 exclude_listing="$(rclone lsf "${remote}/testsite/private-uploads/exclude-me/" 2>/dev/null || true)"

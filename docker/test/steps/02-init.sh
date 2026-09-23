@@ -8,8 +8,16 @@ source docker/test/lib.sh
 
 step "init"
 init_out="$(./provision.sh init 2>&1 | tee -a "$STEP_LOG")"
-grep -oP 'password=\K\S+' <<< "$init_out" | head -n1 > /etc/ddeploy/basic-auth-password
-pass "captured generated basic-auth password for later checks"
+
+# S12: init no longer logs the plaintext password at all — it writes it
+# straight to this root-only file instead (see lib/cmd_init.sh). Assert
+# both: the file exists with the right permissions, and the password
+# itself never appeared in init's own output.
+assert_file_exists /etc/ddeploy/basic-auth-password "basic-auth password file exists (not logged)"
+auth_file_mode="$(stat -L -c %a /etc/ddeploy/basic-auth-password)"
+[[ "$auth_file_mode" == "600" ]] && pass "basic-auth password file is 600" || fail "basic-auth password file mode is $auth_file_mode, expected 600"
+captured_pass="$(cat /etc/ddeploy/basic-auth-password)"
+assert_not_contains "$init_out" "$captured_pass" "the actual password never appeared in init's own log output"
 
 step "init: checks"
 assert_cmd_ok "nginx is active" systemctl is-active --quiet nginx

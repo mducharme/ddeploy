@@ -165,10 +165,24 @@ cmd_init() {
     else
         local auth_pass
         auth_pass="$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 16)"
-        htpasswd -bc "$BASIC_AUTH_CREDENTIALS" preview "$auth_pass"
+        # -i (stdin), not -b (command-line argument) — -b puts the
+        # plaintext password directly on htpasswd's own argv, visible to
+        # any user who can see process listings for as long as this one
+        # invocation runs.
+        printf '%s\n' "$auth_pass" | htpasswd -c -i "$BASIC_AUTH_CREDENTIALS" preview >/dev/null
         chown root:www-data "$BASIC_AUTH_CREDENTIALS"
         chmod 640 "$BASIC_AUTH_CREDENTIALS"
-        log_info "generated default basic-auth credentials: user=preview password=$auth_pass (saved at $BASIC_AUTH_CREDENTIALS — this is logged only this once)"
+        # htpasswd stores only a one-way hash — this is the one and only
+        # place the plaintext password exists, so it does need to go
+        # *somewhere* the operator can retrieve it. A root-only file, not
+        # log_info: log output routinely ends up captured/retained
+        # somewhere less protected than the terminal it was typed into
+        # (journald, a CI runner's own log retention, ...).
+        mkdir -p /etc/ddeploy
+        printf '%s\n' "$auth_pass" > /etc/ddeploy/basic-auth-password
+        chmod 600 /etc/ddeploy/basic-auth-password
+        chown root:root /etc/ddeploy/basic-auth-password
+        log_info "generated default basic-auth credentials: user=preview — password at /etc/ddeploy/basic-auth-password (root-only; not logged)"
     fi
 
     log_info "== wildcard TLS cert for *.$BASE_DOMAIN =="

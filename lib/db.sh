@@ -29,6 +29,29 @@ db_admin_mysql() {
     fi
 }
 
+# Runs `mysql "$@"` authenticated as $1/$2 (a site's own user/pass, e.g.
+# from read_db_password) via a temporary, mode-600 MySQL option file —
+# never MYSQL_PWD (an environment variable, visible via
+# /proc/<pid>/environ to root/same-uid for as long as the mysql process
+# runs) and never -p<password> (argv, visible to any user via `ps aux`
+# for that same window). Deleted immediately after, success or failure.
+# Callers pass -h/db name/etc. themselves via "$@" — this only handles
+# authentication, same division of concerns as db_admin_mysql above.
+mysql_as_user() {
+    local user="$1" pass="$2"; shift 2
+    local tmp; tmp="$(mktemp)"
+    cat > "$tmp" <<EOF
+[client]
+user=$user
+password=$pass
+EOF
+    chmod 600 "$tmp"
+    mysql --defaults-extra-file="$tmp" "$@"
+    local rc=$?
+    rm -f "$tmp"
+    return $rc
+}
+
 # Reads a scalar from a JSON file via yq. Unlike a YAML-sourced file
 # (where plain-mode yq strips quotes automatically), yq's plain-mode
 # output for a JSON-sourced file keeps the surrounding quotes — strip one
@@ -148,7 +171,7 @@ write_db_credentials() {
             mkdir -p "$GENERATED_DIR"
             printf '%s' "$db_pass" > "$GENERATED_DIR/$name.dbpass"
             chmod 600 "$GENERATED_DIR/$name.dbpass"
-            log_warn "db_env_scheme=none — this CMS doesn't read DB config from .env; nothing was written there. Credentials (also saved root-only at $GENERATED_DIR/$name.dbpass): db=$db_name user=$db_user host=$DB_HOST pass=$db_pass"
+            log_warn "db_env_scheme=none — this CMS doesn't read DB config from .env; nothing was written there. db=$db_name user=$db_user host=$DB_HOST — password not logged, saved root-only at $GENERATED_DIR/$name.dbpass (cat it to view)"
             ;;
         charcoal)
             local charcoal_json="$dir/config/config.local.json"
@@ -245,8 +268,8 @@ SQL
 # never granted WITH GRANT OPTION (see db_ensure), so none of that is
 # reachable no matter what the dump contains. Same local-vs-remote
 # connection logic as db_admin_mysql, so it works whether the database
-# is co-located or on a dedicated init-db server; MYSQL_PWD, same
-# pattern cmd_doctor.sh already uses for a site's own credentials.
+# is co-located or on a dedicated init-db server; mysql_as_user (above)
+# for authentication, not MYSQL_PWD/-p.
 #
 # Strips mysqldump's own DEFINER=`user`@`host` (emitted for every view/
 # routine/trigger/event when --routines/--triggers/--events are set —
@@ -271,10 +294,10 @@ load_sql_dump_into_db() {
     local ok=1
     if [[ "$DB_HOST" == "127.0.0.1" || "$DB_HOST" == "localhost" ]]; then
         "${reader[@]}" | sed -E 's/DEFINER=`[^`]*`@`[^`]*`/DEFINER=CURRENT_USER/g' \
-            | MYSQL_PWD="$db_pass" mysql -u "$db_user" "$db_name" || ok=0
+            | mysql_as_user "$db_user" "$db_pass" "$db_name" || ok=0
     else
         "${reader[@]}" | sed -E 's/DEFINER=`[^`]*`@`[^`]*`/DEFINER=CURRENT_USER/g' \
-            | MYSQL_PWD="$db_pass" mysql -u "$db_user" -h "$DB_HOST" "$db_name" || ok=0
+            | mysql_as_user "$db_user" "$db_pass" -h "$DB_HOST" "$db_name" || ok=0
     fi
     [[ "$ok" -eq 1 ]]
 }
