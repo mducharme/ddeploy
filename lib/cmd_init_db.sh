@@ -35,11 +35,18 @@ EOF
         admin_pass="$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 24)"
     fi
 
+    # admin_user/host are operator-controlled (hardcoded / provisioner.conf),
+    # not client-repo content — but admin_pass may be reused from an
+    # existing DB_ADMIN_CREDENTIALS file, and an unescaped ' in any of
+    # these would corrupt this SQL regardless of trust. sql_quote (lib/db.sh)
+    # is the ANSI-SQL-standard escape (doubling '), correct under any
+    # sql_mode.
+    local admin_pass_sql; admin_pass_sql="$(sql_quote "$admin_pass")"
     local host
     for host in $DB_ALLOWED_HOSTS; do
         mysql <<SQL
-CREATE USER IF NOT EXISTS '${admin_user}'@'${host}' IDENTIFIED BY '${admin_pass}';
-ALTER USER '${admin_user}'@'${host}' IDENTIFIED BY '${admin_pass}';
+CREATE USER IF NOT EXISTS '${admin_user}'@'${host}' IDENTIFIED BY '${admin_pass_sql}';
+ALTER USER '${admin_user}'@'${host}' IDENTIFIED BY '${admin_pass_sql}';
 GRANT ALL PRIVILEGES ON *.* TO '${admin_user}'@'${host}' WITH GRANT OPTION;
 SQL
     done

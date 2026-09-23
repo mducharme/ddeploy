@@ -61,6 +61,20 @@ json_write() {
     yq eval -i -o=json "${path} = \"${val}\"" "$file"
 }
 
+# Escapes a value for safe interpolation into a single-quoted MySQL/
+# MariaDB string literal — doubling the quote (ANSI-SQL standard, unlike
+# backslash-escaping, this is correct regardless of whether the server's
+# sql_mode has NO_BACKSLASH_ESCAPES set). Used for db_pass in db_ensure's
+# admin SQL below: unlike db_name/db_user (restricted to a safe
+# identifier charset by validate_db_identifier, see lib/config.sh), a
+# password is opaque — it may be freshly generated, or read back from a
+# client-editable .env/config.local.json (read_db_password) that this
+# tool must treat as untrusted content, not something it wrote itself
+# last time.
+sql_quote() {
+    printf '%s' "${1//\'/\'\'}"
+}
+
 # Charcoal's active DB entry is named by default_database (usually
 # "default", but not always — e.g. a project keyed "mysql" alongside a
 # "sqlite" fallback). Reads it back if the file already names one, else
@@ -153,16 +167,23 @@ db_ensure() {
     local name="$1" dir="$2"
     local db_name="${DB_NAME:-$name}" db_user="${DB_USER:-$name}"
     local scheme="${DB_ENV_SCHEME:-laravel}"
+    # Belt-and-suspenders: parse_config already validates DB_NAME/DB_USER
+    # (lib/config.sh) before this runs on every real call path, but this
+    # is the actual SQL-execution boundary — don't rely solely on every
+    # future caller remembering to validate upstream.
+    validate_db_identifier "$db_name" "database name for '$name'"
+    validate_db_identifier "$db_user" "database user for '$name'"
 
     local db_pass; db_pass="$(read_db_password "$name" "$dir" "$scheme")"
     if [[ -z "$db_pass" ]]; then
         db_pass="$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 24)"
     fi
+    local db_pass_sql; db_pass_sql="$(sql_quote "$db_pass")"
 
     db_admin_mysql <<SQL
 CREATE DATABASE IF NOT EXISTS \`${db_name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS '${db_user}'@'${DB_GRANT_HOST}' IDENTIFIED BY '${db_pass}';
-ALTER USER '${db_user}'@'${DB_GRANT_HOST}' IDENTIFIED BY '${db_pass}';
+CREATE USER IF NOT EXISTS '${db_user}'@'${DB_GRANT_HOST}' IDENTIFIED BY '${db_pass_sql}';
+ALTER USER '${db_user}'@'${DB_GRANT_HOST}' IDENTIFIED BY '${db_pass_sql}';
 GRANT ALL PRIVILEGES ON \`${db_name}\`.* TO '${db_user}'@'${DB_GRANT_HOST}';
 FLUSH PRIVILEGES;
 SQL
@@ -173,6 +194,8 @@ SQL
 
 db_drop() {
     local db_name="$1" db_user="$2"
+    validate_db_identifier "$db_name" "database name"
+    validate_db_identifier "$db_user" "database user"
     db_admin_mysql <<SQL
 DROP DATABASE IF EXISTS \`${db_name}\`;
 DROP USER IF EXISTS '${db_user}'@'${DB_GRANT_HOST}';

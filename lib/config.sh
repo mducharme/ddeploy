@@ -141,6 +141,21 @@ validate_static_cache() {
     [[ "$val" =~ $re ]] || die "$label ('$val') is not an nginx expires duration like 30d / 12h — refusing to use it"
 }
 
+# database.name/database.user (or --db) end up interpolated into
+# backtick-quoted identifiers and unquoted `'user'@'host'` clauses in
+# lib/db.sh's admin SQL (CREATE/ALTER/GRANT/DROP), and also passed as a
+# bare positional argument to `mysql` in load_sql_dump_into_db — a plain
+# site name defaults DB_NAME/DB_USER and is already NAME_RE-safe (and
+# allows a hyphen, hence this allows one too — just not leading, same
+# reason as validate_branch_name's leading-'-' guard: a leading hyphen
+# risks being read as a `mysql` CLI flag, not a positional db name), but
+# a .ddev database.name/user is client-repo content, not this tool's
+# own. Nothing in this charset can close a backtick or a quote.
+validate_db_identifier() {
+    local val="$1" label="$2"
+    [[ "$val" =~ ^[A-Za-z0-9_][A-Za-z0-9_-]*$ ]] || die "$label ('$val') must be letters, digits, underscore, or (non-leading) hyphen only — refusing to use it"
+}
+
 # A schedule[].cron entry: a plain 5-field cron expression, safe charset
 # only — this goes straight into a generated /etc/cron.d file, one entry
 # per line, so a newline or an unexpected field count would corrupt that
@@ -575,6 +590,8 @@ parse_config() {
     DB_NAME="${DB_NAME_OVERRIDE:-${cfg_db_name:-$name}}"
     DB_USER="${DB_USER_OVERRIDE:-${cfg_db_user:-$name}}"
     unset DB_NAME_OVERRIDE DB_USER_OVERRIDE
+    validate_db_identifier "$DB_NAME" "database.name for '$name'"
+    validate_db_identifier "$DB_USER" "database.user for '$name'"
 
     # DB_ENV_SCHEME picks which credential format db_ensure writes. A
     # config that recorded one (.ddeploy/config.yaml, or our sidecar)
