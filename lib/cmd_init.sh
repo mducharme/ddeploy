@@ -7,6 +7,42 @@
 # at $CF_CREDENTIALS, the shared git machine-user key already placed at
 # $GIT_DEPLOY_KEY, and the `deploy` service user already existing.
 
+# Pinned release + sha256 per architecture — NOT releases/latest/download
+# (a moving target with no integrity check at all: a compromised GitHub
+# asset or a MITM of that one HTTPS hop is root code exec, since init
+# runs as root). Same discipline as install_composer's checksum-verified
+# installer (lib/php.sh), just a static pin instead of a live signature
+# endpoint (yq doesn't publish one). Bump YQ_VERSION deliberately, not
+# automatically — recompute both shas from the new release's own
+# published checksums file (or `sha256sum` the downloaded binary
+# yourself) rather than trusting a single fetched value blindly.
+# docker/Dockerfile pins the same version/shas for the same reason at
+# image-build time (before this file is even in the image) — keep both
+# in sync by hand.
+YQ_VERSION="v4.53.6"
+declare -A YQ_SHA256=(
+    [amd64]="c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385"
+    [arm64]="88a1016bc1d657375a35864e4f44b6f333df8ff97b559f51bba0adcb2169df09"
+)
+
+install_pinned_yq() {
+    local arch; arch="$(dpkg --print-architecture)"
+    local expected="${YQ_SHA256[$arch]:-}"
+    [[ -n "$expected" ]] || die "no pinned yq checksum for architecture '$arch' — add one to YQ_SHA256 in lib/cmd_init.sh (see the release's own checksums file at https://github.com/mikefarah/yq/releases/tag/$YQ_VERSION) before running init on this architecture"
+
+    local tmp; tmp="$(mktemp)"
+    curl -fsSL -o "$tmp" "https://github.com/mikefarah/yq/releases/download/$YQ_VERSION/yq_linux_${arch}" \
+        || { rm -f "$tmp"; die "failed to download yq $YQ_VERSION for $arch"; }
+    local actual; actual="$(sha256sum "$tmp" | cut -d' ' -f1)"
+    if [[ "$actual" != "$expected" ]]; then
+        rm -f "$tmp"
+        die "yq $YQ_VERSION ($arch) checksum mismatch — expected $expected, got $actual. Aborting; nothing installed. (A stale mirror, an interrupted download, or a compromised asset all look like this — don't retry blindly.)"
+    fi
+    mv "$tmp" /usr/local/bin/yq
+    chmod +x /usr/local/bin/yq
+    log_info "installed yq $YQ_VERSION ($arch), checksum verified"
+}
+
 cmd_init() {
     require_root
     load_conf
@@ -48,23 +84,21 @@ cmd_init() {
     local yq_path
     yq_path="$(command -v yq 2>/dev/null || true)"
     if [[ -z "$yq_path" ]] || ! yq --version 2>&1 | grep -qi mikefarah || [[ "$yq_path" == /snap/* ]]; then
-        # A pinned binary, not `snap install yq` (what an earlier version
-        # of this script used) — snap packages run under strict AppArmor
-        # confinement by default, and root does NOT bypass that the way
-        # it bypasses ordinary file permissions. Under sudo (without -H),
-        # $HOME becomes /root, so a snap-confined yq can't read anything
-        # under SITES_ROOT — every yq call in this tool fails with
-        # "permission denied" on a perfectly ordinary, readable file
-        # (confirmed in production, not hypothetical). Replace a
-        # snap-installed yq left by a previous run too, not just a
-        # missing one.
+        # A pinned, checksum-verified binary, not `snap install yq` (what
+        # an earlier version of this script used) — snap packages run
+        # under strict AppArmor confinement by default, and root does NOT
+        # bypass that the way it bypasses ordinary file permissions.
+        # Under sudo (without -H), $HOME becomes /root, so a
+        # snap-confined yq can't read anything under SITES_ROOT — every
+        # yq call in this tool fails with "permission denied" on a
+        # perfectly ordinary, readable file (confirmed in production, not
+        # hypothetical). Replace a snap-installed yq left by a previous
+        # run too, not just a missing one.
         if [[ "$yq_path" == /snap/* ]]; then
             log_warn "found a snap-installed yq on PATH ($yq_path) — replacing it with a pinned binary; snap's confinement blocks it from reading SITES_ROOT under sudo"
             snap remove yq >/dev/null 2>&1 || true
         fi
-        curl -fsSL -o /usr/local/bin/yq \
-            "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_$(dpkg --print-architecture)"
-        chmod +x /usr/local/bin/yq
+        install_pinned_yq
     fi
 
     log_info "== baseline PHP versions: $BASELINE_PHP =="

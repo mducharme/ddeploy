@@ -31,8 +31,8 @@ real).
   container and copied to the other, MySQL grants and connections over a
   real Docker network.
 - **Git over SSH** — a local sshd + bare repo + a generated ed25519
-  keypair used as `GIT_DEPLOY_KEY`, so `git_ssh_command`/`sync_site_ssh`
-  (lib/git_access.sh) run against a real SSH server, not a shortcut.
+  keypair used as `GIT_DEPLOY_KEY`, so `git_ssh_command` and the per-deploy
+  ssh-agent (lib/git_access.sh) run against a real SSH server, not a shortcut.
 - **Backup/restore against real object storage** — a MinIO container
   standing in for S3/Spaces/B2, so `rclone sync`/`copy` (and the exact
   connection-string quoting this project had a real bug in once already)
@@ -73,9 +73,10 @@ live domain — verify manually against a real Cloudflare zone before
 relying on it), and ufw's actual packet-filtering behavior (verify on a
 real VM/droplet).
 
-`init` no longer installs yq via `snap` at all (it downloads a pinned Go
-yq binary directly instead — see the comment in `lib/cmd_init.sh`) after
-a real deployment hit snap's strict AppArmor confinement blocking every
+`init` no longer installs yq via `snap` at all (it downloads a pinned,
+checksum-verified Go yq binary directly instead — see
+`install_pinned_yq` in `lib/cmd_init.sh`) after a real deployment hit
+snap's strict AppArmor confinement blocking every
 `yq` call from reading anything under `SITES_ROOT`, since root doesn't
 bypass that the way it bypasses ordinary file permissions. This harness
 never caught it because the image pre-installs yq the same (now-correct)

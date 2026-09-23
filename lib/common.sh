@@ -68,6 +68,7 @@ load_conf() {
     DB_HOST="${DB_HOST:-127.0.0.1}"
     DB_ADMIN_CREDENTIALS="${DB_ADMIN_CREDENTIALS:-}"
     DB_GRANT_HOST="${DB_GRANT_HOST:-localhost}"
+    validate_db_grant_host "$DB_GRANT_HOST"
     BACKUP_ENABLED="${BACKUP_ENABLED:-false}"
     BACKUP_CREDENTIALS="${BACKUP_CREDENTIALS:-}"
     BACKUP_BUCKET="${BACKUP_BUCKET:-}"

@@ -20,10 +20,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Real Go (mikefarah) yq, pre-installed — `init`'s own yq-install step
 # needs `snap`, which isn't available in a container; pre-installing here
 # means that step degrades to (and exercises) its detection/version-check
-# logic instead of failing on a missing snap.
-RUN curl -fsSL -o /usr/local/bin/yq \
-        "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_$(dpkg --print-architecture)" \
-    && chmod +x /usr/local/bin/yq
+# logic instead of failing on a missing snap. Pinned + checksum-verified,
+# same version/shas as install_pinned_yq in lib/cmd_init.sh (not
+# releases/latest/download — a moving target with no integrity check) —
+# keep both in sync by hand if YQ_VERSION there ever changes.
+RUN set -e; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+        amd64) sha=c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385 ;; \
+        arm64) sha=88a1016bc1d657375a35864e4f44b6f333df8ff97b559f51bba0adcb2169df09 ;; \
+        *) echo "no pinned yq checksum for architecture '$arch'" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /usr/local/bin/yq \
+        "https://github.com/mikefarah/yq/releases/download/v4.53.6/yq_linux_${arch}"; \
+    echo "${sha}  /usr/local/bin/yq" | sha256sum -c - ; \
+    chmod +x /usr/local/bin/yq
 
 # Mocks for the two things this harness can't exercise for real: certbot
 # (needs a live public domain + real ACME account) and ufw (needs kernel

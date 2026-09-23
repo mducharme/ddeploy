@@ -8,6 +8,7 @@ set -euo pipefail
 cd /opt/ddeploy
 source docker/test/lib.sh
 source lib/common.sh
+source lib/config.sh
 source lib/db.sh
 source lib/backup.sh
 load_conf
@@ -320,6 +321,31 @@ rm -rf "$WORK"
 assert_cmd_fails "deploy refuses a redirect target that would inject nginx directives" ./provision.sh deploy testsite
 out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "MARKER=v1" "failed extras deploy left the live tree serving v1"
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+git -C "$WORK" revert --no-edit HEAD
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+
+# --- S3: a poisoned database.name must not reach mysql ------------------
+
+step "poisoned database.name is refused (SQL identifier allowlist)"
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+sed -i 's/^  name: testsite$/  name: "testsite'"'"'; DROP DATABASE mysql;--"/' "$WORK/.ddev/config.yaml"
+git -C "$WORK" commit -q -am 'poison database.name'
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+assert_cmd_fails "deploy refuses a database.name that would inject SQL" ./provision.sh deploy testsite
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "MARKER=v1" "failed identifier deploy left the live tree serving v1"
+mysql_still="$(mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" -N -B -e "SHOW DATABASES LIKE 'mysql';")"
+[[ -n "$mysql_still" ]] && pass "mysql system database still exists after the poisoned deploy" \
+    || fail "mysql system database is gone — identifier interpolation ran attacker SQL"
 WORK="$(mktemp -d)"
 git clone -q "$BARE" "$WORK"
 git -C "$WORK" config user.email 'test@ddeploy.test'

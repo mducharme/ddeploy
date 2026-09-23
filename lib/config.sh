@@ -156,6 +156,15 @@ validate_db_identifier() {
     [[ "$val" =~ ^[A-Za-z0-9_][A-Za-z0-9_-]*$ ]] || die "$label ('$val') must be letters, digits, underscore, or (non-leading) hyphen only — refusing to use it"
 }
 
+# DB_GRANT_HOST is operator config (provisioner.conf), not client YAML,
+# but it is still interpolated into 'user'@'host' clauses. Cap it to a
+# hostname / IPv4 / IPv6 / '%' charset so a typo or a compromised conf
+# cannot close the quote.
+validate_db_grant_host() {
+    local val="$1"
+    [[ "$val" =~ ^[A-Za-z0-9.:_%-]{1,255}$ ]] || die "DB_GRANT_HOST ('$val') is not a hostname, IP, or '%' — refusing to interpolate it into SQL"
+}
+
 # A schedule[].cron entry: a plain 5-field cron expression, safe charset
 # only — this goes straight into a generated /etc/cron.d file, one entry
 # per line, so a newline or an unexpected field count would corrupt that

@@ -62,17 +62,20 @@ json_write() {
 }
 
 # Escapes a value for safe interpolation into a single-quoted MySQL/
-# MariaDB string literal — doubling the quote (ANSI-SQL standard, unlike
-# backslash-escaping, this is correct regardless of whether the server's
-# sql_mode has NO_BACKSLASH_ESCAPES set). Used for db_pass in db_ensure's
-# admin SQL below: unlike db_name/db_user (restricted to a safe
-# identifier charset by validate_db_identifier, see lib/config.sh), a
-# password is opaque — it may be freshly generated, or read back from a
-# client-editable .env/config.local.json (read_db_password) that this
-# tool must treat as untrusted content, not something it wrote itself
-# last time.
+# MariaDB string literal. Doubles single quotes (ANSI-SQL) AND backslashes
+# (MariaDB's default sql_mode still treats \ as an escape inside strings,
+# so a password containing \ or \'; would otherwise break out). Newlines
+# cannot be quoted away in a heredoc statement — refuse them. Used for
+# db_pass in db_ensure: unlike db_name/db_user (validate_db_identifier),
+# a password is opaque and may have been read back from a client-editable
+# .env (read_db_password).
 sql_quote() {
-    printf '%s' "${1//\'/\'\'}"
+    local s="$1"
+    [[ "$s" != *$'\n'* && "$s" != *$'\r'* ]] \
+        || die "database password contains a newline — refusing to interpolate it into SQL"
+    s="${s//\\/\\\\}"
+    s="${s//\'/\'\'}"
+    printf '%s' "$s"
 }
 
 # Charcoal's active DB entry is named by default_database (usually
@@ -173,6 +176,7 @@ db_ensure() {
     # future caller remembering to validate upstream.
     validate_db_identifier "$db_name" "database name for '$name'"
     validate_db_identifier "$db_user" "database user for '$name'"
+    validate_db_grant_host "$DB_GRANT_HOST"
 
     local db_pass; db_pass="$(read_db_password "$name" "$dir" "$scheme")"
     if [[ -z "$db_pass" ]]; then
@@ -196,6 +200,7 @@ db_drop() {
     local db_name="$1" db_user="$2"
     validate_db_identifier "$db_name" "database name"
     validate_db_identifier "$db_user" "database user"
+    validate_db_grant_host "$DB_GRANT_HOST"
     db_admin_mysql <<SQL
 DROP DATABASE IF EXISTS \`${db_name}\`;
 DROP USER IF EXISTS '${db_user}'@'${DB_GRANT_HOST}';
@@ -237,6 +242,8 @@ SQL
 # connection itself already blocking it at import time.
 load_sql_dump_into_db() {
     local file="$1" db_name="$2" db_user="$3" db_pass="$4"
+    validate_db_identifier "$db_name" "database name"
+    validate_db_identifier "$db_user" "database user"
     local -a reader
     if [[ "$file" == *.gz ]]; then
         reader=(gunzip -c "$file")

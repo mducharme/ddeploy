@@ -15,6 +15,7 @@
 # to still surface a failing mysqldump's exit status, not gzip's.
 dump_database() {
     local db_name="$1" out="$2"
+    validate_db_identifier "$db_name" "database name"
     if [[ ( "$DB_HOST" == "127.0.0.1" || "$DB_HOST" == "localhost" ) && -z "$DB_ADMIN_CREDENTIALS" ]]; then
         mysqldump --single-transaction --routines --triggers --events "$db_name" | gzip > "$out"
     else
