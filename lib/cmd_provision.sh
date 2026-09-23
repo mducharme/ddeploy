@@ -151,12 +151,14 @@ cmd_provision() {
     # an already-established symlink into the persistent store from the
     # very first write, not into a real file that then needs migrating.
     link_persistent_files "$name" "$dest"
-    # Must come after apply_permissions (its 600/700 perms would
-    # otherwise get clobbered by a later whole-tree chmod) and before
-    # anything that might need repo access (hook replay, below, may run
-    # `composer install` against a private VCS dependency). HOME is the
-    # wrapper, not a release, so a swap doesn't drop the key.
-    sync_site_ssh "$name" "$wrapper"
+    # Older ddeploy versions copied GIT_DEPLOY_KEY into this user's own
+    # $HOME/.ssh here so composer/hook-replay could authenticate as
+    # www-<name> — a standing copy of a fleet-wide key, readable by this
+    # site's own (less trusted) user at any time, not just during a
+    # deploy. That's now a transient per-deploy ssh-agent instead (see
+    # start_deploy_ssh_agent below); wipe any leftover copy. Harmless
+    # (and cheap) to run every time.
+    rm -rf "$wrapper/.ssh"
     install_fpm_pool "$name" "$PHP_VERSION" "" "" "${FPM_MAX_CHILDREN_CONFIG:-$FPM_MAX_CHILDREN}"
 
     local root="$dir"
@@ -178,8 +180,15 @@ cmd_provision() {
     site_log "$name" "provision: php=$PHP_VERSION docroot=$DOCROOT"
 
     log_info "running first deploy for $name"
+    # Bracket just the hook-replay window with a live ssh-agent (see
+    # lib/git_access.sh) — composer/exec steps may need it for a private
+    # VCS dependency. Trap so a failing hook still tears the agent down.
+    start_deploy_ssh_agent "www-$name"
+    trap 'stop_deploy_ssh_agent' EXIT
     replay_hooks "$name" "$PHP_VERSION" "$dest" "www-$name" "$wrapper"
     run_repo_hook "$name" "$PHP_VERSION" "$dest" ".provisioner/post-provision.sh" "post-provision script" "www-$name" "$wrapper"
+    stop_deploy_ssh_agent
+    trap - EXIT
     # $dir (current-based, stable), not $dest (the specific release
     # directory) — an ops hook that persists SITE_DIR for later
     # reference shouldn't be handed a path a future deploy will prune.

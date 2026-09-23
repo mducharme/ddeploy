@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Runs INSIDE the web container, before `init`. Sets up a real local sshd
 # + bare git repo + machine-user deploy keypair, so provision/deploy/
-# provision-preview exercise the actual GIT_DEPLOY_KEY/sync_site_ssh path
-# (lib/git_access.sh) against a real SSH server, not a file:// shortcut.
-# This is test scaffolding, not something `init`/`provision` do themselves
-# — a real deployment points GIT_DEPLOY_KEY at a real GitHub/GitLab/
-# Bitbucket machine-user key instead.
+# provision-preview exercise the actual GIT_DEPLOY_KEY path and the
+# per-deploy ssh-agent (lib/git_access.sh) against a real SSH server, not
+# a file:// shortcut. This is test scaffolding, not something `init`/
+# `provision` do themselves — a real deployment points GIT_DEPLOY_KEY at
+# a real GitHub/GitLab/Bitbucket machine-user key instead.
 set -euo pipefail
 cd /opt/ddeploy
 source docker/test/lib.sh
@@ -66,6 +66,27 @@ git -C "$WORK" push -q "$REPO" feature-a:feature-a
 rm -rf "$WORK"
 
 chown -R gitfixture:gitfixture "$REPO"
+
+# A second, separate private repo — stands in for a private composer/VCS
+# dependency reachable with the SAME shared machine-user key, to prove
+# the per-deploy ssh-agent (lib/git_access.sh) actually works end to end,
+# not just that the old permanent key-copy is gone.
+PRIVATE_REPO=/srv/git/private-lib.git
+if [[ ! -d "$PRIVATE_REPO" ]]; then
+    mkdir -p "$PRIVATE_REPO"
+    git init --bare --initial-branch=main "$PRIVATE_REPO" >/dev/null
+fi
+PRIV_WORK="$(mktemp -d)"
+git -C "$PRIV_WORK" init --initial-branch=main -q
+git -C "$PRIV_WORK" config user.email 'test@ddeploy.test'
+git -C "$PRIV_WORK" config user.name 'ddeploy test'
+echo 'private-lib-ok' > "$PRIV_WORK/MARKER"
+git -C "$PRIV_WORK" add -A
+git -C "$PRIV_WORK" commit -q -m 'v1'
+git -C "$PRIV_WORK" push -q "$PRIVATE_REPO" main:main
+rm -rf "$PRIV_WORK"
+chown -R gitfixture:gitfixture "$PRIVATE_REPO"
+pass "private-lib repo populated (stands in for a private VCS dependency)"
 
 # Test-harness-only wrinkle: 03-lifecycle.sh pushes follow-up commits
 # straight to this bare repo (as root, via a local path, to simulate "a

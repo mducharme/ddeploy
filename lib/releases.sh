@@ -48,7 +48,7 @@ read_deploy_branch() {
     printf '%s' "$val"
 }
 
-# site_root is the site user's HOME (composer cache, .ssh) but must not
+# site_root is the site user's HOME (composer cache) but must not
 # let that user replace `current` (a compromised pool would otherwise
 # retarget nginx at an attacker-controlled tree). Sticky bit: the user
 # can create ~/.composer, cannot unlink root-owned current.
@@ -107,9 +107,6 @@ ensure_releases_layout() {
     mkdir -p "$root/releases"
     mv "$tmp/checkout" "$root/releases/$id"
     rm -rf "$tmp"
-    if [[ -d "$root/releases/$id/.ssh" ]]; then
-        mv "$root/releases/$id/.ssh" "$root/.ssh"
-    fi
     switch_current "$name" "$root/releases/$id"
     lock_site_root "$name"
 
@@ -231,19 +228,28 @@ prepare_forward_release() {
     local target_branch; target_branch="$(read_deploy_branch "$name")"
     local current_branch; current_branch="$(git -C "$staging" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 
+    # Root + GIT_SSH_COMMAND, not sudo -u "www-$name": this is ddeploy's
+    # own git operation, not project code, and provision/deploy already
+    # require root end to end — routing it through the site's own user
+    # bought no real isolation (root was still the one invoking sudo) and
+    # was the whole reason a copy of the shared key used to live in every
+    # site's own $HOME (see lib/git_access.sh, README "Git access").
+    # safe.directory=* is scoped to this one invocation: apply_permissions
+    # just chowned $staging to www-<name>, and root operating on a tree it
+    # doesn't own trips git's dubious-ownership check otherwise.
     if [[ -n "$target_branch" && "$target_branch" != "$current_branch" ]]; then
         log_info "'$name': switching to configured deploy_branch '$target_branch' (was '$current_branch')"
-        if ! sudo -u "www-$name" env HOME="$root" git -C "$staging" fetch --quiet origin "$target_branch" 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
+        if ! GIT_SSH_COMMAND="$(git_ssh_command)" git -c safe.directory='*' -C "$staging" fetch --quiet origin "$target_branch" 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
             rm -rf "$staging"
             die "'$name': failed to fetch deploy_branch '$target_branch' from origin — check the branch exists"
         fi
-        if ! sudo -u "www-$name" env HOME="$root" git -C "$staging" checkout -B "$target_branch" "origin/$target_branch" 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
+        if ! git -c safe.directory='*' -C "$staging" checkout -B "$target_branch" "origin/$target_branch" 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
             rm -rf "$staging"
             die "'$name': failed to switch to deploy_branch '$target_branch'"
         fi
     else
         log_info "git pull --ff-only ($name)"
-        if ! sudo -u "www-$name" env HOME="$root" git -C "$staging" pull --ff-only 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
+        if ! GIT_SSH_COMMAND="$(git_ssh_command)" git -c safe.directory='*' -C "$staging" pull --ff-only 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
             rm -rf "$staging"
             die "git pull --ff-only failed for '$name' — live tree left unchanged"
         fi
@@ -299,7 +305,9 @@ prepare_rollback_release() {
     [[ -n "$origin" ]] && git -C "$staging" remote set-url origin "$origin"
     apply_permissions "$name" "$staging"
     log_info "git reset --hard ${want:0:12} ($name)"
-    if ! sudo -u "www-$name" env HOME="$root" git -C "$staging" reset --hard "$want" 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
+    # Root, not sudo -u "www-$name" — purely local (no network, no key
+    # needed), same reasoning as prepare_forward_release above.
+    if ! git -c safe.directory='*' -C "$staging" reset --hard "$want" 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
         rm -rf "$staging"
         die "git reset --hard failed for '$name' — live tree left unchanged"
     fi

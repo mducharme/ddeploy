@@ -132,7 +132,9 @@ cmd_provision_preview() {
         exec_user="www-$name"; exec_home="$dir"
         pool_user="www-$name"; pool_group="www-$name"
         apply_permissions "$name" "$dir"
-        sync_site_ssh "$name" "$dir"
+        # See lib/cmd_provision.sh's identical cleanup — older ddeploy
+        # versions copied GIT_DEPLOY_KEY into this user's own $HOME/.ssh.
+        rm -rf "$dir/.ssh"
     fi
 
     install_fpm_pool "$name" "$PHP_VERSION" "$pool_user" "$pool_group" "${FPM_MAX_CHILDREN_CONFIG:-$FPM_MAX_CHILDREN}"
@@ -160,8 +162,12 @@ cmd_provision_preview() {
     site_log "$name" "provision-preview: project=$project branch=$branch mode=$mode"
 
     log_info "running first deploy for $name"
+    start_deploy_ssh_agent "$exec_user"
+    trap 'stop_deploy_ssh_agent' EXIT
     replay_hooks "$name" "$PHP_VERSION" "$dir" "$exec_user" "$exec_home"
     run_repo_hook "$name" "$PHP_VERSION" "$dir" ".provisioner/post-provision.sh" "post-provision script" "$exec_user" "$exec_home"
+    stop_deploy_ssh_agent
+    trap - EXIT
     run_ops_hooks "post-provision" "$name" "$dir" "$PHP_VERSION"
 
     log_info "provisioned preview ($mode): https://$name.$BASE_DOMAIN"
@@ -184,20 +190,30 @@ cmd_deploy_preview() {
         exec_user="www-$PREVIEW_PROJECT"
         exec_home="$(site_root "$PREVIEW_PROJECT")"
     else
-        sync_site_ssh "$name" "$dir"
+        # See lib/cmd_provision.sh's identical cleanup — older ddeploy
+        # versions copied GIT_DEPLOY_KEY into this user's own $HOME/.ssh.
+        rm -rf "$dir/.ssh"
     fi
 
     # fetch + hard reset, not --ff-only pull: PR branches get rebased and
     # force-pushed routinely, and there's nothing local worth protecting
-    # on a preview.
+    # on a preview. Root + GIT_SSH_COMMAND, not sudo -u $exec_user: this
+    # is ddeploy's own git operation, not project code — see
+    # lib/releases.sh for why that no longer needs to run as the site
+    # user. safe.directory=* since $dir is already www-<name>-owned.
+    # reset needs no key (purely local); fetch does.
     log_info "git fetch + reset --hard origin/$PREVIEW_BRANCH ($name)"
-    sudo -u "$exec_user" env HOME="$exec_home" git -C "$dir" fetch origin "$PREVIEW_BRANCH" 2>&1 | tee -a "$LOG_DIR/$name.log"
-    sudo -u "$exec_user" env HOME="$exec_home" git -C "$dir" reset --hard "origin/$PREVIEW_BRANCH" 2>&1 | tee -a "$LOG_DIR/$name.log"
+    GIT_SSH_COMMAND="$(git_ssh_command)" git -c safe.directory='*' -C "$dir" fetch origin "$PREVIEW_BRANCH" 2>&1 | tee -a "$LOG_DIR/$name.log"
+    git -c safe.directory='*' -C "$dir" reset --hard "origin/$PREVIEW_BRANCH" 2>&1 | tee -a "$LOG_DIR/$name.log"
 
     resolve_preview_config "$name" "$PREVIEW_PROJECT" "$PREVIEW_MODE"
     scan_hooks "$name"
+    start_deploy_ssh_agent "$exec_user"
+    trap 'stop_deploy_ssh_agent' EXIT
     replay_hooks "$name" "$PHP_VERSION" "$dir" "$exec_user" "$exec_home"
     run_repo_hook "$name" "$PHP_VERSION" "$dir" ".provisioner/post-deploy.sh" "post-deploy script" "$exec_user" "$exec_home"
+    stop_deploy_ssh_agent
+    trap - EXIT
     run_ops_hooks "post-deploy" "$name" "$dir" "$PHP_VERSION"
 
     systemctl reload "php${PHP_VERSION}-fpm" 2>/dev/null || true

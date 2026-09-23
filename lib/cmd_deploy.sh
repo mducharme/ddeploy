@@ -71,10 +71,10 @@ cmd_deploy() {
         return 0
     fi
 
-    # Re-synced on every deploy (cheap, idempotent) so a rotated
-    # GIT_DEPLOY_KEY propagates without a separate command. Lives on the
-    # wrapper, not inside a release — HOME for the site user is site_root.
-    sync_site_ssh "$name" "$wrapper"
+    # See lib/cmd_provision.sh's identical cleanup — older ddeploy
+    # versions copied GIT_DEPLOY_KEY into this user's own $HOME/.ssh;
+    # wipe any leftover from before the per-deploy ssh-agent replaced it.
+    rm -rf "$wrapper/.ssh"
 
     local current_sha; current_sha="$(git -C "$dir" log -1 --format=%H)"
     local dest run_hooks=1
@@ -94,11 +94,14 @@ cmd_deploy() {
     fi
 
     # Discard this release on any failure before switch_current, so a
-    # broken hook cannot take the site down.
+    # broken hook cannot take the site down. Same trap also tears down
+    # the per-deploy ssh-agent (lib/git_access.sh) if a hook fails partway
+    # through — it must never outlive this one deploy call.
     NEW_RELEASE_DIR=""
     if [[ "$run_hooks" -eq 1 ]]; then
         NEW_RELEASE_DIR="$dest"
-        trap '[[ -n "${NEW_RELEASE_DIR:-}" ]] && rm -rf "$NEW_RELEASE_DIR"' EXIT
+        start_deploy_ssh_agent "www-$name"
+        trap '[[ -n "${NEW_RELEASE_DIR:-}" ]] && rm -rf "$NEW_RELEASE_DIR"; stop_deploy_ssh_agent' EXIT
     fi
 
     CONFIG_CHECKOUT_DIR="$dest"
@@ -120,6 +123,7 @@ cmd_deploy() {
 
     switch_current "$name" "$dest"
     NEW_RELEASE_DIR=""
+    [[ "$run_hooks" -eq 1 ]] && stop_deploy_ssh_agent
     trap - EXIT
     dir="$(site_dir "$name")"
 

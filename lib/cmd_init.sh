@@ -101,6 +101,7 @@ cmd_init() {
 
     log_info "== git deploy key =="
     require_git_deploy_key
+    chown root:root "$GIT_DEPLOY_KEY"
     chmod 600 "$GIT_DEPLOY_KEY"
     mkdir -p /etc/ssh
     # shellcheck disable=SC2086 # GIT_KNOWN_HOSTS_SEED is an intentional word list

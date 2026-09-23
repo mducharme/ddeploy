@@ -1033,12 +1033,45 @@ All git operations (clone, pull) authenticate with one shared SSH key,
 placed at `GIT_DEPLOY_KEY`. This should be a machine-user account (bot
 GitHub/GitLab/Bitbucket user, not a personal one) added as a read-only
 collaborator on each client repo or org — not a GitHub "deploy key",
-which is limited to one repo and can't be reused across a fleet.
+which is limited to one repo and can't be reused across a fleet. `init`
+`chown root:root`/`chmod 600`s it and seeds `/etc/ssh/ssh_known_hosts`
+with GitHub/GitLab/Bitbucket host keys.
 
-`init` seeds `/etc/ssh/ssh_known_hosts` with GitHub/GitLab/Bitbucket host
-keys for the initial clone (runs as root). `provision` and `deploy` copy
-the key into each site's `$dir/.ssh` (that site's `www-<name>` `$HOME`),
-so pulls after the first one run as the site's own user, not root.
+ddeploy's own git operations — the initial clone, every `deploy`/
+rollback's fetch/pull/checkout/reset, a branch preview's refresh — all
+run as **root**, straight off that one file via `GIT_SSH_COMMAND`. They
+never run as the site's own `www-<name>` user: `provision`/`deploy`
+already require root end to end, so routing the actual git call through
+`sudo -u www-<name>` bought no real isolation (root was still the one
+invoking sudo) — it only meant the key had to be copied somewhere that
+user could read it.
+
+That copy is exactly what an older version of this tool did: `sync_site_ssh`
+placed the key at `$dir/.ssh` (that site's own `$HOME`), readable by
+`www-<name>` at any time. A compromise in *any one* site's web app (an
+RCE in a bad dependency, say — that process runs as `www-<name>`) could
+read that copy and get git-read access to *every other client's repo*
+on the fleet. `provision`/`deploy`/`deploy-preview` now wipe any
+leftover copy from an older run (`rm -rf $dir/.ssh`, harmless if already
+gone) instead of writing a new one.
+
+The one place a site's own user genuinely needs live key access is
+opaque, project-declared code that runs as `www-<name>` — `composer
+install` against a private VCS package, a `hooks.post-start` `exec`
+step, `.provisioner/post-provision.sh`/`post-deploy.sh` — since ddeploy
+can't know in advance whether any of that needs git/SSH. For just that
+window, `provision`/`deploy`/`deploy-preview` start a per-deploy
+`ssh-agent` running *as* `www-<name>`, and root loads `GIT_DEPLOY_KEY`
+into it directly (`ssh-add`, over the agent's own socket) — the key
+bytes cross into the agent but are never written to a file that user can
+read. `SSH_AUTH_SOCK` is threaded into every hook subprocess; the agent
+is killed the moment hook replay finishes (even if a hook fails). Net
+effect: a private composer/VCS dependency still resolves with **zero
+client-project changes**, but the key exists on that site's filesystem
+for close to zero time instead of permanently — an attacker would need
+to compromise the app *during that one deploy's hook-replay window* and
+specifically reach for the agent socket, and even then could only use
+it for that window, never extract the key itself for reuse elsewhere.
 
 ### Cloudflare
 

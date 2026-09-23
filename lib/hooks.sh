@@ -29,7 +29,10 @@ scan_hooks() {
 # $4/$5 (optional) exec user/home — default to the site's own www-<name>.
 # A shared-mode preview passes its parent's user/dir instead, since its
 # deploy steps (a migration, notably) run as whoever actually owns the
-# database they're pointed at.
+# database they're pointed at. Reads DEPLOY_SSH_AUTH_SOCK (set by
+# start_deploy_ssh_agent, lib/git_access.sh) if the caller started one —
+# threaded into exec/composer steps so a private VCS dependency still
+# resolves, without any key ever living in $exec_user's own $HOME.
 replay_hooks() {
     local name="$1" php="$2" dir="$3"
     local exec_user="${4:-www-$name}" exec_home="${5:-$dir}"
@@ -49,12 +52,12 @@ replay_hooks() {
             exec)
                 log_info "exec ($name, php$php): $cmd"
                 site_log "$name" "deploy: exec: $cmd"
-                sudo -u "$exec_user" env HOME="$exec_home" PATH="$shim:/usr/bin:/bin" bash -lc "cd '$dir' && $cmd"
+                sudo -u "$exec_user" env HOME="$exec_home" PATH="$shim:/usr/bin:/bin" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" bash -lc "cd '$dir' && $cmd"
                 ;;
             composer)
                 log_info "composer ($name, php$php): $cmd"
                 site_log "$name" "deploy: composer: $cmd"
-                sudo -u "$exec_user" env HOME="$exec_home" PATH="$shim:/usr/bin:/bin" bash -lc "cd '$dir' && composer $cmd"
+                sudo -u "$exec_user" env HOME="$exec_home" PATH="$shim:/usr/bin:/bin" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" bash -lc "cd '$dir' && composer $cmd"
                 ;;
             exec-host)
                 log_warn "exec-host step skipped by default — host-context command, review before trusting: $cmd"

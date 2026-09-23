@@ -692,7 +692,7 @@ flush_hooks
 sleep 1
 
 out="$(curl_site testsite.staging.ddeploy.test)"
-assert_contains "$out" "MARKER=v2" "webhook deploy pulled the new commit (git_deploy_key + sync_site_ssh work end to end)"
+assert_contains "$out" "MARKER=v2" "webhook deploy pulled the new commit (GIT_DEPLOY_KEY end to end)"
 V2_RELEASE="$(readlink -f "$LIVE")"
 assert_cmd_ok "v2 is a distinct release directory" test -d "$V2_RELEASE"
 rm -f "$BODY"
@@ -1146,6 +1146,48 @@ sleep 65
 assert_file_exists "/tmp/schedule-marker.txt" "cron actually ran the scheduled command within a minute"
 assert_contains "$(cat /tmp/schedule-marker.txt 2>/dev/null)" "schedule-ran-" "scheduled command's real output landed where expected"
 rm -f /tmp/schedule-marker.txt
+
+# --- git access: no standing key copy, but a private VCS dep still works ---
+# Security-audit finding: GIT_DEPLOY_KEY used to be copied into every
+# site's own $HOME/.ssh so hooks could authenticate as www-<name> — a
+# standing, always-readable copy of a fleet-wide key. It's now a
+# transient per-deploy ssh-agent instead (lib/git_access.sh). Proves both
+# halves: the old copy is really gone, AND a hooks.post-start step that
+# needs git/SSH (a private composer/VCS dependency, say) still works,
+# with zero client-project changes beyond declaring the hook.
+
+step "hooks.post-start step reaches a private repo via the per-deploy ssh-agent, no key file ever lands in www-testsite's home"
+rm -rf /tmp/private-lib-probe
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+cat >> "$WORK/.ddev/config.yaml" <<'YAML'
+hooks:
+  post-start:
+    - exec: "rm -rf /tmp/private-lib-probe && git clone ssh://gitfixture@127.0.0.1/srv/git/private-lib.git /tmp/private-lib-probe"
+YAML
+git -C "$WORK" commit -q -am 'add a hooks.post-start step that clones a private repo'
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+
+./provision.sh deploy testsite
+
+assert_file_exists "/tmp/private-lib-probe/MARKER" "private repo was actually cloned by the hooks.post-start step"
+assert_contains "$(cat /tmp/private-lib-probe/MARKER 2>/dev/null)" "private-lib-ok" "cloned private repo's real content landed where expected"
+clone_owner="$(stat -c %U /tmp/private-lib-probe 2>/dev/null)"
+[[ "$clone_owner" == "www-testsite" ]] \
+    && pass "private repo was cloned AS www-testsite, not root" \
+    || fail "private repo clone owned by '$clone_owner', expected www-testsite"
+
+assert_file_absent "$SITES_ROOT/testsite/.ssh" "no www-testsite .ssh directory exists after deploy"
+key_copies="$(find "$SITES_ROOT" -iname 'deploy_key' 2>/dev/null | wc -l | tr -d ' ')"
+[[ "$key_copies" == "0" ]] \
+    && pass "no copy of GIT_DEPLOY_KEY exists anywhere under \$SITES_ROOT" \
+    || fail "found $key_copies copy/copies of the deploy key under \$SITES_ROOT — should be zero"
+assert_cmd_fails "no lingering ssh-agent process for www-testsite after deploy" pgrep -u www-testsite ssh-agent
+
+rm -rf /tmp/private-lib-probe
 
 # --- final cleanup, everything purged ------------------------------------
 
