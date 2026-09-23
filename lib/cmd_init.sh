@@ -61,6 +61,22 @@ cmd_init() {
     # it in testing; the env vars alone did not.
     exec < /dev/null
 
+    log_info "== provisioner directory ownership =="
+    # root cron (backup-uploads/backup-database/prune-previews below) and
+    # the webhook worker's systemd unit both execute ddeploy's own code
+    # straight out of $PROVISIONER_DIR, as root — see bootstrap.sh for
+    # the full reasoning. An install from before this was fixed (or one
+    # that skipped bootstrap.sh entirely) may still be owned by `deploy`
+    # or another non-root user; self-heal it on every init run rather
+    # than requiring a one-time manual step some upgrading operator could
+    # easily miss. Traversable (o+rx), not writable, by anyone else —
+    # `deploy`/CI can still read and execute everything here.
+    if [[ -n "$PROVISIONER_DIR" && "$PROVISIONER_DIR" != "/" ]]; then
+        chown -R root:root "$PROVISIONER_DIR"
+        find "$PROVISIONER_DIR" -type d -exec chmod 755 {} +
+        find "$PROVISIONER_DIR" -type f -exec chmod go-w {} +
+    fi
+
     log_info "== apt sources & base packages =="
     # add-apt-repository itself comes from software-properties-common,
     # which a minimal base image (a bare Docker image; some providers'

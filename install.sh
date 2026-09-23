@@ -10,9 +10,9 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
 if [[ ! -f provisioner.conf ]]; then
-    ./provision.sh configure
+    sudo ./provision.sh configure
 else
-    echo "provisioner.conf already exists — skipping configure (run './provision.sh configure' yourself to change settings)"
+    echo "provisioner.conf already exists — skipping configure (run 'sudo ./provision.sh configure' yourself to change settings)"
 fi
 
 echo

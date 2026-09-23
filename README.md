@@ -68,17 +68,25 @@ however) and run it once as root:
 ```
 
 That installs git, creates the `deploy` user (added to `sudo`), and
-clones this repo to `/home/deploy/provisioner`
-(`provisioner.example.conf`'s defaults assume this path). It deliberately
-does not touch SSH access for `deploy` — get yourself a way in (your own
-key, cloud-init, whatever your org does) before you need it. Not meant to
-be curl-piped: the repo is presumably private, and the next step needs a
-real terminal, not a pipe's stdin.
+clones this repo to `/opt/ddeploy`, owned `root:root` (not `deploy`) —
+root cron (backup-uploads/backup-database/prune-previews) and the
+webhook worker's systemd unit both execute this checkout's own code as
+root, so it can't be left writable by `deploy` or a CI SSH session: that
+would mean anything that can push a commit here (or edit `provisioner.conf`,
+which is `source`d, not parsed) gets root on the next cron tick.
+`deploy`/CI can still read and execute everything here, just not write
+it — updating ddeploy's own code is `sudo git -C /opt/ddeploy pull`, a
+deliberately root-only step. It deliberately does not touch SSH access
+for `deploy` — get yourself a way in (your own key, cloud-init, whatever
+your org does) before you need it. Not meant to be curl-piped: the repo
+is presumably private, and the next step needs a real terminal, not a
+pipe's stdin.
 
 Already have `deploy`, git, and a clone of this repo some other way?
-Start here instead — same steps either way, as the `deploy` user:
+Make sure it ends up root-owned (see above), then start here — same
+steps either way:
 
-1. `./provision.sh configure` — creates `provisioner.conf` from
+1. `sudo ./provision.sh configure` — creates `provisioner.conf` from
   `provisioner.example.conf` and interactively sets domain, paths, PHP
   versions, and where the two credential files below will live.
   `provisioner.conf` (like `manifest`) is gitignored: it's per-server, so
@@ -1027,6 +1035,32 @@ files under its own release, but cannot repoint `current` at a directory
 of its choosing or delete another release out from under a rollback.
 Only `provision`/`deploy`, which already run as root, can retarget it.
 
+### The ddeploy checkout itself is root-owned
+
+`$PROVISIONER_DIR` (this checkout — see "Layout") is `root:root`,
+traversable but not writable by anyone else. Two things execute code
+straight out of it as root, unconditionally: the backup-uploads/
+backup-database/prune-previews cron entries `init` writes, and the
+webhook worker's systemd unit (`ddeploy-hook-worker.service` — the
+listener itself is unprivileged and runs a copy at
+`/usr/local/lib/ddeploy/listener.py`, not this checkout, but the worker
+that actually runs `provision.sh deploy` on a queued job is root). If
+this tree were writable by `deploy` or by whatever SSHes in to trigger a
+CI deploy, either one could rewrite `lib/*.sh` — or `provisioner.conf`,
+which is `source`d, not parsed — and get root on the next cron tick or
+webhook delivery, with no deploy of their own required. `deploy` being
+in the `sudo` group already makes it root-equivalent for itself, but the
+same checkout is also where a webhook/CI path runs, and that's a
+meaningfully lower-trust actor that should be able to trigger a deploy
+without being able to rewrite what root executes.
+
+`bootstrap.sh` clones to `/opt/ddeploy` this way from the start; `init`
+also re-applies it (`chown -R root:root` + traversable, not writable) on
+every run, so an existing install from before this was fixed self-heals
+without a manual step. `deploy`/CI can still read and execute everything
+here; updating ddeploy's own code needs `sudo git -C /opt/ddeploy pull`
+— deliberately a root-only action now, not a plain `git pull`.
+
 ### Git access
 
 All git operations (clone, pull) authenticate with one shared SSH key,
@@ -1111,8 +1145,11 @@ generated/                 sidecar configs + DB credentials (created at runtime)
 logs/                      per-site provision/deploy logs (created at runtime)
 ```
 
-Expected to live at `/home/deploy/provisioner`. Sites are checked out
-under `$SITES_ROOT` (`provisioner.conf`, default `/home/deploy/sites`).
+Expected to live at `/opt/ddeploy`, root-owned (see "Quickstart" above —
+root cron and the webhook worker execute this checkout's own code as
+root). Sites are checked out under `$SITES_ROOT` (`provisioner.conf`,
+default `/home/deploy/sites`) — a separate tree, owned per-site by each
+`www-<name>` user, not by this one.
 
 ## Accepted tradeoffs
 

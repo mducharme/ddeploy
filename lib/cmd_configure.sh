@@ -54,6 +54,14 @@ require_provisioner_conf() {
 }
 
 cmd_configure_core() {
+    # provisioner.conf is `source`d, not parsed (lib/common.sh) — whoever
+    # can write it gets arbitrary code exec on the next command that
+    # reads it. It lives inside $PROVISIONER_DIR, which is root-owned
+    # (see bootstrap.sh) precisely so a lower-trust actor (CI SSH, a
+    # webhook) can't rewrite what root-triggered cron/systemd units
+    # execute — configure has to run as root too, or it simply couldn't
+    # write here anymore.
+    require_root
     local target="$PROVISIONER_DIR/provisioner.conf"
     local example="$PROVISIONER_DIR/provisioner.example.conf"
     [[ -f "$example" ]] || die "missing $example — is this a full ddeploy checkout?"

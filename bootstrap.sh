@@ -11,13 +11,26 @@
 #
 # usage: ./bootstrap.sh <repo-url> [target-dir]
 #   repo-url    git URL for your ddeploy checkout (ssh:// or https://)
-#   target-dir  where to clone it (default: /home/deploy/provisioner —
-#               matches provisioner.example.conf's own path assumption)
+#   target-dir  where to clone it (default: /opt/ddeploy)
 #
 # Deliberately does NOT touch SSH access for the new `deploy` user (no
 # authorized_keys seeding) — that's credential handling specific to your
 # org, not this script's business. `su - deploy` below works regardless,
 # since it's a local session, not a new SSH connection.
+#
+# Cloned root:root, not deploy:deploy — root cron (backup-uploads,
+# backup-database, prune-previews) and the webhook worker's systemd unit
+# both run ddeploy's own code straight out of this checkout, as root.
+# `deploy` being in the `sudo` group already makes it root-equivalent for
+# itself, but the SAME checkout is also where a webhook-triggered/CI SSH
+# path runs `provision.sh deploy <name>` — a much lower-trust actor that
+# should be able to trigger a deploy without being able to rewrite
+# ddeploy's own lib/*.sh (or provisioner.conf, which is sourced, not
+# parsed) and get root on the next cron tick. `deploy` (or CI) can still
+# freely read and EXECUTE everything here; updating ddeploy's own code
+# now needs an explicit `sudo git -C $target_dir pull` — deliberately a
+# root-only action, not something a plain `git pull` as `deploy` can do
+# anymore.
 set -euo pipefail
 
 log()  { printf '\033[36m[bootstrap]\033[0m %s\n' "$*"; }
@@ -26,7 +39,7 @@ die()  { printf '\033[31m[bootstrap]\033[0m %s\n' "$*" >&2; exit 1; }
 [[ "$EUID" -eq 0 ]] || die "run as root"
 
 repo_url="${1:-}"
-target_dir="${2:-/home/deploy/provisioner}"
+target_dir="${2:-/opt/ddeploy}"
 [[ -n "$repo_url" ]] || die "usage: $0 <repo-url> [target-dir]"
 
 if [[ -f /etc/os-release ]]; then
@@ -61,7 +74,15 @@ else
     git clone "$repo_url" "$target_dir"
     log "cloned $repo_url -> $target_dir"
 fi
-chown -R deploy:deploy "$target_dir"
+# root:root, traversable (not writable) by everyone else — see the
+# comment at the top of this file for why. `git clone` as root already
+# produces root-owned, world-readable-by-default files/dirs under a
+# normal umask; this is belt-and-suspenders, not a workaround for
+# anything actually observed.
+chown -R root:root "$target_dir"
+find "$target_dir" -type d -exec chmod 755 {} +
+find "$target_dir" -type f -exec chmod go-w {} +
+log "$target_dir is root-owned; run its own commands with sudo, or as 'deploy' (execute/read only, same as anyone else)"
 
 cat <<EOF
 
@@ -71,6 +92,7 @@ Done. Next, as the deploy user:
   cd $target_dir
   ./install.sh
 
-That runs 'provision.sh configure' (interactive — domain, paths, PHP
-versions) and then 'sudo provision.sh init'.
+That runs 'sudo provision.sh configure' (interactive — domain, paths, PHP
+versions) and then 'sudo provision.sh init'. Updating ddeploy's own code
+later is 'sudo git -C $target_dir pull' — deliberately a root-only step.
 EOF
