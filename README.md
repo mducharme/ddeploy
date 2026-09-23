@@ -1,16 +1,13 @@
 # ddeploy
 
-Provisions and deploys PHP sites on a plain Ubuntu 24.04 server: nginx,
-one PHP-FPM pool per site, one Linux user per site, one MariaDB database
-per site, a shared wildcard TLS certificate. No containers. It reads a
-project's own `.ddev/config.yaml` as configuration instead of asking for
-a second one, and it never runs DDEV itself.
+Provisions and deploys PHP sites on Ubuntu 24.04: nginx, one PHP-FPM
+pool per site, one Linux user per site, one MariaDB database per site, a
+shared wildcard TLS certificate. No containers. Reads a project's own
+`.ddev/config.yaml` as config; never runs DDEV itself.
 
-It's built for the staging/QA/client-review stage of a project's life —
-there's no staging→production promotion path, no web UI, and no
-cron/queue-worker management yet. One web server per project; a database
-server can be shared across several web servers (`init-db`). If none of
-that matches what you need, this probably isn't the right tool for it.
+Built for staging/QA/client-review — no staging→production promotion
+path, no web UI. One web server per project; a database server can be
+shared across several (`init-db`).
 
 ## Requirements
 
@@ -24,16 +21,17 @@ real server (next section).
 
 ## See it work
 
-`docker/test/run.sh` builds two systemd-enabled Ubuntu containers plus a
-MinIO instance standing in for S3, and runs the entire lifecycle against
-them for real: `init`, `provision`, `deploy`, branch previews, git-push
-webhooks, backup/restore, rollback, `doctor`, `remove`. Nothing here is
-mocked except ACME/DNS-01 certificate issuance and `ufw`'s packet
-filtering — `docker/README.md` says exactly why, and everything else has
-been verified against this harness, not just read.
+```
+docker/test/run.sh
+```
 
-This is genuine, unedited output from an actual run — provisioning one
-site, partway through that suite:
+Builds two systemd-enabled Ubuntu containers plus MinIO (stands in for
+S3) and runs the full lifecycle for real: `init`, `provision`, `deploy`,
+branch previews, git-push webhooks, backup/restore, rollback, `doctor`,
+`remove`. Everything is real except ACME/DNS-01 issuance and `ufw`'s
+packet filtering (mocked — see `docker/README.md`).
+
+Unedited output from an actual run, provisioning one site:
 
 ```
 $ ./provision.sh provision testsite ssh://gitfixture@127.0.0.1/srv/git/testsite.git
@@ -50,64 +48,40 @@ nginx: configuration file /etc/nginx/nginx.conf test is successful
 [info]  provisioned: https://testsite.staging.ddeploy.test
 ```
 
-That's a real Linux user, a real nginx vhost that `nginx -t` actually
-validated, a real PHP-FPM pool, a real MariaDB database and grant —
-served by real nginx over TLS to a real `curl` request. Run
-`docker/test/run.sh` yourself and watch the rest happen (needs Docker
-with `--privileged` containers allowed, and internet egress for apt
-packages and a few real API calls).
+Needs Docker with `--privileged` containers allowed, and internet
+egress for apt packages and a few real API calls.
 
 ## Quickstart: a real server
 
-On a fresh droplet with nothing on it yet — no `deploy` user, no git,
-this repo not cloned anywhere — copy `bootstrap.sh` onto it (scp, paste,
-however) and run it once as root:
+Fresh droplet, nothing on it yet. Copy `bootstrap.sh` onto it and run
+once as root:
 
 ```
 ./bootstrap.sh <your-ddeploy-repo-url>
 ```
 
-That installs git, creates the `deploy` user (added to `sudo`), and
-clones this repo to `/opt/ddeploy`, owned `root:root` (not `deploy`) —
-root cron (backup-uploads/backup-database/prune-previews) and the
-webhook worker's systemd unit both execute this checkout's own code as
-root, so it can't be left writable by `deploy` or a CI SSH session: that
-would mean anything that can push a commit here (or edit `provisioner.conf`,
-which is `source`d, not parsed) gets root on the next cron tick.
-`deploy`/CI can still read and execute everything here, just not write
-it — updating ddeploy's own code is `sudo git -C /opt/ddeploy pull`, a
-deliberately root-only step. It deliberately does not touch SSH access
-for `deploy` — get yourself a way in (your own key, cloud-init, whatever
-your org does) before you need it. Not meant to be curl-piped: the repo
-is presumably private, and the next step needs a real terminal, not a
-pipe's stdin.
+Installs git, creates `deploy` (added to `sudo`), clones this repo to
+`/opt/ddeploy` (`root:root` — see [docs/security.md](docs/security.md)
+for why). Doesn't touch SSH access for `deploy`; set that up yourself
+first. Not meant to be curl-piped — the next step needs a real terminal.
 
-Already have `deploy`, git, and a clone of this repo some other way?
-Make sure it ends up root-owned (see above), then start here — same
-steps either way:
+Already have `deploy`, git, and a clone some other way? Make sure it's
+root-owned, then run the same steps:
 
-1. `sudo ./provision.sh configure` — creates `provisioner.conf` from
-  `provisioner.example.conf` and interactively sets domain, paths, PHP
-  versions, and where the two credential files below will live.
-  `provisioner.conf` (like `manifest`) is gitignored: it's per-server, so
-  it never conflicts with a later `git pull` on this same checkout.
-2. Place a Cloudflare API token at `CF_CREDENTIALS` (`chmod 600`).
-3. Place a shared git SSH key at `GIT_DEPLOY_KEY` (`chmod 600`) — see
-  "Git access."
-4. `sudo ./provision.sh init` — installs nginx/PHP/MariaDB/certbot,
-  issues the wildcard cert, sets up the firewall.
-5. `sudo ./provision.sh provision <name> <repo-url>` — clones, detects
-  or asks for config, stands up the vhost/FPM pool/database, runs the
-   first deploy.
+```
+sudo ./provision.sh configure               # writes provisioner.conf (domain, paths, PHP versions)
+# place a Cloudflare API token at CF_CREDENTIALS (chmod 600)
+# place a shared git SSH key at GIT_DEPLOY_KEY (chmod 600) — see "Git access"
+sudo ./provision.sh init                    # nginx/PHP/MariaDB/certbot, wildcard cert, firewall
+sudo ./provision.sh provision <name> <repo-url>   # clone, config, vhost/FPM/DB, first deploy
+```
 
-Steps 1 and 4 are also just `./install.sh` (skips step 1 if
+`configure` + `init` are also just `./install.sh` (skips `configure` if
 `provisioner.conf` already exists).
 
 From there: `deploy <name>` on every push (or set up "Deploy on git
-push" so that happens on its own), `list` to see the fleet, `doctor` to
-check on it. To turn on everything else a project can use — custom
-domain, a non-default branch, auto-deploy, branch previews with PR
-comments, backups, health-check paging — see
+push"), `list` to see the fleet, `doctor` to check on it. For custom
+domains, branch previews, backups, health-check paging: see
 [docs/new-project.md](docs/new-project.md).
 
 ## Commands
@@ -152,73 +126,52 @@ permanent is this":
 | `generated/<name>.override.yaml`                 | Operator override (`provision.sh override`, see "Overriding a project's config" below), wins over both of the above | this repo, on the server               | no — `generated/` is gitignored       |
 | CLI flags (`--db`, `--hostnames`, `--auth`, ...) | A one-off override for this run of `provision`, always wins                                 | the terminal                           | n/a                                   |
 
-**Precedence, per key:** an explicit CLI flag on `provision` always
-wins, even against a project that already has a real `.ddev/config.yaml`
-— `--db`, `--hostnames`, `--custom-domains`, `--upload-dirs`, and
-`--deploy-cmd` aren't just "what to use the first time a site is
-provisioned," they override every run they're passed on (see `provision -h`). Short of an explicit flag: an operator override
-(`provision.sh override`) wins for any key it sets; otherwise
-`.ddeploy/config.yaml` wins for any key it declares; otherwise whichever
-of `.ddev/config.yaml` or the sidecar was actually used (`.ddev/config.yaml`
-if the repo has one, else the sidecar ddeploy already wrote for it).
+**Precedence, per key:** CLI flag on `provision` > operator override
+(`provision.sh override`) > `.ddeploy/config.yaml` > `.ddev/config.yaml`
+(or the sidecar, whichever exists). `--db`, `--hostnames`,
+`--custom-domains`, `--upload-dirs`, `--deploy-cmd` apply on every run
+they're passed, not just the first (`provision -h`).
 
-**When does a config change actually take effect?** `php_version`,
-`docroot`, `basic_auth`, `client_max_body_size`, `fpm_max_children`,
-`php_ini`, `additional_hostnames`, and `additional_fqdns` are all
-re-applied on every `deploy`, not just `provision` — push a commit that
-changes one in `.ddev/config.yaml`/`.ddeploy/config.yaml`, and the next
-deploy (however it's triggered: SSH, CI, or a git-push webhook) picks it
-up, same as code. `provision`-only flags (`--db`, `--upload-dirs`,
-`--deploy-cmd`, `--custom-domains`, and the non-interactive/interactive
-fallback fields) still only apply at provision time — those are either
-one-off overrides or determine what config gets written in the first
-place, not values `deploy` re-reads from a source that could change.
+**Takes effect on next `deploy`:** `php_version`, `docroot`,
+`basic_auth`, `client_max_body_size`, `fpm_max_children`, `php_ini`,
+`additional_hostnames`, `additional_fqdns`. **`provision`-time only:**
+`--db`, `--upload-dirs`, `--deploy-cmd`, `--custom-domains`, and the
+fallback fields.
 
 ### Resolving a new site
 
-`provision` resolves a site's PHP version, docroot, hostnames, and
-deploy steps in this order:
+`provision` resolution order:
 
 1. `.ddev/config.yaml` in the repo, if present.
-2. A sidecar at `generated/<name>.yaml`, if one was written by a
-  previous run.
+2. `generated/<name>.yaml` sidecar from a previous run.
 3. `--non-interactive` with `--php`/`--docroot`/`--db`/`--hostnames`/
   `--custom-domains`/`--upload-dirs`/`--deploy-cmd` flags.
 4. Interactive prompts.
 
-Paths 3 and 4 write the result to `generated/<name>.yaml`, so later runs
-(including `deploy`) never need the flags/prompts again.
+3 and 4 write to the sidecar, so later runs (including `deploy`) don't
+need the flags/prompts again.
 
-If no `.ddev/config.yaml` exists, `lib/cms.sh` checks the repo
-(`composer.json`, `wp-load.php`, a `craft` binary) for CraftCMS,
-WordPress (plain or Bedrock), or Charcoal, and uses that to fill in
-docroot and deploy steps. Interactively it's shown and confirmed once;
-non-interactively it only fills fields not set by a flag. Detected
-values land in the sidecar and can be edited by hand.
+No `.ddev/config.yaml`? `lib/cms.sh` detects CraftCMS, WordPress (plain
+or Bedrock), or Charcoal from the repo (`composer.json`, `wp-load.php`,
+a `craft` binary) and fills in docroot + deploy steps. Detected values
+land in the sidecar and can be edited by hand.
 
-`.ddev/config.yaml`'s `webserver_type` is read but not enforced — sites
-are always served by nginx regardless of what it says.
+`webserver_type` is read but not enforced — sites are always served by
+nginx.
 
-`docroot`, `upload_dirs`, `additional_hostnames`, and `additional_fqdns`
-are validated before use (`lib/config.sh`) — a `.ddev/config.yaml` lives in
-the client's own repo, and these values get used in filesystem operations
-and rendered nginx config, so an absolute path, an embedded newline, or a
-docroot that tries to leave the repo is rejected outright rather than
-trusted. `upload_dirs` is relative to **docroot** (DDEV's own convention —
-same as `ddev pull`/`ddev push`), not the repo root, so `..` in one is
-normal (a private, non-web-exposed uploads directory living next to
-`web/`, say) — resolved against docroot and rejected only if that actually
-overruns the repo root itself.
+`docroot`, `upload_dirs`, `additional_hostnames`, `additional_fqdns` are
+validated (`lib/config.sh`): no absolute path, no embedded newline, no
+docroot that escapes the repo. `upload_dirs` is relative to **docroot**
+(DDEV's own convention), not repo root — `..` is normal (a private
+uploads dir next to `web/`) as long as it doesn't escape the repo root
+itself.
 
 ### `.ddeploy/config.yaml`
 
 `additional_hostnames`, `additional_fqdns`, `persistent_files`,
-`db_env_scheme`, `queue_workers`, and `schedule` aren't real DDEV fields — putting them in a real
-`.ddev/config.yaml` risks a future DDEV schema-validation pass (or
-`ddev config` regenerating the file) silently dropping them, and it's a
-layering smell regardless: that file is DDEV's own, shared with the
-client's dev team, not this tool's. Declare them instead in
-`.ddeploy/config.yaml`, git-tracked, sitting next to `.ddev/config.yaml`:
+`db_env_scheme`, `queue_workers`, and `schedule` aren't real DDEV
+fields. Declare them in `.ddeploy/config.yaml` instead, git-tracked,
+sitting next to `.ddev/config.yaml`:
 
 ```yaml
 db_env_scheme: charcoal
@@ -254,119 +207,77 @@ schedule:
     cmd: php craft queue/run
 ```
 
-If it's absent, or doesn't declare a given key, that key falls back to
-`.ddev/config.yaml` (or the sidecar) exactly as before — a project with
-one of these already set by hand in a real `.ddev/config.yaml` keeps
-working unchanged; `.ddeploy/config.yaml` is additive, not a required
-migration.
+Absent, or a key not declared: falls back to `.ddev/config.yaml` (or the
+sidecar) — additive, not a required migration.
 
-Three of these are per-site overrides of a server-wide `provisioner.conf`
-default, for a project that needs something different from the fleet:
+Per-site overrides of a server-wide `provisioner.conf` default:
 
-- `basic_auth` — overrides `BASIC_AUTH_DEFAULT` for a normal site, or the
-on-by-default for a preview (still beaten by `--auth`/`--no-auth` on
-the CLI, which wins over both).
-- `client_max_body_size` — overrides `CLIENT_MAX_BODY_SIZE` (nginx's
-upload-size ceiling, default `64m` — nginx's own stock default is a
-restrictive `1m`, which breaks most real media uploads out of the box).
-- `fpm_max_children` — overrides `FPM_MAX_CHILDREN` (PHP-FPM pool
-concurrency ceiling, default `5`) for a site that needs more (or less)
-headroom than the rest of the fleet.
+- `basic_auth` — overrides `BASIC_AUTH_DEFAULT` (normal sites) or the
+on-by-default for previews. `--auth`/`--no-auth` on the CLI wins over
+both.
+- `client_max_body_size` — overrides `CLIENT_MAX_BODY_SIZE` (default
+`64m`; nginx's own stock default is `1m`).
+- `fpm_max_children` — overrides `FPM_MAX_CHILDREN` (default `5`).
 
-Five more with no server-wide equivalent — off by default, only active
-when declared:
+Off by default, no server-wide equivalent:
 
 - `queue_workers` / `schedule` — persistent supervised queue workers and
-cron-style scheduled commands, both running as the site's own user. See
+cron-style scheduled commands, running as the site's own user. See
 "Queue workers & scheduled tasks".
 - `auth_exempt_paths` — URL path prefixes that bypass basic auth even
-when it's on (a webhook or health-check endpoint on an otherwise-gated
-preview, say). Absolute paths only (`/webhook`, not `webhook`).
-Implemented as an nginx `map` on `$uri` feeding `auth_basic` a variable
-rather than a location-block trick — the app is a front-controller
-that rewrites everything to `index.php` via `try_files`, and that
-internal rewrite re-runs nginx's location search from scratch, so a
-nested location inside an exempt-path location never actually gets
-used. `auth_basic` is evaluated against the real, pre-rewrite `$uri`,
-which is what makes this work.
+when it's on. Absolute paths only (`/webhook`, not `webhook`).
 - `backup_exclude` — `rclone --exclude` glob patterns (e.g. `cache/**`),
-applied to `backup-uploads` only; `restore-uploads` naturally only
-pulls back what actually made it to object storage, so nothing extra
-is needed on that side.
+applied to `backup-uploads` only.
 - `db_backup_retention_days` — per-site override of the server-wide
 `DB_BACKUP_RETENTION_DAYS`.
 - `php_ini` — a map of PHP directive → value, rendered as
-`php_admin_value[]` lines in the site's own FPM pool — never touches
-the shared `php.ini`, so one site's override can't affect any other.
-`php_admin_value`, not `php_value`: the app itself can't override
-these back at runtime via `ini_set`, so the ceiling actually holds.
+`php_admin_value[]` (not `php_value` — the app can't override it via
+`ini_set`) in the site's own FPM pool only.
 
-Four more scoped nginx knobs. These are **not** raw snippets — a
-client repo cannot inject nginx directives. Each value is validated to
-a charset that cannot break out of the template, and the actual
-`location` / `add_header` / `expires` syntax is owned by this tool:
+Scoped nginx knobs — not raw snippets, each value is charset-validated:
 
-- `security_headers` — **on by default**; set to `false` to opt out.
-Sends `X-Content-Type-Options: nosniff`,
-`Referrer-Policy: strict-origin-when-cross-origin`, and
-`X-Frame-Options: SAMEORIGIN`. Header names and values are not
-configurable from the repo. No HSTS (custom domains start HTTP-only
-until their cert issues; Cloudflare often already sets this).
-- `static_cache: 30d` — `expires` on a fixed list of static extensions
-(css/js/images/fonts). The duration is `1–9999` plus `s`/`m`/`h`/`d`;
-the location regex is not. Missing assets 404 rather than falling
-through to PHP. Off by default (no value to default to).
-- `deny_php_in_uploads` — **on by default**; set to `false` to opt
-out. For each `upload_dirs` entry that is actually under the docroot
-(so nginx would serve it), PHP is `deny all` and missing files 404. A
-private dir like `../private-uploads` is skipped — it is not a URL.
-Extra prefixes: `deny_php_paths: [/media]`. `/` is refused (that would
-turn off PHP for the whole site).
-- `redirects` — a list of `{from, to, code}` maps. `from` is a URL
-path; `to` is a URL path or an `https://` URL; `code` is `301` or
-`302` (default 301). No `$` variables, no `http://`, no quotes or
-semicolons.
+- `security_headers` — **on by default**; `false` to opt out. Sends
+`X-Content-Type-Options: nosniff`, `Referrer-Policy:
+strict-origin-when-cross-origin`, `X-Frame-Options: SAMEORIGIN`. No
+HSTS.
+- `static_cache: 30d` — `expires` on static extensions (css/js/images/
+fonts). Duration `1–9999` + `s`/`m`/`h`/`d`. Missing assets 404. Off by
+default.
+- `deny_php_in_uploads` — **on by default**; `false` to opt out. PHP
+`deny all` + 404 for each web-accessible `upload_dirs` entry. Extra
+prefixes: `deny_php_paths: [/media]`. `/` is refused.
+- `redirects` — list of `{from, to, code}`. `from`/`to` are URL paths or
+an `https://` URL; `code` is `301` or `302` (default 301). No `$`
+variables, no `http://`, no quotes or semicolons.
 
-Anything those four don't cover: drop a **root-owned regular file** at
-`/etc/nginx/ddeploy-extra/<name>.conf`. `init` creates that directory.
-It is included inside the site's `server{}` (wildcard and custom-domain
+Anything else: drop a **root-owned regular file** at
+`/etc/nginx/ddeploy-extra/<name>.conf` (`init` creates the directory).
+Included inside the site's `server{}` (wildcard and custom-domain
 vhosts). It is never read from the client repo; `.ddeploy/nginx.conf` is
 ignored if present. A symlink or a non-root-owned file is skipped with
 a warning. Invalid extra config fails `nginx -t` and the deploy aborts.
 
 ### Overriding a project's config without touching the repo
 
-Everything above lives in the client's repo — normal, since a dev team
-owns `.ddev/config.yaml` and often `.ddeploy/config.yaml` too. Sometimes
-an operator needs to change one of these settings without repo write
-access, or without waiting for someone to commit and push: a client's
-uploads suddenly need a bigger `client_max_body_size`, basic auth needs
-to go on right now, a custom domain needs adding before the dev team can
-get to it.
+For a change without repo write access, or without waiting on a commit:
 
 ```
 sudo ./provision.sh override <name> key=value [key=value ...]
 ```
 
-Writes `generated/<name>.override.yaml` — server-side only, never in the
-client's checkout — and it's the **highest-precedence** of the three
-config sources: override beats `.ddeploy/config.yaml` beats
-`.ddev/config.yaml`/the sidecar. Takes effect on the site's next
-`deploy` (re-run it yourself for it to apply immediately).
+Writes `generated/<name>.override.yaml` (server-side only). Highest
+precedence of the three config sources. Takes effect on the site's next
+`deploy` (re-run it yourself to apply immediately).
 
-Scalar keys, one value each: `basic_auth`, `client_max_body_size`,
-`fpm_max_children`, `db_env_scheme`, `security_headers`, `static_cache`,
+Scalar keys: `basic_auth`, `client_max_body_size`, `fpm_max_children`,
+`db_env_scheme`, `security_headers`, `static_cache`,
 `deny_php_in_uploads`, `db_backup_retention_days`. List keys,
 space-separated (quote the value): `additional_hostnames`,
 `additional_fqdns`, `persistent_files`, `auth_exempt_paths`,
-`backup_exclude`, `deny_php_paths`. Each is validated the same way it
-would be coming from the repo. `redirects`, `php_ini`, `queue_workers`,
-and `schedule` aren't supported here — `redirects`/`php_ini`/`schedule`
-are structured data that doesn't fit a flat `key=value`, and a
-`queue_workers` entry is a full command that's very likely to contain
-its own spaces (`php craft queue/listen`), which would collide with the
-space-separated-list convention every other array key here uses. All
-four still need `.ddeploy/config.yaml` in the repo.
+`backup_exclude`, `deny_php_paths`. Not supported here (need
+`.ddeploy/config.yaml` in the repo): `redirects`, `php_ini`,
+`queue_workers`, `schedule` — structured data, or (for `queue_workers`)
+a command likely to contain its own spaces.
 
 ```
 sudo ./provision.sh override client "additional_hostnames=alt-name alt2"
@@ -379,16 +290,10 @@ sudo ./provision.sh override client --clear     # remove every override
 
 ### Custom domains
 
-Every site gets `<name>.$BASE_DOMAIN` for free, covered by the shared
-wildcard cert. A site can also have its own domain(s) — `additional_fqdns`
-in `.ddeploy/config.yaml` (see "Configuration"; a real
-`.ddev/config.yaml` and the sidecar both still work too) or
-`--custom-domains "a.com www.a.com"` non-interactively.
-
-These aren't covered by the wildcard, so each site's custom domains get
-their own certificate, issued via HTTP-01 (not the wildcard's DNS-01,
-since a custom domain generally isn't on the same Cloudflare account as
-`$BASE_DOMAIN`, or on Cloudflare at all). Requirements:
+Every site gets `<name>.$BASE_DOMAIN` free, on the shared wildcard cert.
+For its own domain(s): `additional_fqdns` in `.ddeploy/config.yaml`, or
+`--custom-domains "a.com www.a.com"` non-interactively. Issued via
+HTTP-01 (not the wildcard's DNS-01), own certificate per site:
 
 - DNS for the domain(s) must already point at this server before
 `provision` runs — HTTP-01 fails otherwise, `provision` logs a warning
@@ -403,146 +308,82 @@ Once issued, renewal is certbot's timer, same as the wildcard.
 
 ### Branch previews
 
-`provision-preview <project> <branch> [repo-url]` stands up a site for
-one branch of an existing project, at a name derived deterministically
-from `<project>` + `<branch>` (`preview_slug` in `lib/preview.sh` —
-lowercased, slugified, truncated with a hash suffix to fit the 28-char
-name cap). `deploy-preview`/`remove-preview` take the same `(project, branch)` pair and resolve the same name, so nothing needs to remember or
-pass around a generated name — CI just needs to know the project and
-branch it's already building.
+```
+provision-preview <project> <branch> [repo-url]
+deploy-preview <project> <branch>
+remove-preview <project> <branch> [--purge-db] [--purge-files]
+```
 
-`repo-url` is normally omitted — it's read from the parent project's own
-git remote if already provisioned (the common case: shared mode, the
-default, requires the parent already be provisioned anyway), or looked
-up by project name in `./manifest` otherwise. Only needed on the CLI for
-an isolated-mode preview of a project that's neither provisioned nor
-listed in the manifest yet.
+Name is derived from `<project>` + `<branch>` (`preview_slug`,
+`lib/preview.sh`). `repo-url` is normally omitted — read from the parent
+project's git remote, or looked up in `./manifest`.
 
-**Database and uploads are shared with the parent project by default,
-not copied.** This is deliberate, not a shortcut: these sites are
-typically deployed pre-launch, while a client is actively entering real
-content — the database *is* their content, with nothing else it could be
-restored from. Isolating a preview's database means content a client
-enters while a feature is in review has no way back into the main site
-when the branch merges; there's no equivalent of a git merge for a
-database. So `PREVIEW_DB_MODE=shared` (the default) links a preview to
-its parent's actual, current database and uploads — a migration in the
-preview's deploy steps runs against real data, and content entered
-through the preview is immediately the same content the main site has,
-because it's the same database. The Linux user is shared too (the
-preview's FPM pool runs as the parent's `www-<project>`, not a new
-user) — once the data itself is shared, a separate user protects nothing
-that matters.
-
-The accepted tradeoff: two previews active at once with diverging schema
-changes can conflict with each other against that one shared database.
-Given the alternative is guaranteed content loss, that's the right side
-to be on — and `backup-database` already covers this exact failure mode
-with a rolling snapshot history, which is what actually makes the
-tradeoff acceptable rather than reckless.
-
-`--isolated` opts a specific preview out into a fully normal, separate
-site — its own database, uploads, and Linux user — for when shared
-continuity isn't what's wanted: testing a risky migration against a
-site that's already live with real customers, or a branch that
-genuinely wants a disposable blank slate. `PREVIEW_SEED` (default
-`true`) seeds an isolated preview's database and uploads once, at
-creation, from the parent's current state (`mysqldump | mysql`, reusing
-`backup-database`'s dump; `rsync`, a copy not a link) — `--no-seed` skips
-that for a truly empty database.
+**Database and uploads are shared with the parent project by default**
+(`PREVIEW_DB_MODE=shared`) — a preview's FPM pool runs as the parent's
+own `www-<project>` user, not a new one. Tradeoff: two previews active
+at once can conflict against that one shared database; `backup-database`
+covers recovery from that. `--isolated` gives a preview its own
+database/uploads/Linux user instead. `PREVIEW_SEED` (default `true`)
+seeds an isolated preview once at creation from the parent's current
+state; `--no-seed` for an empty database.
 
 `deploy-preview` does `git fetch && reset --hard`, not `--ff-only pull`
-— PR branches get rebased and force-pushed routinely, and there's
-nothing local worth protecting on a preview. Previews stay in-place;
-they are not atomic releases. Basic auth defaults to on
-for previews (`--no-auth` to turn it off), unlike normal sites, since
-these are meant for internal/client eyes, not public or indexed.
+— previews stay in-place, not atomic releases. Basic auth defaults **on**
+for previews (`--no-auth` to turn off), unlike normal sites. `init`
+generates a shared fallback htpasswd (`BASIC_AUTH_CREDENTIALS`, default
+`/etc/nginx/htpasswd/default`) for any site with auth on and no htpasswd
+file of its own; rotate by deleting the file and re-running `init`.
 
-nginx doesn't validate that `auth_basic_user_file` exists at `nginx -t`
-time, only at request time — so a preview with no htpasswd file of its
-own would 500 on every request. `init` generates a shared fallback
-(`BASIC_AUTH_CREDENTIALS`, default `/etc/nginx/htpasswd/default`) once,
-with a random password logged to stdout — every site with auth on and
-no htpasswd file of its own (`htpasswd -c /etc/nginx/htpasswd/<name> <user>`) uses that shared one instead. Rotate it by deleting the file
-and re-running `init`.
+`remove-preview --purge-db` is a no-op for shared mode (database belongs
+to the parent). `--purge-files` only removes the preview's own checkout
+— a shared preview's uploads are symlinks into the parent's, never
+touched.
 
-`remove-preview --purge-db` only drops a database for an isolated-mode
-preview — for shared mode it's a no-op, since that database belongs to
-the parent. `--purge-files` only ever removes the preview's own
-checkout; a shared preview's uploads paths are symlinks into the
-parent's directory, and `rm -rf` on the preview's own dir removes the
-symlinks, never what they point to.
+`prune-previews [project]` diffs every provisioned preview against its
+branch's actual remote state (`git ls-remote`) and removes ones whose
+branch is gone — the safety net behind CI's own `remove-preview` on PR
+close. Wire into `init` via `PREVIEW_PRUNE_ENABLED`/
+`PREVIEW_PRUNE_SCHEDULE` for a periodic cron run.
 
-`prune-previews [project]` is the cleanup safety net: it diffs every
-provisioned preview against its branch's actual state on the remote
-(`git ls-remote`) and removes ones whose branch is gone. The primary
-cleanup path is still CI calling `remove-preview` when a PR closes —
-this only catches what that missed. Wire it into `init` via
-`PREVIEW_PRUNE_ENABLED`/`PREVIEW_PRUNE_SCHEDULE` for a periodic cron run.
-
-The general commands are preview-aware too, so a preview never needs its
-own separate mental model once it exists: `list` shows a `PREVIEW`
-column (`<project>/<branch> (<mode>)`) and resolves a shared-mode
-preview's `DB` column to the parent's actual database, not the preview's
-own unused name; `deploy-all` skips previews (they update via
-`deploy-preview`, not a fleet-wide `--ff-only` pull that would fail on
-any rebased branch); and plain `remove <name>` on a preview detects that
-and delegates to `remove-preview`, so the purge-db-belongs-to-the-parent
-safety and the symlink-safe file cleanup apply automatically.
+Previews are transparent to the general commands: `list` shows a
+`PREVIEW` column; `deploy-all` skips previews; plain `remove <name>` on
+a preview delegates to `remove-preview` automatically.
 
 ### Deploy on git push
 
-`sudo ./provision.sh configure webhook` does the whole thing: sets
-`WEBHOOK_ENABLED=true`, generates `$WEBHOOK_SECRET` (default
-`/etc/ddeploy/webhook.secret` — `init`'s own `install_webhook` fixes its
-ownership to `root:root`, chmod 600, on the next run regardless of who
-created it), and offers to **register the webhook itself**, via each
-forge's REST API — prompting for a token/app-password that's used once
-for that one API call and never saved. Then `sudo ./provision.sh init`
-stands up `https://hooks.$BASE_DOMAIN` (wildcard cert) proxying to an
-unprivileged listener on localhost; a root systemd worker runs the
-existing CLI from there — nothing in the HTTP request is executed as a
-command.
+```
+sudo ./provision.sh configure webhook
+```
 
-**The listener never holds `$WEBHOOK_SECRET`.** HMAC is symmetric — a
-process that can verify a signature can also forge one — so a version of
-this tool that had the listener check signatures itself was only as safe
-as that one unprivileged Python process staying uncompromised forever;
-a bug there would have meant an attacker could write jobs straight into
-the spool, skipping verification entirely. Instead the listener does the
-least it can: enforce a size limit, and spool the *raw* request
-(headers + body, unverified) as `raw-<id>.json`. Real HMAC verification
-and forge-payload parsing happen in `hook/verify_and_spool.py`, invoked
-by the root worker (`hook-worker`) when it drains the spool — the
-secret file itself is `root:root` `600`, something the listener's own
-user (`ddeploy-hook`) cannot read no matter what code ends up running in
-that process. A job only ever reaches `hook_process_job` (the thing that
-actually calls `deploy`/`provision-preview`/etc.) after that independent,
-root-context check passes.
+Sets `WEBHOOK_ENABLED=true`, generates `$WEBHOOK_SECRET` (default
+`/etc/ddeploy/webhook.secret`, `root:root` `600`), and offers to
+register the webhook itself via each forge's REST API (prompts for a
+token/app-password, used once, never saved). Then:
 
-Consequence: the listener can no longer tell a good signature from a bad
-one at request time, so **every structurally-valid POST gets `202`**
-now, correctly signed or not — a bad/missing secret is rejected later,
-asynchronously, in the worker's own logs, not with a synchronous `401`
-GitHub/Bitbucket's delivery UI would show. A missing signature header
-entirely still gets a `401` immediately (nothing to even queue), but a
-present-and-wrong one — the case that actually matters, e.g. a typo'd
-secret — will show as "delivered" in the forge's own UI. Check
-`journalctl -u ddeploy-hook-worker` or this tool's own per-site logs to
-catch that, not the forge's delivery log.
+```
+sudo ./provision.sh init
+```
+
+Stands up `https://hooks.$BASE_DOMAIN` proxying to an unprivileged
+listener on localhost; a root systemd worker runs the existing CLI.
+
+The listener never holds `$WEBHOOK_SECRET` — HMAC verification happens
+later, in a root-context step (see [docs/security.md](docs/security.md)
+for why). Consequence: **every structurally-valid POST gets `202`**,
+correctly signed or not. A missing signature header gets a synchronous
+`401`; a present-and-wrong one (e.g. a typo'd secret) is accepted and
+rejected later, asynchronously — check `journalctl -u
+ddeploy-hook-worker` or this tool's own logs, not the forge's delivery
+log.
 
 | Forge           | URL                                    | Events                                                                 |
 | --------------- | -------------------------------------- | ---------------------------------------------------------------------- |
 | GitHub          | `https://hooks.$BASE_DOMAIN/github`    | `push`, `pull_request`                                                 |
 | Bitbucket Cloud | `https://hooks.$BASE_DOMAIN/bitbucket` | `repo:push`, `pullrequest:created`, `updated`, `fulfilled`, `rejected` |
 
-**Why the API, not the web UI, for both:** Bitbucket Cloud has no
-workspace-level webhook screen in its UI at all — only per-repository,
-which doesn't scale to "one hook covers every client repo." GitHub's org
-webhook UI does work, but `configure webhook` drives both the same way
-for consistency and so the whole thing is scriptable. To do it by hand
-instead of through the wizard, `lib/register_webhook.py` is what it
-calls — read it for the exact request shape, or use these directly:
+Both are org/workspace-level (Bitbucket has no workspace-level webhook
+UI, so `configure webhook` drives both via API for consistency). To do
+it by hand: `lib/register_webhook.py`, or directly:
 
 ```
 # GitHub: an org-owned PAT (classic, admin:org_hook scope) or a
@@ -563,159 +404,97 @@ curl -X POST https://api.bitbucket.org/2.0/workspaces/<workspace>/hooks \
        "events":["repo:push","pullrequest:created","pullrequest:updated","pullrequest:fulfilled","pullrequest:rejected"]}'
 ```
 
-Both are organization/workspace-level, so registering once covers every
-client repo on the box, current and future — nothing to repeat per
-project. Optional `WEBHOOK_SECRET_BITBUCKET` if the two forges should not
-share a secret — the listener falls back to `$WEBHOOK_SECRET` for
-Bitbucket whenever it isn't set, so most setups only ever need the one.
+Registering once covers every client repo. Optional
+`WEBHOOK_SECRET_BITBUCKET` if the two forges shouldn't share a secret
+(falls back to `$WEBHOOK_SECRET` otherwise).
 
-What actually runs:
+What runs:
 
-- Push to the branch a provisioned (non-preview) site currently has
-checked out → `deploy <name>`. Other branches are ignored on push,
-except a site's configured `deploy_branch` override if it has one (see
-"Default branch") — that's still recognized even before the site has
-switched onto it.
-- PR opened / synced (same-repo only) → `provision-preview` or
-`deploy-preview` of that parent site.
-- PR closed / merged / declined → `remove-preview --purge-files`
-(`--purge-db` too if the preview was isolated).
-- Fork PRs are refused (shared-mode previews would run untrusted code
-against the parent's live database).
-- A repo that isn't provisioned on this box is a 202 no-op, so one org
-or workspace hook can cover every client repo.
+- Push to a site's checked-out branch (or its `deploy_branch` override,
+"Default branch") → `deploy <name>`. Other branches ignored.
+- PR opened/synced (same-repo only) → `provision-preview` or
+`deploy-preview`.
+- PR closed/merged/declined → `remove-preview --purge-files`
+(`--purge-db` too if isolated).
+- Fork PRs refused.
+- Unprovisioned repo → `202` no-op.
 
-If `PREVIEW_COMMENT_CREDENTIALS` is set (a chmod 600 file with
-`GITHUB_TOKEN` and/or Bitbucket `BITBUCKET_USER`+`BITBUCKET_APP_PASSWORD`,
-see `provisioner.conf`), a successful preview upsert also posts a PR
-comment `Preview: https://<slug>.$BASE_DOMAIN`. Later pushes **update**
-that comment (it is marked `<!-- ddeploy-preview -->`) instead of
-stacking a new one. The repo is taken from the job's canonical
-`github.com/…` / `bitbucket.org/…` URLs, not from an unvalidated
-`full_name` field. A failed comment is a warning, not a failed deploy.
-The token is never logged.
+If `PREVIEW_COMMENT_CREDENTIALS` is set (chmod 600, `GITHUB_TOKEN` and/or
+`BITBUCKET_USER`+`BITBUCKET_APP_PASSWORD`), a successful preview upsert
+posts/updates a PR comment `Preview: https://<slug>.$BASE_DOMAIN`. A
+failed comment is a warning, not a failed deploy.
 
-`provision.sh logs <name>` tails `$LOG_DIR/<name>.log` without hunting
-the box (`-n`, `-f`). `provision.sh preview-url <project> <branch>`
-prints the same URL the comment uses — handy when CI is the deploy
-trigger instead of the webhook. Neither interpolates an unvalidated
-name into a path or an API URL.
+`provision.sh logs <name> [-n N] [-f]`, `provision.sh preview-url
+<project> <branch>` — useful when CI is the deploy trigger instead of
+the webhook.
 
-`provision.sh deploy` over SSH is still valid. For repos that cannot use
-an org/workspace webhook, copy
+`provision.sh deploy` over SSH is still valid. For repos that can't use
+an org/workspace webhook:
 `[examples/ci/github-action](examples/ci/github-action/action.yml)` or
 `[examples/ci/bitbucket-pipelines.yml](examples/ci/bitbucket-pipelines.yml)`.
-Do not have CI fake a forge payload.
 
 ### Default branch
 
-By default a site tracks whatever branch it happened to be cloned on —
-normally the remote's actual default branch (`main`/`master`), decided
-by git, not by ddeploy. `<project>.$BASE_DOMAIN` deploys from that branch
-forever, since `deploy` just does `git pull --ff-only` on whatever's
-currently checked out.
-
-To pin a project to a specific branch instead — `develop`, `staging`,
-whatever the team has actually agreed is "production" — set it with
-`--branch`:
+By default a site tracks whatever branch it was cloned on (the remote's
+default). To pin a specific branch instead:
 
 ```
 provision.sh provision <name> --branch develop
 ```
 
-This is **operator state, not repo state**: it's saved server-side (not
-written into the client's repo), and takes effect immediately. That
-matters because a repo-committed setting would be backwards here — it
-would have to be pushed to whatever branch is *currently* tracked (the
-one you're trying to move away from) to ever be seen at all. The
-operator-side setting has no such bootstrapping problem: the next
-`deploy` (webhook-triggered or over SSH) sees it right away and, if it
-names a different branch than the one actually checked out, fetches that
-branch and switches `current`'s checkout onto it — a `git checkout -B
-<branch> origin/<branch>`, not a `pull`, since there's no reason to
-assume the previously-tracked branch fast-forwards into the new one.
-From then on it's an ordinary `pull --ff-only` again, on the
-newly-tracked branch. `--clear-branch` removes the setting, going back
-to whatever's already checked out.
+Saved server-side, not in the client's repo; takes effect immediately.
+Next `deploy` fetches that branch and switches `current` onto it
+(`git checkout -B <branch> origin/<branch>`, not a pull); after that it's
+an ordinary `pull --ff-only` on the newly-tracked branch.
+`--clear-branch` removes the setting. A git-push webhook recognizes a
+push to the newly-configured branch immediately, even before HEAD has
+switched.
 
-A git-push webhook (`push_head`, README "Deploy on git push") matches a
-push's branch against both the site's *current* checked-out branch and
-this setting — not just the current one — so a push to the
-newly-configured branch is recognized (and triggers the deploy that
-performs the switch) the moment the setting is made, rather than being
-silently ignored because HEAD hasn't caught up yet.
-
-For a brand-new site, `provision <name> <repo-url> --branch <name>`
-clones that branch directly instead of the remote's default (and
-persists the setting the same as above), skipping an unnecessary
-first-deploy switch. Onboarding a whole server's site list at once via
-`./manifest` (README "Layout") takes the same setting as an optional 3rd
-column: `<name> <repo-url> [branch]`. (Branch previews are unaffected
-either way — a preview is inherently pinned to its own PR branch by
-definition, via `provision-preview <project> <branch>` /
-`deploy-preview`.)
+For a brand-new site: `provision <name> <repo-url> --branch <name>`
+clones that branch directly. Manifest onboarding takes it as an optional
+3rd column: `<name> <repo-url> [branch]`. Branch previews are
+unaffected — always pinned to their own PR branch.
 
 ### Rolling back
 
-`deploy <name> --rollback [<sha>]` moves a site's code backward instead
-of building a new forward release. Without `<sha>`, it rolls back to the
-most recent commit this tool has itself deployed that differs from
-what's live now — `deploy <name> --history` lists that record (newest
-last) if you want to pick a specific, earlier `<sha>` instead.
+```
+deploy <name> --rollback [<sha>]
+deploy <name> --history
+```
 
-Normal sites use a Capistrano-style layout: `$SITES_ROOT/<name>/current`
-is a symlink to `releases/<timestamp>-<sha>/`, nginx's root follows
-`current`, and persistent files already live outside the checkout (see
-below). A forward `deploy` clones the live tree, `git pull --ff-only`s
-as the site user, runs hooks on the NEW directory, and only then
-retargets `current`. A failed pull or hook leaves the previous tree
-serving. `RELEASES_KEEP` in `provisioner.conf` (default 5) is how many
-release directories to keep; the live one is never pruned.
+Without `<sha>`, rolls back to the most recent commit this tool has
+itself deployed that differs from what's live. `--history` lists the
+record (newest last).
 
-Rollback retargets `current` at an earlier release when that tree is
-still on disk (hooks already ran when it was first deployed, so they
-are not replayed). If it has been pruned, a new release is built with
-`git reset --hard` and hooks run before the swap. A rollback is itself
-recorded as a new deploy, so it composes normally: a plain `deploy`
-afterward fast-forwards right back to where you rolled back from
-(origin hasn't moved), and a second `--rollback` walks one step further
-back, or forward again to undo the rollback, whichever you ask for.
+`$SITES_ROOT/<name>/current` symlinks to `releases/<timestamp>-<sha>/`.
+A forward `deploy` builds a new release, runs hooks, then retargets
+`current` — a failed pull/hook leaves the previous tree serving.
+`RELEASES_KEEP` (`provisioner.conf`, default 5) controls how many
+releases are kept; the live one is never pruned.
 
-**What this does not do:** undo a database migration. If a deploy you're
-rolling back past ran `migrate` (or any other forward-only step) against
-the database, rolling the code back does not reverse it — you'll have
-older code pointed at newer schema. For a rollback driven by a bad
-migration, restore the database too (see "Restoring") or fix forward
-instead. This also doesn't apply to branch previews — they stay
-in-place (`fetch` + `reset --hard`) and are meant to be disposable, not
-rolled back.
+Rollback retargets `current` at an earlier release still on disk (hooks
+not replayed), or rebuilds one with `git reset --hard` + hooks if it's
+been pruned. Recorded as a new deploy — a plain `deploy` afterward
+fast-forwards back, a second `--rollback` walks further back or undoes
+the first.
+
+**Does not undo a database migration.** Restore the database too (see
+"Restoring") or fix forward. Doesn't apply to branch previews (they stay
+in-place, not rolled back).
 
 ### Persistent files
 
-A site's own git checkout is disposable by design — `provision`/`deploy`
-clone it into `releases/` and retarget `current`, and `remove --purge-files`
-deletes the whole wrapper (every release, plus `current`).
-Some of what lives under that checkout isn't disposable at all, though:
-`upload_dirs` (client-uploaded files, genuinely irreplaceable) and the DB
-credential file (`.env` for laravel/craft, `config/config.local.json` for
-charcoal) are content, not code. Those — plus anything declared in a new
-`persistent_files:` key — actually live under `PERSISTENT_ROOT`
-(`provisioner.conf`, default `/home/deploy/persistent`), at
-`$PERSISTENT_ROOT/<name>/<path>`; the checkout only ever holds a symlink
-at that path. `remove --purge-files` deletes the checkout (code) but
-never touches this (content) unless `--purge-persistent` is also given —
-and a later `provision` on the same name re-links to whatever's still
-there automatically, so bringing a removed project back is just
-re-provisioning it, no separate restore step. The DB user's existing
-password is picked up the same way (`read_db_password` finds it already
-in the persistent store), so this isn't just "the files survive" — the
-site reconnects with zero credential churn.
+The git checkout is disposable — `remove --purge-files` deletes it
+entirely. `upload_dirs` and the DB credential file (`.env` or
+`config/config.local.json`) are content, not code: they live under
+`PERSISTENT_ROOT` (`provisioner.conf`, default `/home/deploy/persistent`)
+at `$PERSISTENT_ROOT/<name>/<path>`, and the checkout only holds a
+symlink. `--purge-files` alone leaves this in place; `--purge-persistent`
+deletes it too. Re-`provision`ing the same name re-links automatically
+(including the DB password) — no separate restore step.
 
-`persistent_files:` (in `.ddeploy/config.yaml` — see "Configuration" —
-not a real DDEV key) declares arbitrary extra paths beyond
-`upload_dirs` and the DB credential file — a custom `.env.local`, a
-`storage/app` directory, etc. — relative to the repo root, not the
-docroot. A trailing `/` marks a directory; without one, a file:
+`persistent_files:` (`.ddeploy/config.yaml`) declares extra paths
+(relative to repo root, not docroot). Trailing `/` marks a directory:
 
 ```yaml
 persistent_files:
@@ -723,19 +502,15 @@ persistent_files:
   - .env.local
 ```
 
-This only applies to normal sites — isolated-mode previews stay exactly
-as disposable as before (shared-mode previews already point at the
-parent's persistent store transitively, through the parent's own
-symlink, with no changes needed).
+Normal sites only — isolated previews stay disposable; shared previews
+already point at the parent's store.
 
 ## Data protection
 
 ### Backups
 
-Disaster-recovery only, not live/shared storage — local disk and the
-running database are always what's actually served; these are one-way
-copies out to S3-compatible object storage on a schedule, via `rclone`.
-Both share the same destination config in `provisioner.conf`:
+Disaster-recovery only — one-way copies to S3-compatible object storage
+on a schedule, via `rclone`. Config in `provisioner.conf`:
 
 ```
 BACKUP_CREDENTIALS="..."   # path to a file (chmod 600), see below
@@ -750,168 +525,100 @@ BACKUP_ACCESS_KEY="..."
 BACKUP_SECRET_KEY="..."
 ```
 
-`sudo ./provision.sh configure backups` walks through all of this
-interactively — provider choice, bucket, keys — and, if `rclone` is
-already installed (`init` hasn't necessarily run yet at this point, so
-this is skipped with a warning if it isn't), **tests the credentials
-against the real bucket** (`rclone lsd`) before writing anything: a wrong
-key or a bucket that doesn't exist yet is caught right here, with the
-option to write anyway if the bucket genuinely just hasn't been created.
-Only then does it write the credentials file (chmod 600) and the
-`provisioner.conf` fields above, including turning
-`BACKUP_ENABLED`/`DB_BACKUP_ENABLED` on. To do it by hand instead, or to
-understand what the wizard is actually setting:
+```
+sudo ./provision.sh configure backups
+```
 
-- **DigitalOcean Spaces**: `BACKUP_ENDPOINT` is
-  `https://<region>.digitaloceanspaces.com` — the region (`nyc3`, `sfo3`,
-  `ams3`, `sgp1`, `fra1`, ...) is shown on the Space's own settings page,
-  and must match where the Space was actually created. Generate the
-  access/secret key pair under "API" → "Spaces access keys" in the DO
-  control panel; a key pair is account-wide, not per-Space, so the same
-  one works for every project's bucket on this server (a single bucket
-  with a `<name>/` prefix per site is the norm, not one Space per site).
-- **AWS S3**: `BACKUP_ENDPOINT` is `https://s3.<region>.amazonaws.com` —
-  the region the bucket was actually created in. Generate an access key
-  under IAM for a user (or role) scoped to just that bucket
-  (`s3:GetObject`/`PutObject`/`DeleteObject`/`ListBucket` is enough — this
-  tool never needs bucket-admin permissions). This tool connects generically
-  (rclone's S3-compatible mode, not AWS-specific auth extensions), which
-  is enough for sync/dump — it doesn't touch storage classes, KMS, or
-  other AWS-only S3 features.
-- **Any other S3-compatible endpoint** (MinIO, Backblaze B2's S3 API,
-  Wasabi, ...): the same three fields, whatever that provider calls its
-  endpoint URL/access key/secret key.
+Interactive: provider, bucket, keys — **tests credentials against the
+real bucket** (`rclone lsd`) before writing, then turns
+`BACKUP_ENABLED`/`DB_BACKUP_ENABLED` on. `BACKUP_ENDPOINT` by provider:
 
-One set of credentials and one bucket covers every project on the
-server — nothing provider-specific to configure per site.
+- **DigitalOcean Spaces**: `https://<region>.digitaloceanspaces.com`.
+  Key pair under "API" → "Spaces access keys," account-wide.
+- **AWS S3**: `https://s3.<region>.amazonaws.com`. IAM key scoped to
+  `s3:GetObject`/`PutObject`/`DeleteObject`/`ListBucket`.
+- **Any other S3-compatible** (MinIO, Backblaze B2, Wasabi, ...): same
+  three fields.
 
-**Uploads** (`BACKUP_ENABLED`, `BACKUP_SCHEDULE`, default hourly): a
-site's upload dirs — `.ddev/config.yaml`'s own `upload_dirs:` key, or
-`--upload-dirs "a b"` for sites without one — get synced to
-`<bucket>/<name>/<dir>`. Sites with none declared are skipped, not
-backed up as a whole. Run `backup-uploads [name]` directly to sync
-on demand.
+One set of credentials + one bucket covers every project.
 
-**Database** (`DB_BACKUP_ENABLED`, `DB_BACKUP_SCHEDULE`, default hourly,
-offset from `BACKUP_SCHEDULE`): each site's database is dumped
-(`mysqldump --single-transaction`, gzipped) and uploaded to
-`<bucket>/<name>/db/` — a live database's data files aren't safe to sync
-directly, so this is a logical dump, not a file copy, and it accumulates
-a dated series rather than mirroring current state. Dumps older than
-`DB_BACKUP_RETENTION_DAYS` (default 7) are pruned on each run. Works
-against a local or remote (`init-db`) database, same as `provision`. Run
-`backup-database [name]` directly to dump on demand.
+**Uploads** (`BACKUP_ENABLED`, `BACKUP_SCHEDULE`, default hourly):
+`upload_dirs` synced to `<bucket>/<name>/<dir>`. Sites with none
+declared are skipped. `backup-uploads [name]` to sync on demand.
 
-`init` installs `rclone` and `cron` itself (once, if either backup is
-enabled — neither is assumed to already be on the box), and writes the
-schedule for whichever backup(s) are turned on to
-`/etc/cron.d/ddeploy-backup-uploads` / `-database`, running as root.
-These are **not** in `crontab -l` for any user — `/etc/cron.d/` is a
-separate mechanism from a per-user crontab, so check
-`cat /etc/cron.d/ddeploy-backup-uploads` (or `sudo ./provision.sh doctor`,
-which verifies `cron` itself is actually running) instead.
+**Database** (`DB_BACKUP_ENABLED`, `DB_BACKUP_SCHEDULE`, default hourly):
+`mysqldump --single-transaction`, gzipped, to `<bucket>/<name>/db/`.
+Dumps older than `DB_BACKUP_RETENTION_DAYS` (default 7) pruned each run.
+`backup-database [name]` to dump on demand.
 
-Both are preview-aware: a shared-mode preview is skipped by both (its
-uploads are a symlink into its parent's, and its database *is* its
-parent's — either would just be a redundant duplicate of the parent's
-own backup, multiplied by however many shared previews exist). An
-isolated-mode preview has real, separate uploads/database of its own
-and is backed up normally.
+`init` installs `rclone`/`cron` and writes
+`/etc/cron.d/ddeploy-backup-uploads` / `-database` (root). Not in
+`crontab -l` for any user — check `cat
+/etc/cron.d/ddeploy-backup-uploads` or `sudo ./provision.sh doctor`.
+
+Both skip shared-mode previews (uploads/database are the parent's).
 
 ### Restoring
 
-`restore-uploads <name> --yes` and
-`restore-database <name> [--from <file> | --from-file <path>] --yes`
-pull a backup back down — genuinely destructive (that's the point), so
-both require `--yes` to actually run; without it, they show what would
-happen (available dumps, newest first, for the database one) and do
-nothing. `restore-database` without `--from`/`--from-file` restores the
-most recent object-storage dump; `--from <file>` picks a specific one by
-name.
+```
+restore-uploads <name> --yes
+restore-database <name> [--from <file> | --from-file <path>] --yes
+```
 
-`--from-file <path>` instead loads an arbitrary local `.sql` or `.sql.gz`
-dump — no object storage involved — for seeding a freshly-provisioned
-site from a client-provided export without ever needing direct DB access
-yourself (scp the file up, run one command).
+Destructive — `--yes` required, otherwise shows what would happen and
+exits. No `--from`/`--from-file`: restores the most recent object-storage
+dump. `--from-file <path>`: loads a local `.sql`/`.sql.gz` dump directly,
+no object storage involved (e.g. a client-provided export).
 
-Both commands are preview-aware the same way `list`/`remove`/`deploy-all`
-are: a shared-mode preview has nothing of its own to restore (it was
-never separately backed up — there's no `<bucket>/<preview-name>/...`),
-so running either against one redirects to the **parent project** with a
-loud warning, and restores the parent's actual database/uploads — the
-ones every preview of it is currently sharing. An isolated-mode preview
-restores its own, same as any normal site.
+Shared-mode preview → redirects to the parent project (nothing of its
+own to restore). Isolated preview restores its own.
 
 ### Health check
 
-`doctor [name]` runs a set of read-only checks — nginx config/service,
-disk space, the database server itself, certificate expiry, and (per
-site) vhost enabled, PHP-FPM pool running, last deploy, and a connection
-test using that **site's own** database credentials, not the admin
-connection the server-wide check already covers, so a revoked grant or a
-drifted credential file shows up here even when the DB server itself is
-fine. Without a name, every provisioned site is checked (previews
-included); with one, just that site.
+```
+doctor [name]
+```
 
-The webhook listener, uploads backup, database backup, and
-`prune-previews` are always reported — `[ok] ... disabled (...)` when
-they're off, not silence, so "off on purpose" and "doctor didn't check"
-never look the same. When either backup is on, `doctor` also tests the
-object storage bucket is actually reachable with the configured
-credentials (one check, shared by both — same bucket), and — per site —
-reports **how many database dumps are actually recoverable** and how old
-the newest one is (`list_database_backups`, the same listing
-`restore-database --from` shows you), and whether uploads have **synced
-anything at all** yet. That last one is deliberately not a freshness
-check: an upload mirror with nothing new to sync looks identical to one
-that's silently broken, from timestamps alone — "has this ever produced
-anything to restore" is what's actually checkable without false alarms.
-A shared-mode preview is skipped for both (its uploads/database are its
-parent's, already covered by the parent's own row).
+Read-only checks: nginx config/service, disk space, database server,
+certificate expiry; per site: vhost enabled, PHP-FPM pool running, last
+deploy, DB connection test using the **site's own** credentials (not
+admin). No name: every provisioned site, previews included.
 
-Each line prints `[ok]`/`[warn]`/`[fail]`; the command exits nonzero if
-anything failed — wire it into cron/monitoring rather than only running
-it by hand mid-incident. A malformed config for one site can't take the
-whole run down: each site's checks run in their own subshell, so a `die`
-there just becomes one `[fail]` row instead of aborting `doctor` for
-every other site.
+Webhook listener, uploads backup, database backup, `prune-previews`:
+always reported, `[ok] ... disabled (...)` when off — never silent. When
+a backup is on: bucket reachability, recoverable dump count + age, and
+whether uploads have synced anything at all (not a freshness check).
+Shared-mode preview: skipped (covered by the parent's row).
 
-Set `NOTIFY_WEBHOOK` in `provisioner.conf` to a Slack incoming-webhook
-or Discord webhook URL (or any endpoint that accepts JSON) and a
-`[fail]` pages that URL. `[warn]` does not. See "Failure paging."
+Prints `[ok]`/`[warn]`/`[fail]` per line, exits nonzero on any failure —
+wire into cron/monitoring. One site's malformed config only produces one
+`[fail]` row, doesn't abort the rest.
+
+`NOTIFY_WEBHOOK` in `provisioner.conf` pages on `[fail]` (not `[warn]`).
+See "Failure paging."
 
 ## Failure paging
 
-Unattended work (backup cron, the git-push worker, `prune-previews`,
-`doctor`) used to fail into a log file. Set `NOTIFY_WEBHOOK` to a Slack
-incoming webhook, a Discord webhook, or any URL that accepts a JSON POST
-with `text` and `content` (both are sent, so either product works). The
-URL is a credential — do not commit it. Empty (the default) is off.
+Set `NOTIFY_WEBHOOK` to a Slack incoming webhook, Discord webhook, or
+any URL accepting a JSON POST with `text`/`content`. Credential — don't
+commit it. Empty (default) is off.
 
-Only **failures** page. A successful deploy, backup, or doctor run is
-silent. The same command+site will not page again until
-`NOTIFY_COOLDOWN` seconds have passed (default 3600), so an hourly
-backup that fails all night is one message, not twenty-four.
-
-SSH `provision.sh deploy` does not page: you are already watching.
-A git-push deploy that fails after GitHub/Bitbucket got 202 does page,
-because the forge UI stays green.
+Only **failures** page. Same command+site won't page again until
+`NOTIFY_COOLDOWN` seconds pass (default 3600). SSH `deploy` doesn't page
+(you're watching); a git-push deploy that fails after the `202` does.
 
 ## Server & operations
 
 ### Database server
 
-By default `DB_HOST` is `127.0.0.1`: `init` installs MariaDB on the same
-server, and `provision`/`deploy` connect as local root over the unix
-socket — no credentials file needed.
+Default `DB_HOST=127.0.0.1`: `init` installs MariaDB on the same server,
+`provision`/`deploy` connect as local root over the unix socket.
 
-To share one MariaDB instance across multiple web servers instead, run
-`init-db` on a dedicated database server (set `DB_ADMIN_CREDENTIALS` and
-`DB_ALLOWED_HOSTS` — the web servers' IPs — in its `provisioner.conf`
-first). It installs MariaDB, opens it to `DB_ALLOWED_HOSTS` only (via
-`ufw`, port 3306; SSH stays open), and writes an admin credentials file
-at `DB_ADMIN_CREDENTIALS`. Copy that file to the same path on each web
-server, then on each web server's `provisioner.conf` set:
+To share one MariaDB instance across web servers: run `init-db` on a
+dedicated database server (set `DB_ADMIN_CREDENTIALS`/`DB_ALLOWED_HOSTS`
+— the web servers' IPs — first). Installs MariaDB, opens it to
+`DB_ALLOWED_HOSTS` only (`ufw`, port 3306), writes an admin credentials
+file. Copy it to each web server, then set:
 
 ```
 DB_HOST="<database server's address>"
@@ -919,25 +626,16 @@ DB_ADMIN_CREDENTIALS="<path to the copied credentials file>"
 DB_GRANT_HOST="<this web server's address>"
 ```
 
-`DB_GRANT_HOST` (default `localhost`) is the host each site's own DB user
-is granted access from — it should match one of the entries in
-`DB_ALLOWED_HOSTS` on the database server.
+`DB_GRANT_HOST` (default `localhost`) should match an entry in
+`DB_ALLOWED_HOSTS`.
 
 **Accepted tradeoff:** the admin account `init-db` creates has
 `GRANT ALL ON *.* WITH GRANT OPTION` — full control of every database on
-that server, not just the ones this tool manages — scoped only by source
-IP (`DB_ALLOWED_HOSTS`), and shared across every web server that gets a
-copy of `DB_ADMIN_CREDENTIALS`. Provisioning/deploying/backing up a site
-on demand needs an account that can create databases and grant per-site
-users, and MySQL has no clean "can CREATE DATABASE and GRANT on what it
-creates, but nothing else" role — the real options are a wildcard-prefix
-grant (forces every site's DB name under one prefix, still one shared
-account, needs a naming convention + migration) or a per-web-server admin
-account (limits blast radius to one server's compromise instead of the
-whole fleet's, no schema change, but doesn't shrink the account's own
-privileges). Neither is a clean win over the other, so this stays as-is
-for now — keep `DB_ADMIN_CREDENTIALS` file permissions tight (600,
-root-owned) and `DB_ALLOWED_HOSTS` as narrow as possible.
+that server, not just the ones this tool manages. Keep
+`DB_ADMIN_CREDENTIALS` file permissions tight (600, root-owned) and
+`DB_ALLOWED_HOSTS` as narrow as possible; see
+[docs/security.md](docs/security.md) for why this can't easily be
+scoped tighter.
 
 ### Database credentials
 
@@ -949,30 +647,23 @@ in `.ddeploy/config.yaml` or the sidecar):
 | `laravel`  | `.env`                         | `DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`               |
 | `craft`    | `.env`                         | `CRAFT_DB_*`                                                         |
 | `charcoal` | `config/config.local.json`     | `databases.<default_database>.{hostname,database,username,password}` |
-| `none`     | nowhere (e.g. plain WordPress) | saved to `generated/<name>.dbpass`, logged once                      |
+| `none`     | nowhere (e.g. plain WordPress) | saved root-only to `generated/<name>.dbpass`, never logged           |
 
 `charcoal` creates `config/config.local.json` if it doesn't exist,
-reuses the file's own `default_database` key if one is already set, and
-leaves any other keys in the file untouched.
+reuses its own `default_database` key if already set.
 
 ### Deploy hooks
 
-`.ddev/config.yaml`'s `hooks.post-start` is replayed on every deploy, as
-the site's own `www-<name>` user, under its pinned PHP version.
-`exec`/`composer` steps run; `exec-host` steps are logged and skipped.
-Any step referencing `ddev` or `/var/www/html` is skipped with a
-warning.
+`.ddev/config.yaml`'s `hooks.post-start` replays on every deploy, as
+`www-<name>`, under the site's pinned PHP version. `exec`/`composer`
+steps run; `exec-host` steps are logged and skipped. A step referencing
+`ddev` or `/var/www/html` is skipped with a warning.
 
-If `hooks.post-start` isn't declared at all and the repo has a
-`composer.json`, a `composer install` step is assumed by default — DDEV
-itself often installs dependencies implicitly on `ddev start` without an
-explicit hook, which this tool has no way to see since it never runs
-DDEV; without this fallback that shows up as a 500 from a missing
-`vendor/autoload.php` on first deploy. This only fills in a completely
-absent `hooks.post-start` — a config that declares some steps but skips
-composer is treated as deliberate and left alone. Add an explicit
-`hooks.post-start` (with or without a `composer` step) to `.ddev/config.yaml`
-to override either way.
+No `hooks.post-start` declared, but the repo has `composer.json`:
+`composer install` is assumed by default (DDEV often installs implicitly
+on `ddev start`, which this tool never sees). Only fills a completely
+absent `hooks.post-start` — declaring steps without `composer` is
+treated as deliberate.
 
 Two more extension points:
 
@@ -985,10 +676,9 @@ repo — run as root, for every site. See `hooks/README.md`.
 
 ### Queue workers & scheduled tasks
 
-Deploy hooks run once, at deploy time. Some apps also need something
-running *between* deploys: Craft's `queue/listen` (or a cron-triggered
-`queue/run`), Laravel's `queue:work` + `schedule:run`. Two
-`.ddeploy/config.yaml` keys, both optional:
+For something running *between* deploys (Craft's `queue/listen`,
+Laravel's `queue:work` + `schedule:run`). Two `.ddeploy/config.yaml`
+keys, both optional:
 
 ```yaml
 queue_workers:
@@ -1000,139 +690,40 @@ schedule:
     cmd: php craft gc
 ```
 
-`queue_workers` — each entry becomes its own **persistent, supervised
-systemd service** (`ddeploy-worker-<name>-<index>.service`), running as
-the site's own `www-<name>` user under its pinned PHP version —
-`Restart=always`, so a crashed worker comes back on its own.
-**Restarted on every deploy, unconditionally** (including a rollback) —
-a long-running PHP process keeps whatever code it booted with until
-something restarts it, so without this a worker would silently keep
-serving the *previous* release forever (the same reason Laravel ships
-its own `queue:restart` command). A redeploy that declares fewer workers
-than before stops and removes the extra ones, not just leaves them
-running. Check on one directly: `systemctl status
-ddeploy-worker-<name>-0`, `journalctl -u ddeploy-worker-<name>-0 -f`.
+`queue_workers` — each entry becomes a **persistent, supervised systemd
+service** (`ddeploy-worker-<name>-<index>.service`), running as
+`www-<name>`, `Restart=always`. Restarted on every deploy (including
+rollback). Fewer workers on redeploy stops/removes the extras. Check:
+`systemctl status ddeploy-worker-<name>-0`, `journalctl -u
+ddeploy-worker-<name>-0 -f`.
 
-`schedule` — each `{cron, cmd}` pair becomes one line in a per-site
-`/etc/cron.d/ddeploy-site-<name>` file, run via `root runuser -u
-www-<name> -- <script>`, not `www-<name>` as the line's own user field
-directly — `www-<name>` is created with `--shell /usr/sbin/nologin`
-(never logs in interactively), and cron silently refuses to exec
-*anything* for a user whose shell isn't a real one (no error, no log
-line — it just never runs). `runuser` setuid()s straight to `www-<name>`
-without going through cron's own shell lookup, so the job still actually
-runs as the site's own user, root only appears in the cron.d file's own
-user field. `cron` is a plain 5-field expression. Output is appended to
-the site's own `logs/<name>.log` (`provision.sh logs <name>`), so a
-failing scheduled command shows up in the same place a failing deploy
-would.
+`schedule` — each `{cron, cmd}` becomes one line in
+`/etc/cron.d/ddeploy-site-<name>`, running as `www-<name>`. Output
+appends to `logs/<name>.log`. See
+[docs/security.md](docs/security.md) for how these run a
+project-declared command safely.
 
-Both: the command is never handed to systemd or cron directly — each
-gets written to a small generated wrapper script
-(`generated/<name>.worker-<i>.sh` / `.schedule-<i>.sh`) that `cd`s into
-the site and sets up its PATH/PHP-version pinning first, and *that
-script* is what's actually referenced. This sidesteps systemd's own
-unit-file quoting and `%`-specifier-expansion rules entirely — a literal
-`%` or `$` in a command is never at risk of being misread as unit-file
-syntax, since the file `systemd`/`cron` invoke never contains the raw
-command text itself. The command is spliced into that script the same
-way a `hooks.post-start` `exec` step already is (same trust model — this
-is the project's own declared config, not external input).
-
-Not available for branch previews. A preview's database is typically its
-parent's (`PREVIEW_DB_MODE=shared`, the default) — a preview's own queue
-worker or scheduled `queue/run` would process jobs from that *same,
-shared* queue table a second time, racing the parent's own worker rather
-than doing anything useful. `remove <name>` always stops and removes
-every worker unit and the cron.d file for that site, unconditionally —
-same "code-associated infra, not data" treatment as the vhost/FPM pool.
+Not available for branch previews (shared-mode would double-process the
+parent's queue). `remove <name>` always removes worker units + the
+cron.d file.
 
 ### Isolation
 
-Each site: its own Linux user (`www-<name>`), its own FPM pool and
-socket, its own database and DB user. Release content is owned
-`www-<name>:www-data`, dirs `2750`, files `640` — nginx (`www-data`) can
-read them, no other site's user can.
-
-The wrapper itself (`$SITES_ROOT/<name>`, containing `releases/` and
-`current`) and `current` are `root:root`/`root:www-<name>` with a sticky
-bit, not owned by the site's own user — a normal site's own compromised
-code (a bad dependency executing during hook replay, say) can create
-files under its own release, but cannot repoint `current` at a directory
-of its choosing or delete another release out from under a rollback.
-Only `provision`/`deploy`, which already run as root, can retarget it.
-
-### The ddeploy checkout itself is root-owned
-
-`$PROVISIONER_DIR` (this checkout — see "Layout") is `root:root`,
-traversable but not writable by anyone else. Two things execute code
-straight out of it as root, unconditionally: the backup-uploads/
-backup-database/prune-previews cron entries `init` writes, and the
-webhook worker's systemd unit (`ddeploy-hook-worker.service` — the
-listener itself is unprivileged and runs a copy at
-`/usr/local/lib/ddeploy/listener.py`, not this checkout, but the worker
-that actually runs `provision.sh deploy` on a queued job is root). If
-this tree were writable by `deploy` or by whatever SSHes in to trigger a
-CI deploy, either one could rewrite `lib/*.sh` — or `provisioner.conf`,
-which is `source`d, not parsed — and get root on the next cron tick or
-webhook delivery, with no deploy of their own required. `deploy` being
-in the `sudo` group already makes it root-equivalent for itself, but the
-same checkout is also where a webhook/CI path runs, and that's a
-meaningfully lower-trust actor that should be able to trigger a deploy
-without being able to rewrite what root executes.
-
-`bootstrap.sh` clones to `/opt/ddeploy` this way from the start; `init`
-also re-applies it (`chown -R root:root` + traversable, not writable) on
-every run, so an existing install from before this was fixed self-heals
-without a manual step. `deploy`/CI can still read and execute everything
-here; updating ddeploy's own code needs `sudo git -C /opt/ddeploy pull`
-— deliberately a root-only action now, not a plain `git pull`.
+Each site: own Linux user (`www-<name>`), FPM pool, socket, database,
+DB user. Files owned `www-<name>:www-data`. The checkout itself is
+root-owned, not `deploy`'s. Rationale for both, and for git/webhook
+isolation: [docs/security.md](docs/security.md).
 
 ### Git access
 
-All git operations (clone, pull) authenticate with one shared SSH key,
-placed at `GIT_DEPLOY_KEY`. This should be a machine-user account (bot
-GitHub/GitLab/Bitbucket user, not a personal one) added as a read-only
-collaborator on each client repo or org — not a GitHub "deploy key",
-which is limited to one repo and can't be reused across a fleet. `init`
-`chown root:root`/`chmod 600`s it and seeds `/etc/ssh/ssh_known_hosts`
-with GitHub/GitLab/Bitbucket host keys.
-
-ddeploy's own git operations — the initial clone, every `deploy`/
-rollback's fetch/pull/checkout/reset, a branch preview's refresh — all
-run as **root**, straight off that one file via `GIT_SSH_COMMAND`. They
-never run as the site's own `www-<name>` user: `provision`/`deploy`
-already require root end to end, so routing the actual git call through
-`sudo -u www-<name>` bought no real isolation (root was still the one
-invoking sudo) — it only meant the key had to be copied somewhere that
-user could read it.
-
-That copy is exactly what an older version of this tool did: `sync_site_ssh`
-placed the key at `$dir/.ssh` (that site's own `$HOME`), readable by
-`www-<name>` at any time. A compromise in *any one* site's web app (an
-RCE in a bad dependency, say — that process runs as `www-<name>`) could
-read that copy and get git-read access to *every other client's repo*
-on the fleet. `provision`/`deploy`/`deploy-preview` now wipe any
-leftover copy from an older run (`rm -rf $dir/.ssh`, harmless if already
-gone) instead of writing a new one.
-
-The one place a site's own user genuinely needs live key access is
-opaque, project-declared code that runs as `www-<name>` — `composer
-install` against a private VCS package, a `hooks.post-start` `exec`
-step, `.provisioner/post-provision.sh`/`post-deploy.sh` — since ddeploy
-can't know in advance whether any of that needs git/SSH. For just that
-window, `provision`/`deploy`/`deploy-preview` start a per-deploy
-`ssh-agent` running *as* `www-<name>`, and root loads `GIT_DEPLOY_KEY`
-into it directly (`ssh-add`, over the agent's own socket) — the key
-bytes cross into the agent but are never written to a file that user can
-read. `SSH_AUTH_SOCK` is threaded into every hook subprocess; the agent
-is killed the moment hook replay finishes (even if a hook fails). Net
-effect: a private composer/VCS dependency still resolves with **zero
-client-project changes**, but the key exists on that site's filesystem
-for close to zero time instead of permanently — an attacker would need
-to compromise the app *during that one deploy's hook-replay window* and
-specifically reach for the agent socket, and even then could only use
-it for that window, never extract the key itself for reuse elsewhere.
+All git operations authenticate with one shared SSH key, placed at
+`GIT_DEPLOY_KEY` (`init` `chown root:root`/`chmod 600`s it). This should
+be a machine-user account (bot GitHub/GitLab/Bitbucket user) added as a
+read-only collaborator on each client repo or org — not a GitHub "deploy
+key", which is limited to one repo and can't be reused across a fleet.
+It's never copied into a site's own directory; see
+[docs/security.md](docs/security.md) for how a hook step that genuinely
+needs it (a private composer dependency, say) still gets access.
 
 ### Cloudflare
 
@@ -1145,10 +736,9 @@ real visitor IP (`CF-Connecting-IP`) instead of Cloudflare's edge IP.
 open). Without this the origin is reachable directly, bypassing
 Cloudflare.
 
-Both refetch Cloudflare's ranges on every `init` run; a failed fetch
-leaves existing rules/config as they were. Set `CLOUDFLARE_PROXIED=false`
-for a grey-cloud (DNS-only) domain — DNS-01 cert issuance uses the
-Cloudflare API either way, independent of proxy status.
+Refetched on every `init` run; a failed fetch leaves existing config as
+is. `CLOUDFLARE_PROXIED=false` for grey-cloud (DNS-only) — DNS-01 cert
+issuance uses the Cloudflare API either way.
 
 Set the domain's SSL/TLS mode to "Full (strict)" in Cloudflare once
 `init` has issued the origin cert.
@@ -1165,24 +755,22 @@ manifest.example           tracked template; copy to manifest yourself if you wa
 manifest                   name -> repo-url -> optional branch, used by provision-all, gitignored
 templates/                 nginx vhost + FPM pool + webhook vhost templates
 lib/                       implementation
-docs/                      task-oriented guides (see docs/new-project.md)
+docs/                      task-oriented guides + security.md (design rationale, not how-to)
 hook/                      unprivileged git-forge webhook listener (Python)
 hooks/                     ops scripts run for every site (see hooks/README.md)
 generated/                 sidecar configs + DB credentials (created at runtime)
 logs/                      per-site provision/deploy logs (created at runtime)
 ```
 
-Expected to live at `/opt/ddeploy`, root-owned (see "Quickstart" above —
-root cron and the webhook worker execute this checkout's own code as
-root). Sites are checked out under `$SITES_ROOT` (`provisioner.conf`,
-default `/home/deploy/sites`) — a separate tree, owned per-site by each
-`www-<name>` user, not by this one.
+Lives at `/opt/ddeploy`, root-owned (see "Quickstart"). Sites are
+checked out under `$SITES_ROOT` (`provisioner.conf`, default
+`/home/deploy/sites`) — a separate tree, owned per-site by each
+`www-<name>` user.
 
 ## Accepted tradeoffs
 
-Places where ddeploy deliberately chose the option with a real downside
-over one without, because the alternative was worse. Full reasoning is
-in the linked section.
+Deliberate choices with a real downside; full reasoning in the linked
+section.
 
 - **Branch previews share the parent's database by default**, not an
   isolated copy — two previews with diverging schema changes can
