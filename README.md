@@ -204,8 +204,8 @@ overruns the repo root itself.
 
 ### `.ddeploy/config.yaml`
 
-`additional_hostnames`, `additional_fqdns`, `persistent_files`, and
-`db_env_scheme` aren't real DDEV fields — putting them in a real
+`additional_hostnames`, `additional_fqdns`, `persistent_files`,
+`db_env_scheme`, `queue_workers`, and `schedule` aren't real DDEV fields — putting them in a real
 `.ddev/config.yaml` risks a future DDEV schema-validation pass (or
 `ddev config` regenerating the file) silently dropping them, and it's a
 layering smell regardless: that file is DDEV's own, shared with the
@@ -239,6 +239,11 @@ redirects:
   - from: /old-page
     to: /new-page
     code: 301
+queue_workers:
+  - php craft queue/listen
+schedule:
+  - cron: "*/5 * * * *"
+    cmd: php craft queue/run
 ```
 
 If it's absent, or doesn't declare a given key, that key falls back to
@@ -260,9 +265,12 @@ restrictive `1m`, which breaks most real media uploads out of the box).
 concurrency ceiling, default `5`) for a site that needs more (or less)
 headroom than the rest of the fleet.
 
-Three more with no server-wide equivalent — off by default, only active
+Five more with no server-wide equivalent — off by default, only active
 when declared:
 
+- `queue_workers` / `schedule` — persistent supervised queue workers and
+cron-style scheduled commands, both running as the site's own user. See
+"Queue workers & scheduled tasks".
 - `auth_exempt_paths` — URL path prefixes that bypass basic auth even
 when it's on (a webhook or health-check endpoint on an otherwise-gated
 preview, say). Absolute paths only (`/webhook`, not `webhook`).
@@ -290,7 +298,8 @@ client repo cannot inject nginx directives. Each value is validated to
 a charset that cannot break out of the template, and the actual
 `location` / `add_header` / `expires` syntax is owned by this tool:
 
-- `security_headers: true` — sends `X-Content-Type-Options: nosniff`,
+- `security_headers` — **on by default**; set to `false` to opt out.
+Sends `X-Content-Type-Options: nosniff`,
 `Referrer-Policy: strict-origin-when-cross-origin`, and
 `X-Frame-Options: SAMEORIGIN`. Header names and values are not
 configurable from the repo. No HSTS (custom domains start HTTP-only
@@ -298,12 +307,13 @@ until their cert issues; Cloudflare often already sets this).
 - `static_cache: 30d` — `expires` on a fixed list of static extensions
 (css/js/images/fonts). The duration is `1–9999` plus `s`/`m`/`h`/`d`;
 the location regex is not. Missing assets 404 rather than falling
-through to PHP.
-- `deny_php_in_uploads: true` — for each `upload_dirs` entry that is
-actually under the docroot (so nginx would serve it), PHP is `deny
-all` and missing files 404. A private dir like `../private-uploads`
-is skipped — it is not a URL. Extra prefixes: `deny_php_paths: [/media]`.
-`/` is refused (that would turn off PHP for the whole site).
+through to PHP. Off by default (no value to default to).
+- `deny_php_in_uploads` — **on by default**; set to `false` to opt
+out. For each `upload_dirs` entry that is actually under the docroot
+(so nginx would serve it), PHP is `deny all` and missing files 404. A
+private dir like `../private-uploads` is skipped — it is not a URL.
+Extra prefixes: `deny_php_paths: [/media]`. `/` is refused (that would
+turn off PHP for the whole site).
 - `redirects` — a list of `{from, to, code}` maps. `from` is a URL
 path; `to` is a URL path or an `https://` URL; `code` is `301` or
 `302` (default 301). No `$` variables, no `http://`, no quotes or
@@ -342,9 +352,13 @@ Scalar keys, one value each: `basic_auth`, `client_max_body_size`,
 space-separated (quote the value): `additional_hostnames`,
 `additional_fqdns`, `persistent_files`, `auth_exempt_paths`,
 `backup_exclude`, `deny_php_paths`. Each is validated the same way it
-would be coming from the repo. `redirects` and `php_ini` aren't
-supported here — they're structured data that doesn't fit a flat
-`key=value`, so those still need `.ddeploy/config.yaml` in the repo.
+would be coming from the repo. `redirects`, `php_ini`, `queue_workers`,
+and `schedule` aren't supported here — `redirects`/`php_ini`/`schedule`
+are structured data that doesn't fit a flat `key=value`, and a
+`queue_workers` entry is a full command that's very likely to contain
+its own spaces (`php craft queue/listen`), which would collide with the
+space-separated-list convention every other array key here uses. All
+four still need `.ddeploy/config.yaml` in the repo.
 
 ```
 sudo ./provision.sh override client "additional_hostnames=alt-name alt2"
@@ -934,6 +948,70 @@ runs every deploy.
 - `hooks/post-provision.d/*.sh` / `hooks/post-deploy.d/*.sh` in this
 repo — run as root, for every site. See `hooks/README.md`.
 
+### Queue workers & scheduled tasks
+
+Deploy hooks run once, at deploy time. Some apps also need something
+running *between* deploys: Craft's `queue/listen` (or a cron-triggered
+`queue/run`), Laravel's `queue:work` + `schedule:run`. Two
+`.ddeploy/config.yaml` keys, both optional:
+
+```yaml
+queue_workers:
+  - php craft queue/listen
+schedule:
+  - cron: "*/5 * * * *"
+    cmd: php craft queue/run
+  - cron: "0 3 * * *"
+    cmd: php craft gc
+```
+
+`queue_workers` — each entry becomes its own **persistent, supervised
+systemd service** (`ddeploy-worker-<name>-<index>.service`), running as
+the site's own `www-<name>` user under its pinned PHP version —
+`Restart=always`, so a crashed worker comes back on its own.
+**Restarted on every deploy, unconditionally** (including a rollback) —
+a long-running PHP process keeps whatever code it booted with until
+something restarts it, so without this a worker would silently keep
+serving the *previous* release forever (the same reason Laravel ships
+its own `queue:restart` command). A redeploy that declares fewer workers
+than before stops and removes the extra ones, not just leaves them
+running. Check on one directly: `systemctl status
+ddeploy-worker-<name>-0`, `journalctl -u ddeploy-worker-<name>-0 -f`.
+
+`schedule` — each `{cron, cmd}` pair becomes one line in a per-site
+`/etc/cron.d/ddeploy-site-<name>` file, run via `root runuser -u
+www-<name> -- <script>`, not `www-<name>` as the line's own user field
+directly — `www-<name>` is created with `--shell /usr/sbin/nologin`
+(never logs in interactively), and cron silently refuses to exec
+*anything* for a user whose shell isn't a real one (no error, no log
+line — it just never runs). `runuser` setuid()s straight to `www-<name>`
+without going through cron's own shell lookup, so the job still actually
+runs as the site's own user, root only appears in the cron.d file's own
+user field. `cron` is a plain 5-field expression. Output is appended to
+the site's own `logs/<name>.log` (`provision.sh logs <name>`), so a
+failing scheduled command shows up in the same place a failing deploy
+would.
+
+Both: the command is never handed to systemd or cron directly — each
+gets written to a small generated wrapper script
+(`generated/<name>.worker-<i>.sh` / `.schedule-<i>.sh`) that `cd`s into
+the site and sets up its PATH/PHP-version pinning first, and *that
+script* is what's actually referenced. This sidesteps systemd's own
+unit-file quoting and `%`-specifier-expansion rules entirely — a literal
+`%` or `$` in a command is never at risk of being misread as unit-file
+syntax, since the file `systemd`/`cron` invoke never contains the raw
+command text itself. The command is spliced into that script the same
+way a `hooks.post-start` `exec` step already is (same trust model — this
+is the project's own declared config, not external input).
+
+Not available for branch previews. A preview's database is typically its
+parent's (`PREVIEW_DB_MODE=shared`, the default) — a preview's own queue
+worker or scheduled `queue/run` would process jobs from that *same,
+shared* queue table a second time, racing the parent's own worker rather
+than doing anything useful. `remove <name>` always stops and removes
+every worker unit and the cron.d file for that site, unconditionally —
+same "code-associated infra, not data" treatment as the vhost/FPM pool.
+
 ### Isolation
 
 Each site: its own Linux user (`www-<name>`), its own FPM pool and
@@ -1048,12 +1126,6 @@ object storage in disposable containers. See `docker/README.md`.
 
 Not built yet, roughly in priority order:
 
-- **App-level cron/queue-worker management** — a project's `artisan
-  schedule:run` or a supervised queue worker needs its own hand-rolled
-  systemd unit today, entirely outside this tool. Likely a
-  `.ddeploy/config.yaml` key generating a systemd unit + timer per site,
-  the same per-site-generated-config pattern the FPM pool and vhost
-  already use.
 - **Secrets/credential rotation** — a site's DB password, once
   generated, lives in plaintext on disk indefinitely, protected only by
   Unix file permissions, with no command to rotate it. The shared

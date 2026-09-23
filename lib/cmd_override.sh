@@ -29,8 +29,10 @@ site's next deploy.
 Scalar keys (one value): $OVERRIDE_SCALAR_KEYS
 List keys (space-separated value, quote it): $OVERRIDE_ARRAY_KEYS
 
-Not supported here: redirects, php_ini — structured data that doesn't
-fit a flat key=value; set those in .ddeploy/config.yaml in the repo.
+Not supported here: redirects, php_ini, queue_workers, schedule —
+structured data (or, for queue_workers, a command very likely to contain
+its own spaces) that doesn't fit a flat key=value; set those in
+.ddeploy/config.yaml in the repo.
 
 options:
   --unset <key>   remove one override key (repeatable)

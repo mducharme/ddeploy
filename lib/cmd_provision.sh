@@ -184,6 +184,13 @@ cmd_provision() {
     # directory) — an ops hook that persists SITE_DIR for later
     # reference shouldn't be handed a path a future deploy will prune.
     run_ops_hooks "post-provision" "$name" "$dir" "$PHP_VERSION"
+
+    # After hooks (composer install must have already run — a worker or
+    # scheduled command almost always needs vendor/ to exist). $dir, not
+    # $dest: same reasoning as run_ops_hooks above — this must keep
+    # working after $dest itself is eventually pruned.
+    install_queue_workers "$name" "$PHP_VERSION" "$dir" "www-$name" "www-$name" "$wrapper" "${QUEUE_WORKERS[@]}"
+    install_schedule "$name" "$PHP_VERSION" "$dir" "www-$name" "$wrapper" "${SCHEDULE[@]}"
     # So `deploy --rollback` has something to walk back to even before a
     # single ordinary `deploy` has ever run against this site.
     record_deploy "$name" "$(git -C "$dest" log -1 --format=%H)"

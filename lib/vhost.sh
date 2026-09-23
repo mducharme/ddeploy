@@ -176,9 +176,10 @@ build_auth_block() {
 NGINX_EXTRA_DIR="/etc/nginx/ddeploy-extra"
 
 # Hardcoded header set — no client-supplied header names or values.
-# Off unless security_headers: true. `always` so they apply to error
-# responses too. No HSTS: this fleet is often behind Cloudflare and
-# custom domains start HTTP-only until the cert issues.
+# On by default (parse_config defaults SECURITY_HEADERS to "true");
+# set security_headers: false to opt out. `always` so they apply to
+# error responses too. No HSTS: this fleet is often behind Cloudflare
+# and custom domains start HTTP-only until the cert issues.
 build_security_headers_block() {
     [[ "${SECURITY_HEADERS:-}" == "true" ]] || return 0
     cat <<'EOF'

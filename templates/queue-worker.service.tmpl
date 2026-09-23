@@ -1,0 +1,15 @@
+[Unit]
+Description=ddeploy queue worker: {{NAME}} #{{INDEX}}
+After=network.target mysql.service mariadb.service
+
+[Service]
+Type=simple
+User={{POOL_USER}}
+Group={{POOL_GROUP}}
+ExecStart={{WRAPPER}}
+Restart=always
+RestartSec=5
+SyslogIdentifier=ddeploy-worker-{{NAME}}-{{INDEX}}
+
+[Install]
+WantedBy=multi-user.target

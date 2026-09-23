@@ -141,6 +141,12 @@ cmd_deploy() {
         log_warn "custom domain setup failed for '$name' during deploy — continuing; re-run deploy once DNS is ready to retry it"
     fi
 
+    # Unconditional, same as install_fpm_pool above — a rollback also
+    # needs a persistent worker restarted onto the code it just
+    # retargeted current at, even when replay_hooks itself was skipped.
+    install_queue_workers "$name" "$PHP_VERSION" "$dir" "www-$name" "www-$name" "$wrapper" "${QUEUE_WORKERS[@]}"
+    install_schedule "$name" "$PHP_VERSION" "$dir" "www-$name" "$wrapper" "${SCHEDULE[@]}"
+
     prune_old_releases "$name"
 
     # Root-run ops hooks (hooks/post-deploy.d/*.sh — operator concerns

@@ -58,6 +58,11 @@ cmd_remove() {
     # here would otherwise abort the rest of removal under set -e.
     remove_vhost "$name" || log_warn "removing the vhost for '$name' hit an error — continuing with the rest of removal"
     remove_custom_domain_vhost "$name" || log_warn "removing the custom-domain vhost for '$name' hit an error — continuing with the rest of removal"
+    # Code-associated infra, like the vhost/FPM pool above — never
+    # gated behind --purge-*, and doesn't need a config to be readable
+    # (globs by name, same as remove_fpm_pool doesn't need config either).
+    remove_all_queue_workers "$name" || log_warn "removing queue workers for '$name' hit an error — continuing with the rest of removal"
+    remove_schedule "$name"
 
     local ver=""
     local cfg_path; cfg_path="$(resolve_config_path "$name")"

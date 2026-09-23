@@ -11,7 +11,9 @@
 # FPM_MAX_CHILDREN_CONFIG DB_BACKUP_RETENTION_DAYS_CONFIG (the scalar
 # _CONFIG ones empty unless overridden — see README ".ddeploy/config.yaml"),
 # SECURITY_HEADERS STATIC_CACHE DENY_PHP_IN_UPLOADS DENY_PHP_PATHS[]
-# REDIRECTS[] (from<TAB>to<TAB>code), DEPLOY_BRANCH (empty unless the
+# REDIRECTS[] (from<TAB>to<TAB>code), QUEUE_WORKERS[] SCHEDULE[]
+# (cron<TAB>cmd — see lib/queue.sh, README "Queue workers & scheduled
+# tasks"), DEPLOY_BRANCH (empty unless the
 # operator set one — see README "Default branch"),
 # and writes $GENERATED_DIR/<name>.steps (TYPE<TAB>CMD per line, TYPE in
 # exec|composer|exec-host).
@@ -137,6 +139,16 @@ validate_static_cache() {
     [[ -z "$val" ]] && return 0
     local re='^[1-9][0-9]{0,3}[smhd]$'
     [[ "$val" =~ $re ]] || die "$label ('$val') is not an nginx expires duration like 30d / 12h — refusing to use it"
+}
+
+# A schedule[].cron entry: a plain 5-field cron expression, safe charset
+# only — this goes straight into a generated /etc/cron.d file, one entry
+# per line, so a newline or an unexpected field count would corrupt that
+# file's structure rather than just fail to schedule anything.
+validate_cron_expr() {
+    local val="$1" label="$2"
+    local re='^[0-9*/,-]+[[:space:]]+[0-9*/,-]+[[:space:]]+[0-9*/,-]+[[:space:]]+[0-9*/,-]+[[:space:]]+[0-9*/,-]+$'
+    [[ "$val" =~ $re ]] || die "$label ('$val') is not a plain 5-field cron expression — refusing to use it"
 }
 
 # DOCROOT-relative URL path for a site-root-relative upload_dirs entry,
@@ -400,6 +412,10 @@ parse_config() {
     SECURITY_HEADERS="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.security_headers // ""')"
     [[ "$SECURITY_HEADERS" == "null" ]] && SECURITY_HEADERS=""
     validate_bool "$SECURITY_HEADERS" "security_headers for '$name'"
+    # On by default — these are plain hardening headers (no CSP, no
+    # HSTS) with no realistic case for wanting them off; set
+    # security_headers: false in .ddeploy/config.yaml to opt out.
+    [[ -z "$SECURITY_HEADERS" ]] && SECURITY_HEADERS="true"
 
     STATIC_CACHE="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.static_cache // ""')"
     [[ "$STATIC_CACHE" == "null" ]] && STATIC_CACHE=""
@@ -409,6 +425,10 @@ parse_config() {
     DENY_PHP_IN_UPLOADS="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.deny_php_in_uploads // ""')"
     [[ "$DENY_PHP_IN_UPLOADS" == "null" ]] && DENY_PHP_IN_UPLOADS=""
     validate_bool "$DENY_PHP_IN_UPLOADS" "deny_php_in_uploads for '$name'"
+    # On by default — an uploaded .php landing in a web-accessible
+    # upload_dirs entry and getting executed is a classic webshell path;
+    # set deny_php_in_uploads: false to opt out.
+    [[ -z "$DENY_PHP_IN_UPLOADS" ]] && DENY_PHP_IN_UPLOADS="true"
 
     mapfile -t DENY_PHP_PATHS < <(read_ext_array "$override_cfg" "$ext_cfg" "$cfg" '.deny_php_paths[]')
     local deny_url
@@ -481,6 +501,59 @@ parse_config() {
             [[ "$rcode" == "301" || "$rcode" == "302" ]] \
                 || die "redirects[$ri].code for '$name' ('$rcode') must be 301 or 302"
             REDIRECTS+=("$rfrom"$'\t'"$rto"$'\t'"$rcode")
+        done
+    fi
+
+    # queue_workers: persistent, supervised systemd services (Craft's
+    # `queue/listen`, Laravel's `queue:work`) — see lib/queue.sh. Each
+    # entry is a full shell command, same guardrail as a hooks.post-start
+    # exec step (a ddev/container-path reference can't have been meant
+    # for this environment).
+    mapfile -t QUEUE_WORKERS < <(read_ext_array "$override_cfg" "$ext_cfg" "$cfg" '.queue_workers[]')
+    (( ${#QUEUE_WORKERS[@]} > 20 )) && die "queue_workers for '$name' has more than 20 entries — refusing to use it"
+    for v in "${QUEUE_WORKERS[@]}"; do
+        [[ "$v" != *$'\n'* ]] || die "queue_workers entry for '$name' contains a newline — refusing to use it"
+        guardrail_match "$v" && log_warn "'$name': queue_workers entry references ddev/a container path — will be SKIPPED: $v"
+    done
+
+    # schedule: periodic commands (Craft's `queue/run`/`gc`, Laravel's
+    # `schedule:run`) — a cron expression + command pair each, same
+    # {from,to,code}-style precedence as redirects above (ext_cfg wins
+    # only if it actually declares a non-empty list).
+    SCHEDULE=()
+    local schedule_src="" schedule_tag schedule_ext_count
+    if [[ -f "$ext_cfg" ]]; then
+        schedule_tag="$(yq eval '.schedule | tag' "$ext_cfg" 2>/dev/null || true)"
+        if [[ "$schedule_tag" == "!!seq" ]]; then
+            schedule_ext_count="$(yq eval '.schedule | length' "$ext_cfg" 2>/dev/null || echo 0)"
+            [[ "$schedule_ext_count" =~ ^[0-9]+$ ]] || schedule_ext_count=0
+            [[ "$schedule_ext_count" -gt 0 ]] && schedule_src="$ext_cfg"
+        elif [[ -n "$schedule_tag" && "$schedule_tag" != "!!null" ]]; then
+            die "schedule for '$name' must be a list of {cron, cmd} maps — refusing to use it"
+        fi
+    fi
+    if [[ -z "$schedule_src" ]]; then
+        schedule_tag="$(yq eval '.schedule | tag' "$cfg" 2>/dev/null || true)"
+        [[ "$schedule_tag" == "!!seq" ]] && schedule_src="$cfg"
+        if [[ -z "$schedule_src" && -n "$schedule_tag" && "$schedule_tag" != "!!null" ]]; then
+            die "schedule for '$name' must be a list of {cron, cmd} maps — refusing to use it"
+        fi
+    fi
+    if [[ -n "$schedule_src" ]]; then
+        local scount si scron scmd
+        scount="$(yq eval '.schedule | length' "$schedule_src")"
+        [[ "$scount" =~ ^[0-9]+$ ]] || scount=0
+        (( scount > 20 )) && die "schedule for '$name' has more than 20 entries — refusing to use it"
+        for ((si = 0; si < scount; si++)); do
+            scron="$(yq eval ".schedule[$si].cron // \"\"" "$schedule_src")"
+            scmd="$(yq eval ".schedule[$si].cmd // \"\"" "$schedule_src")"
+            [[ "$scron" == "null" ]] && scron=""
+            [[ "$scmd" == "null" ]] && scmd=""
+            [[ -n "$scron" && -n "$scmd" ]] || die "schedule[$si] for '$name' needs both cron: and cmd:"
+            validate_cron_expr "$scron" "schedule[$si].cron for '$name'"
+            [[ "$scmd" != *$'\n'* ]] || die "schedule[$si].cmd for '$name' contains a newline — refusing to use it"
+            guardrail_match "$scmd" && log_warn "'$name': schedule[$si].cmd references ddev/a container path — will be SKIPPED: $scmd"
+            SCHEDULE+=("$scron"$'\t'"$scmd")
         done
     fi
 

@@ -1061,6 +1061,92 @@ kill "$NOTIFY_PID" 2>/dev/null || true
 wait "$NOTIFY_PID" 2>/dev/null || true
 rm -rf /var/lib/ddeploy/notify /tmp/ddeploy-notify-sink.jsonl
 
+# --- queue workers & scheduled tasks -------------------------------------
+
+step "queue_workers: persistent, supervised, restarted on deploy"
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+cat >> "$WORK/.ddeploy/config.yaml" <<'YAML'
+queue_workers:
+  - sleep 1000
+  - sleep 2000
+schedule:
+  - cron: "* * * * *"
+    cmd: echo schedule-ran-$(date +%s) >> /tmp/schedule-marker.txt
+YAML
+git -C "$WORK" commit -q -am 'add queue_workers + schedule'
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+
+./provision.sh deploy testsite
+sleep 1
+
+assert_cmd_ok "worker #0 is active" systemctl is-active --quiet ddeploy-worker-testsite-0
+assert_cmd_ok "worker #1 is active" systemctl is-active --quiet ddeploy-worker-testsite-1
+worker_user="$(ps -o user= -C sleep | sort -u | tr -d ' ' | paste -sd, -)"
+assert_contains "$worker_user" "www-testsite" "queue worker actually runs as www-testsite, not root"
+assert_cmd_fails "queue worker does NOT run as root" pgrep -u root -f 'sleep 1000'
+
+cron_content="$(cat /etc/cron.d/ddeploy-site-testsite)"
+# root, not www-testsite, is the cron.d line's own user field — www-testsite
+# is created with --shell /usr/sbin/nologin, and cron silently refuses to
+# exec anything for a user whose shell isn't a real one. `runuser -u`
+# sidesteps that; the job still actually runs as www-testsite.
+assert_contains "$cron_content" "* * * * * root runuser -u www-testsite --" "schedule cron.d entry runs via runuser -u www-testsite"
+assert_contains "$cron_content" "$LOG_DIR/testsite.log" "schedule output is redirected into the site's own log"
+
+pid_before="$(systemctl show -p MainPID --value ddeploy-worker-testsite-0)"
+
+step "redeploy restarts workers onto the new release (must not keep serving stale code)"
+./provision.sh deploy testsite
+sleep 1
+pid_after="$(systemctl show -p MainPID --value ddeploy-worker-testsite-0)"
+[[ "$pid_before" != "$pid_after" && -n "$pid_after" && "$pid_after" != "0" ]] \
+    && pass "worker #0 was actually restarted on redeploy (pid $pid_before -> $pid_after)" \
+    || fail "worker #0 pid unchanged across redeploy ($pid_before -> $pid_after) — stale code would keep running"
+assert_cmd_ok "worker #0 still active after redeploy" systemctl is-active --quiet ddeploy-worker-testsite-0
+
+step "shrinking queue_workers removes the stale one, keeps the rest running"
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+python3 - "$WORK/.ddeploy/config.yaml" <<'PY'
+import sys
+path = sys.argv[1]
+lines = open(path).read().splitlines()
+out, skip = [], False
+for line in lines:
+    if line.startswith("queue_workers:"):
+        skip = True
+        out.append("queue_workers:")
+        out.append("  - sleep 1000")
+        continue
+    if skip and line.startswith("  - "):
+        continue
+    skip = False
+    out.append(line)
+open(path, "w").write("\n".join(out) + "\n")
+PY
+git -C "$WORK" commit -q -am 'shrink queue_workers to 1 entry'
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+
+./provision.sh deploy testsite
+sleep 1
+assert_cmd_ok "worker #0 still active after shrinking" systemctl is-active --quiet ddeploy-worker-testsite-0
+assert_file_absent "/etc/systemd/system/ddeploy-worker-testsite-1.service" "stale worker #1's unit file was removed"
+assert_cmd_fails "worker #1 is no longer active" systemctl is-active --quiet ddeploy-worker-testsite-1
+
+step "scheduled task actually fires (waiting for the next minute boundary)"
+rm -f /tmp/schedule-marker.txt
+sleep 65
+assert_file_exists "/tmp/schedule-marker.txt" "cron actually ran the scheduled command within a minute"
+assert_contains "$(cat /tmp/schedule-marker.txt 2>/dev/null)" "schedule-ran-" "scheduled command's real output landed where expected"
+rm -f /tmp/schedule-marker.txt
+
 # --- final cleanup, everything purged ------------------------------------
 
 step "remove testsite --purge-db --purge-files --purge-persistent"
@@ -1074,5 +1160,8 @@ assert_file_absent "$PERSISTENT_ROOT/testsite" "persistent store removed (--purg
 db_exists="$(mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" -N -B -e "SHOW DATABASES LIKE 'testsite';")"
 [[ -z "$db_exists" ]] && pass "database dropped" || fail "database 'testsite' still exists after --purge-db"
 assert_cmd_ok "nginx config still valid after removal" nginx -t
+assert_cmd_fails "worker #0's unit is gone after remove" systemctl is-active --quiet ddeploy-worker-testsite-0
+assert_file_absent "/etc/systemd/system/ddeploy-worker-testsite-0.service" "worker #0's unit file removed"
+assert_file_absent "/etc/cron.d/ddeploy-site-testsite" "schedule cron.d file removed"
 
 echo "ALL LIFECYCLE CHECKS PASSED" | tee -a "$STEP_LOG"
