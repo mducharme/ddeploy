@@ -89,7 +89,7 @@ flush_hooks() {
     local i=0
     ./provision.sh hook-worker
     while (( i < 60 )); do
-        if ! compgen -G /var/lib/ddeploy/queue/new/job-*.json >/dev/null \
+        if ! compgen -G /var/lib/ddeploy/queue/new/raw-*.json >/dev/null \
             && ! systemctl is-active --quiet ddeploy-hook-worker.service; then
             ./provision.sh hook-worker
             return 0
@@ -470,6 +470,48 @@ code="$(curl -sS -o /tmp/hook-body -w "%{http_code}" -k \
     -H "X-Event-Key: repo:push" \
     --data-binary @"$BODY")"
 [[ "$code" == "401" ]] && pass "GitHub HMAC header on POST /bitbucket is 401" || fail "wrong-path HMAC returned $code, expected 401"
+
+# A4: the listener no longer holds the real secret at all, so it can't
+# tell a WRONG (but present) signature from a good one anymore — that's
+# now verified later, in hook-worker (hook/verify_and_spool.py), never
+# by the listener itself. A present-but-invalid signature has to be
+# accepted (202, queued for verification) and rejected asynchronously,
+# not synchronously with a 401 the way a missing one still is above.
+code="$(curl -sS -o /tmp/hook-body -w "%{http_code}" -k \
+    --resolve "${HOOK_HOST}:443:127.0.0.1" \
+    -X POST "https://${HOOK_HOST}/github" \
+    -H "Content-Type: application/json" \
+    -H "X-Hub-Signature-256: sha256=$(printf '0%.0s' $(seq 1 64))" \
+    -H "X-GitHub-Event: push" \
+    --data-binary @"$BODY")"
+[[ "$code" == "202" ]] && pass "wrong-but-present signature is 202 (verified async, not at request time)" || fail "wrong signature returned $code, expected 202"
+flush_hooks
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "MARKER=v1" "wrong signature never actually triggered a deploy"
+
+# A4's actual core claim: even bypassing the listener/HTTP layer
+# entirely — simulating a compromised ddeploy-hook process with direct
+# file-write access to the spool, not just a bad request — a planted
+# envelope still can't get a job trusted without the real secret, which
+# that process never has. Root can write into the 2770 spool regardless
+# of group, same as ddeploy-hook itself could if compromised.
+python3 -c '
+import base64, json, sys
+body = json.dumps({"ref": "refs/heads/main", "after": "d"*40, "deleted": False,
+                    "repository": {"clone_url": sys.argv[1],
+                                   "ssh_url": "ssh://gitfixture@127.0.0.1/srv/git/testsite.git"}}).encode()
+env = {"provider": "github", "sig_header": "sha256=" + "0" * 64, "forge_event": "push",
+       "body_b64": base64.b64encode(body).decode()}
+json.dump(env, open(sys.argv[2], "w"))
+' "$HOOK_CLONE" /var/lib/ddeploy/queue/new/raw-plantedattack00000000000000000000000000.json
+chmod 640 /var/lib/ddeploy/queue/new/raw-plantedattack00000000000000000000000000.json
+chown root:ddeploy-hook /var/lib/ddeploy/queue/new/raw-plantedattack00000000000000000000000000.json
+
+worker_out="$(./provision.sh hook-worker 2>&1)"
+assert_contains "$worker_out" "HMAC verification failed" "a raw envelope planted directly in the spool (no HTTP request at all) was still rejected"
+assert_file_absent "/var/lib/ddeploy/queue/new/raw-plantedattack00000000000000000000000000.json" "planted envelope was claimed and dropped, not left sitting in new/"
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "MARKER=v1" "planted attack envelope never actually triggered a deploy"
 
 python3 -c 'import json,sys; json.dump({"zen":"ok"}, sys.stdout)' > "$BODY"
 code="$(post_hook /github X-Hub-Signature-256 X-GitHub-Event ping "$BODY")"

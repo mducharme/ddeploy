@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # Git-forge webhook: install the unprivileged listener + root worker, and
-# process spooled jobs. See hook/listener.py and README "Deploy on git push".
+# process spooled jobs. See hook/listener.py, hook/verify_and_spool.py,
+# and README "Deploy on git push".
+#
+# The listener never holds WEBHOOK_SECRET — it spools raw, unverified
+# envelopes; hook-worker (root) verifies HMAC and parses the forge
+# payload via verify_and_spool.py before hook_process_job (below) ever
+# acts on anything. HMAC is symmetric: a process that can verify a
+# signature can also forge one, so keeping the secret out of the
+# unprivileged listener entirely is the actual security property here,
+# not just an access-control nicety — a compromised listener process
+# still can't get a job trusted without the secret it never had.
 
 WEBHOOK_USER="ddeploy-hook"
 WEBHOOK_QUEUE_ROOT="/var/lib/ddeploy/queue"
@@ -72,16 +82,21 @@ install_webhook() {
         openssl rand -hex 32 > "$secret_path"
         log_info "generated webhook HMAC secret at $secret_path (this is not logged)"
     fi
-    chown root:"$WEBHOOK_USER" "$secret_path"
-    chmod 640 "$secret_path"
+    # root:root 600, not root:$WEBHOOK_USER 640 — the whole point of the
+    # listener/worker split above is that WEBHOOK_USER (the listener's
+    # own identity) never gets to read this, even via a group grant.
+    chown root:root "$secret_path"
+    chmod 600 "$secret_path"
     if [[ -n "$secret_bb" && -f "$secret_bb" ]]; then
-        chown root:"$WEBHOOK_USER" "$secret_bb"
-        chmod 640 "$secret_bb"
+        chown root:root "$secret_bb"
+        chmod 600 "$secret_bb"
     fi
 
+    # No secret path in here anymore — the listener never reads one.
+    # hook-worker resolves WEBHOOK_SECRET/WEBHOOK_SECRET_BITBUCKET itself
+    # from provisioner.conf (already in scope via load_conf), the same
+    # way install_webhook just did above, not from this file.
     cat > /etc/ddeploy/hook.env <<EOF
-DDEPLOY_HOOK_SECRET=$secret_path
-DDEPLOY_HOOK_SECRET_BITBUCKET=$secret_bb
 DDEPLOY_HOOK_LISTEN=$listen
 DDEPLOY_HOOK_SPOOL=$spool
 EOF
@@ -95,10 +110,16 @@ EOF
 
     # Copy, don't point systemd at the git checkout: the listener runs as
     # an unprivileged user that should not need to traverse PROVISIONER_DIR.
+    # hookparse.py alongside it — listener.py imports canonicalize_git_url
+    # from it at module load time, so it has to be deployed too, even
+    # though the deployed copy is never invoked with --canonicalize itself
+    # (only the checkout's own hook/listener.py is, from a root context —
+    # see canonicalize_git_url above).
     mkdir -p /usr/local/lib/ddeploy
     cp "$(hook_listener)" /usr/local/lib/ddeploy/listener.py
-    chown root:"$WEBHOOK_USER" /usr/local/lib/ddeploy/listener.py
-    chmod 640 /usr/local/lib/ddeploy/listener.py
+    cp "$PROVISIONER_DIR/hook/hookparse.py" /usr/local/lib/ddeploy/hookparse.py
+    chown root:"$WEBHOOK_USER" /usr/local/lib/ddeploy/listener.py /usr/local/lib/ddeploy/hookparse.py
+    chmod 640 /usr/local/lib/ddeploy/listener.py /usr/local/lib/ddeploy/hookparse.py
 
     cat > /etc/systemd/system/ddeploy-hook.service <<EOF
 [Unit]

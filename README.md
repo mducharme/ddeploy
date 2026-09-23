@@ -494,15 +494,42 @@ safety and the symlink-safe file cleanup apply automatically.
 
 `sudo ./provision.sh configure webhook` does the whole thing: sets
 `WEBHOOK_ENABLED=true`, generates `$WEBHOOK_SECRET` (default
-`/etc/ddeploy/webhook.secret`, chmod 600 — `init`'s own `install_webhook`
-fixes its ownership to `root:ddeploy-hook` on the next run regardless of
-who created it), and offers to **register the webhook itself**, via each
+`/etc/ddeploy/webhook.secret` — `init`'s own `install_webhook` fixes its
+ownership to `root:root`, chmod 600, on the next run regardless of who
+created it), and offers to **register the webhook itself**, via each
 forge's REST API — prompting for a token/app-password that's used once
 for that one API call and never saved. Then `sudo ./provision.sh init`
 stands up `https://hooks.$BASE_DOMAIN` (wildcard cert) proxying to an
 unprivileged listener on localhost; a root systemd worker runs the
 existing CLI from there — nothing in the HTTP request is executed as a
 command.
+
+**The listener never holds `$WEBHOOK_SECRET`.** HMAC is symmetric — a
+process that can verify a signature can also forge one — so a version of
+this tool that had the listener check signatures itself was only as safe
+as that one unprivileged Python process staying uncompromised forever;
+a bug there would have meant an attacker could write jobs straight into
+the spool, skipping verification entirely. Instead the listener does the
+least it can: enforce a size limit, and spool the *raw* request
+(headers + body, unverified) as `raw-<id>.json`. Real HMAC verification
+and forge-payload parsing happen in `hook/verify_and_spool.py`, invoked
+by the root worker (`hook-worker`) when it drains the spool — the
+secret file itself is `root:root` `600`, something the listener's own
+user (`ddeploy-hook`) cannot read no matter what code ends up running in
+that process. A job only ever reaches `hook_process_job` (the thing that
+actually calls `deploy`/`provision-preview`/etc.) after that independent,
+root-context check passes.
+
+Consequence: the listener can no longer tell a good signature from a bad
+one at request time, so **every structurally-valid POST gets `202`**
+now, correctly signed or not — a bad/missing secret is rejected later,
+asynchronously, in the worker's own logs, not with a synchronous `401`
+GitHub/Bitbucket's delivery UI would show. A missing signature header
+entirely still gets a `401` immediately (nothing to even queue), but a
+present-and-wrong one — the case that actually matters, e.g. a typo'd
+secret — will show as "delivered" in the forge's own UI. Check
+`journalctl -u ddeploy-hook-worker` or this tool's own per-site logs to
+catch that, not the forge's delivery log.
 
 | Forge           | URL                                    | Events                                                                 |
 | --------------- | -------------------------------------- | ---------------------------------------------------------------------- |

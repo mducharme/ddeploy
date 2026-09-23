@@ -33,7 +33,16 @@ assert_file_exists "/etc/nginx/htpasswd/default" "default basic-auth htpasswd ge
 assert_cmd_ok "default htpasswd has 'preview' user" grep -q '^preview:' /etc/nginx/htpasswd/default
 assert_cmd_ok "mock ufw recorded ssh allow rule" grep -q 'comment .ssh.\|comment ssh' /var/lib/ddeploy-mock-ufw/rules
 assert_cmd_ok "webhook listener is running" systemctl is-active --quiet ddeploy-hook
+assert_file_exists "/usr/local/lib/ddeploy/hookparse.py" "hookparse.py deployed alongside the listener (needed at import time)"
 assert_file_exists "/etc/ddeploy/webhook.secret" "webhook HMAC secret generated"
+# A4: root:root 600, not root:ddeploy-hook 640 — the listener (running
+# as ddeploy-hook) must not be able to read this at all; only hook-worker
+# (root) does, via hook/verify_and_spool.py.
+secret_owner="$(stat -c %U:%G /etc/ddeploy/webhook.secret)"
+[[ "$secret_owner" == "root:root" ]] && pass "webhook secret is root:root" || fail "webhook secret owned by $secret_owner, expected root:root"
+secret_mode="$(stat -c %a /etc/ddeploy/webhook.secret)"
+[[ "$secret_mode" == "600" ]] && pass "webhook secret is 600" || fail "webhook secret mode is $secret_mode, expected 600"
+assert_cmd_fails "ddeploy-hook user cannot read the webhook secret" sudo -u ddeploy-hook cat /etc/ddeploy/webhook.secret
 assert_cmd_ok "webhook vhost enabled" test -f /etc/nginx/sites-enabled/ddeploy-hook.conf
 assert_cmd_ok "ops nginx extra dir exists (root-owned, not from a client repo)" test -d /etc/nginx/ddeploy-extra
 hook_health="$(curl -fsSk --resolve "hooks.staging.ddeploy.test:443:127.0.0.1" "https://hooks.staging.ddeploy.test/health")"
