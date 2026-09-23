@@ -864,9 +864,61 @@ assert_cmd_ok "vhost falls back to the repo's own 512m once the override is unse
 assert_cmd_fails "override refuses an unknown key" ./provision.sh override testsite not_a_real_key=x
 assert_cmd_fails "override refuses an invalid value for a validated key" ./provision.sh override testsite basic_auth=maybe
 
+# A1: client_max_body_size/fpm_max_children/db_backup_retention_days now
+# get the same real validation basic_auth/static_cache already had —
+# an injection attempt (extra nginx directives via a newline/semicolon)
+# and plain nonsense both have to be rejected outright.
+assert_cmd_fails "override refuses a newline-injection client_max_body_size" \
+    ./provision.sh override testsite $'client_max_body_size=1m;\nserver { listen 1234; }'
+assert_cmd_fails "override refuses a non-numeric client_max_body_size" ./provision.sh override testsite client_max_body_size=lots
+assert_cmd_fails "override refuses a non-numeric fpm_max_children" ./provision.sh override testsite fpm_max_children=abc
+assert_cmd_fails "override refuses an fpm_max_children over the 999 cap" ./provision.sh override testsite fpm_max_children=1000
+assert_cmd_fails "override refuses a non-numeric db_backup_retention_days" ./provision.sh override testsite db_backup_retention_days=never
+assert_cmd_fails "override refuses a zero db_backup_retention_days" ./provision.sh override testsite db_backup_retention_days=0
+
 ./provision.sh override testsite --clear
 show_out="$(./provision.sh override testsite --show 2>&1)"
 assert_contains "$show_out" "no overrides set" "override --clear removed everything"
+
+# A1: php_version isn't override-settable (it's a real DDEV field, only
+# ever read from the repo's own .ddev/config.yaml) and, unvalidated,
+# gets concatenated straight into a filesystem path
+# (/etc/php/$ver/fpm/pool.d/<name>.conf, lib/vhost.sh) — a client repo's
+# own php_version: could write an arbitrary root-owned file at an
+# attacker-chosen path, not just a pool config. Confirm it's rejected,
+# not exploited.
+step "php_version path traversal in .ddev/config.yaml is rejected, not exploited (A1)"
+rm -rf /tmp/pwned
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+sed -i 's#^php_version:.*#php_version: "8.3/../../../tmp/pwned"#' "$WORK/.ddev/config.yaml"
+git -C "$WORK" commit -q -am 'malicious php_version (path traversal attempt)'
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+
+deploy_out="$(./provision.sh deploy testsite 2>&1)" && deploy_rc=0 || deploy_rc=$?
+[[ "${deploy_rc:-0}" -ne 0 ]] \
+    && pass "deploy rejects a path-traversal php_version" \
+    || fail "deploy succeeded with a malicious php_version — should have been rejected"
+assert_contains "$deploy_out" "not a plain X.Y PHP version" "rejection names the actual problem"
+assert_file_absent "/tmp/pwned" "path-traversal php_version did not actually write outside /etc/php"
+
+# Revert to a valid php_version so later steps aren't left broken.
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+sed -i 's#^php_version:.*#php_version: "8.3"#' "$WORK/.ddev/config.yaml"
+git -C "$WORK" commit -q -am 'revert to a valid php_version'
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+./provision.sh deploy testsite
+sleep 1
+assert_cmd_ok "testsite deploys cleanly again after reverting php_version" test -L "$SITES_ROOT/testsite/current"
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "MARKER=" "testsite still serves real content after the revert"
 
 # --- branch preview (shared mode, the default) -------------------------
 

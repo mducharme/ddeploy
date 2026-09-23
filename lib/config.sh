@@ -141,6 +141,52 @@ validate_static_cache() {
     [[ "$val" =~ $re ]] || die "$label ('$val') is not an nginx expires duration like 30d / 12h — refusing to use it"
 }
 
+# php_version ends up concatenated straight into a filesystem path
+# (/etc/php/$ver/fpm/pool.d/<name>.conf, lib/vhost.sh's install_fpm_pool)
+# as well as apt package names (php$ver-fpm, lib/php.sh) — an
+# unvalidated "8.3/../../etc/cron.d" would let a client repo's own
+# php_version: write an arbitrary root-owned file at an attacker-chosen
+# path, not just a pool config under pool.d. Plain X.Y, nothing else.
+validate_php_version() {
+    local val="$1" label="$2"
+    local re='^[0-9]+\.[0-9]+$'
+    [[ "$val" =~ $re ]] || die "$label ('$val') is not a plain X.Y PHP version — refusing to use it"
+}
+
+# client_max_body_size goes straight into `client_max_body_size {{...}};`
+# (templates/vhost.conf.tmpl) — nginx's own accepted syntax: an integer
+# byte count, optionally suffixed k/K/m/M/g/G. A newline or semicolon
+# here would inject extra nginx directives, not just a bad size.
+validate_body_size() {
+    local val="$1" label="$2"
+    [[ -z "$val" ]] && return 0
+    local re='^[0-9]+[kKmMgG]?$'
+    [[ "$val" =~ $re ]] || die "$label ('$val') is not a plain nginx body size like 64m / 256M / 0 — refusing to use it"
+}
+
+# fpm_max_children goes straight into `pm.max_children = {{...}}`
+# (templates/fpm-pool.conf.tmpl). Capped at 3 digits (999) — this isn't
+# just charset safety, an absurd value (FPM will genuinely try to honor
+# it, resources permitting) is a real way for one site's config to
+# starve the whole box.
+validate_max_children() {
+    local val="$1" label="$2"
+    [[ -z "$val" ]] && return 0
+    local re='^[1-9][0-9]{0,2}$'
+    [[ "$val" =~ $re ]] || die "$label ('$val') is not a plain positive integer (max 999) — refusing to use it"
+}
+
+# db_backup_retention_days is handed to `rclone delete ... --min-age
+# "${days}d"` (lib/db_backup.sh) — a positive integer, capped at 4
+# digits (9999 days) so a typo'd value can't be misread as an rclone
+# flag or produce a nonsensical --min-age.
+validate_retention_days() {
+    local val="$1" label="$2"
+    [[ -z "$val" ]] && return 0
+    local re='^[1-9][0-9]{0,3}$'
+    [[ "$val" =~ $re ]] || die "$label ('$val') is not a plain positive integer (max 9999) — refusing to use it"
+}
+
 # database.name/database.user (or --db) end up interpolated into
 # backtick-quoted identifiers and unquoted `'user'@'host'` clauses in
 # lib/db.sh's admin SQL (CREATE/ALTER/GRANT/DROP), and also passed as a
@@ -291,6 +337,7 @@ parse_config() {
     PHP_VERSION="$(yq eval '.php_version' "$cfg")"
     [[ "$PHP_VERSION" != "null" && -n "$PHP_VERSION" ]] || PHP_VERSION="$DEFAULT_PHP"
     PHP_VERSION="${PHP_VERSION//\"/}"
+    validate_php_version "$PHP_VERSION" "php_version for '$name'"
 
     DOCROOT="$(yq eval '.docroot // ""' "$cfg")"
     [[ "$DOCROOT" == "null" ]] && DOCROOT=""
@@ -338,10 +385,17 @@ parse_config() {
     # varies by caller.
     BASIC_AUTH_CONFIG="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.basic_auth // ""')"
     [[ "$BASIC_AUTH_CONFIG" == "null" ]] && BASIC_AUTH_CONFIG=""
+    # Every caller only ever checks this against the literal string
+    # "true" — without this, a typo ("True", "yes", "1") silently reads
+    # as "false" and basic auth just never turns on, no error, no sign
+    # anything's wrong short of noticing the site isn't actually gated.
+    validate_bool "$BASIC_AUTH_CONFIG" "basic_auth for '$name'"
     CLIENT_MAX_BODY_SIZE_CONFIG="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.client_max_body_size // ""')"
     [[ "$CLIENT_MAX_BODY_SIZE_CONFIG" == "null" ]] && CLIENT_MAX_BODY_SIZE_CONFIG=""
+    validate_body_size "$CLIENT_MAX_BODY_SIZE_CONFIG" "client_max_body_size for '$name'"
     FPM_MAX_CHILDREN_CONFIG="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.fpm_max_children // ""')"
     [[ "$FPM_MAX_CHILDREN_CONFIG" == "null" ]] && FPM_MAX_CHILDREN_CONFIG=""
+    validate_max_children "$FPM_MAX_CHILDREN_CONFIG" "fpm_max_children for '$name'"
 
     local v
     for v in "${ADDITIONAL_HOSTNAMES[@]}"; do validate_hostname "$v" "additional_hostnames entry for '$name'"; done
@@ -405,6 +459,7 @@ parse_config() {
     # db_backup_retention_days: per-site override of DB_BACKUP_RETENTION_DAYS.
     DB_BACKUP_RETENTION_DAYS_CONFIG="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.db_backup_retention_days // ""')"
     [[ "$DB_BACKUP_RETENTION_DAYS_CONFIG" == "null" ]] && DB_BACKUP_RETENTION_DAYS_CONFIG=""
+    validate_retention_days "$DB_BACKUP_RETENTION_DAYS_CONFIG" "db_backup_retention_days for '$name'"
 
     # php_ini: a map of PHP directive -> value, rendered as php_admin_value
     # lines in the site's own FPM pool (lib/vhost.sh) — never touches the

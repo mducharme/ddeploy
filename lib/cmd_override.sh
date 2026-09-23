@@ -7,11 +7,9 @@
 # `deploy` — re-run it yourself if you need it applied right away. See
 # README "Overriding a project's config without touching the repo".
 
-# Scalar keys: no dedicated validator beyond what parse_config itself
-# applies to the same key when it comes from the repo (client_max_body_size/
-# fpm_max_children/db_env_scheme/db_backup_retention_days aren't strictly
-# validated there either — matching that, not inventing stricter behavior
-# for this path alone).
+# Scalar keys: validated the same way parse_config validates the same
+# key when it comes from the repo (db_env_scheme is the one exception —
+# still no dedicated validator, matching parse_config).
 OVERRIDE_SCALAR_KEYS="basic_auth client_max_body_size fpm_max_children db_env_scheme security_headers static_cache deny_php_in_uploads db_backup_retention_days"
 # Array keys: space-separated on the CLI, same as --hostnames/--upload-dirs
 # elsewhere in this tool.
@@ -60,6 +58,9 @@ override_validate_value() {
     case "$key" in
         basic_auth|security_headers|deny_php_in_uploads) validate_bool "$val" "$key for '$name'" ;;
         static_cache) validate_static_cache "$val" "$key for '$name'" ;;
+        client_max_body_size) validate_body_size "$val" "$key for '$name'" ;;
+        fpm_max_children) validate_max_children "$val" "$key for '$name'" ;;
+        db_backup_retention_days) validate_retention_days "$val" "$key for '$name'" ;;
         additional_hostnames|additional_fqdns) validate_hostname "$val" "$key entry for '$name'" ;;
         persistent_files) validate_relative_path "${val%/}" "$key entry for '$name'" ;;
         auth_exempt_paths|deny_php_paths) validate_url_path "$val" "$key entry for '$name'" ;;
