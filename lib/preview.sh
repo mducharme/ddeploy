@@ -71,13 +71,17 @@ read_preview_meta() {
 is_preview() { [[ -f "$(preview_meta_file "$1")" ]]; }
 
 # Resolves a preview's config exactly like parse_config, but: falls back
-# to the parent project's currently-resolved config when the branch has
-# none of its own (rather than requiring a persisted sidecar per
-# preview), and in shared mode forces DB_NAME/DB_USER/DB_ENV_SCHEME to
-# the parent's, freshly re-read every call — never cached, so it always
-# tracks whatever the parent's database actually is right now. Used
-# identically by provision-preview, deploy-preview, and remove-preview,
-# so none of them can drift from what the others would resolve.
+# to the parent project's config file when the branch has none of its own
+# (rather than requiring a persisted sidecar per preview), and in shared
+# mode forces DB_NAME/DB_USER/DB_ENV_SCHEME to the parent's, freshly
+# re-read every call — never cached, so it always tracks whatever the
+# parent's database actually is right now. Used identically by
+# provision-preview, deploy-preview, and remove-preview, so none of them
+# can drift from what the others would resolve.
+#
+# Either way the preview's own generated/<name>.override.yaml (seeded
+# from the parent's by seed_preview_override) is what parse_config
+# applies on top, since it's parsed under the preview's own name.
 #
 # $1 name, $2 project, $3 mode. Sets the same globals parse_config does.
 resolve_preview_config() {
@@ -98,17 +102,16 @@ resolve_preview_config() {
         # wrong repo (see parse_config).
         parse_config "$name" "$cfg_path" 1 1
     elif [[ -n "$project_cfg" ]]; then
-        log_warn "'$name' has no .ddev/config.yaml — reusing '$project's resolved php/docroot/deploy-steps as a starting point"
-        cp "$GENERATED_DIR/$project.steps" "$GENERATED_DIR/$name.steps" 2>/dev/null || : > "$GENERATED_DIR/$name.steps"
-        # Hostnames/fqdns are per-vhost and NOT reused: the parent's
-        # vhost already claims them, reusing them here would clash.
-        ADDITIONAL_HOSTNAMES=()
-        ADDITIONAL_FQDNS=()
-        # DB_NAME/DB_USER/DB_ENV_SCHEME are currently leftover from
-        # parsing $project just above — reset to this preview's own
-        # default identity (what parse_config would give it if there
-        # were a config to read) rather than silently inheriting the
-        # parent's, which parse_config never actually resolved for it.
+        log_warn "'$name' has no .ddev/config.yaml — reusing '$project's config ($project_cfg) as a starting point"
+        # Parsed under the preview's own name, not the project's: its
+        # deploy steps land in $name.steps (never rewriting the parent's
+        # own), and the preview's override file, not the parent's, is
+        # the one applied on top.
+        parse_config "$name" "$project_cfg" 1 1
+        # DB_NAME/DB_USER from the parent's file are the parent's —
+        # reset to this preview's own default identity (what
+        # parse_config would give it if there were a config to read)
+        # rather than silently inheriting them.
         DB_NAME="$name"
         DB_USER="$name"
         DB_ENV_SCHEME="$project_scheme"
@@ -116,12 +119,133 @@ resolve_preview_config() {
         die "no .ddev/config.yaml on branch for '$name' and '$project' isn't provisioned to fall back to — add .ddev/config.yaml to the repo, or provision '$project' first"
     fi
 
+    # Hostnames/fqdns are per-vhost: whatever the repo (or the parent's
+    # config) declares belongs to the parent's vhost, which already
+    # claims them — a preview inheriting them would clash with it. Only
+    # an explicit entry in the preview's own override file counts;
+    # custom domains are never set up for previews at all.
+    local own_override; own_override="$(override_config_path "$name")"
+    mapfile -t ADDITIONAL_HOSTNAMES < <(read_ext_array "$own_override" "" "" '.additional_hostnames[]')
+    ADDITIONAL_FQDNS=()
+
     PREVIEW_PROJECT_DB_NAME="$project_db_name"
     if [[ "$mode" == "shared" ]]; then
         [[ -n "$project_db_name" ]] || die "couldn't resolve '$project's database — is it provisioned with a readable config?"
         DB_NAME="$project_db_name"
         DB_USER="$project_db_user"
         DB_ENV_SCHEME="$project_scheme"
+    fi
+}
+
+# Gives a new preview its own generated/<name>.override.yaml, starting as
+# a copy of the parent's operator overrides — so a preview behaves like
+# its parent by default (same basic_auth, php_ini-free knobs, build
+# settings...) but can then be tuned on its own with
+# `provision.sh override <preview> ...` without touching the parent.
+# Never overwrites an existing file (a re-run of provision-preview keeps
+# whatever the operator changed). The parent's hostnames/fqdns are
+# dropped — they belong to the parent's vhost.
+seed_preview_override() {
+    local name="$1" project="$2"
+    local own; own="$(override_config_path "$name")"
+    [[ -e "$own" ]] && return 0
+    local parent; parent="$(override_config_path "$project")"
+    mkdir -p "$GENERATED_DIR"
+    if [[ -s "$parent" ]]; then
+        yq eval 'del(.additional_hostnames) | del(.additional_fqdns)' "$parent" > "$own"
+    else
+        echo "{}" > "$own"
+    fi
+    log_info "'$name': created its own override file from '$project's (edit with 'provision.sh override $name ...')"
+}
+
+# --- the preview's own credential file (.env / config.local.json) -----
+
+# The URL rewrites/key names below, per scheme, for the one-time seed.
+preview_url_key_for_scheme() {
+    case "$1" in
+        craft) echo PRIMARY_SITE_URL ;;
+        laravel) echo APP_URL ;;
+    esac
+}
+
+db_password_key_for_scheme() {
+    case "$1" in
+        craft) echo CRAFT_DB_PASSWORD ;;
+        laravel) echo DB_PASSWORD ;;
+    esac
+}
+
+# Links the preview's credential file into the persistent store (so
+# `git reset --hard` on deploy-preview, or anything else touching the
+# checkout, can't lose it, and `provision.sh env <preview>` edits it like
+# any other site's) and — the first time only — seeds it with a copy of
+# the parent's, so the preview gets every non-DB setting the parent has
+# (CRAFT_SECURITY_KEY, mail config, API keys, ...) instead of a bare
+# file with just DB credentials. Sets PREVIEW_CRED_SEEDED=1 when it
+# copied; the caller then rewrites DB credentials (write_db_credentials
+# / db_ensure) and URLs (rewrite_preview_urls) on top of the copy.
+#
+# $1 name $2 dir $3 project $4 project_dir $5 scheme $6 owner $7 mode
+link_preview_credential_file() {
+    local name="$1" dir="$2" project="$3" project_dir="$4" scheme="$5" owner="$6" mode="$7"
+    PREVIEW_CRED_SEEDED=0
+    local cred; cred="$(persistent_db_credential_path "$scheme")"
+    [[ -n "$cred" ]] || return 0
+    local target="$PERSISTENT_ROOT/$name/$cred"
+    local fresh=0
+    [[ -e "$target" || ( -e "$dir/$cred" && ! -L "$dir/$cred" ) ]] || fresh=1
+
+    ensure_persistent_link "$name" "$dir" "$cred" "file" "$owner"
+    [[ "$fresh" -eq 1 ]] || return 0
+
+    local parent_file="$project_dir/$cred"
+    if [[ ! -f "$parent_file" ]]; then
+        log_info "'$project' has no $cred to seed '$name' from — starting from an empty one"
+        return 0
+    fi
+    install -m 600 -o "$owner" -g www-data /dev/null "$target"
+    cat "$parent_file" > "$target"
+    PREVIEW_CRED_SEEDED=1
+
+    # Isolated mode gets its own DB user; drop the parent's password so
+    # db_ensure mints a fresh one instead of reusing it for that user.
+    if [[ "$mode" != "shared" ]]; then
+        if [[ "$scheme" == "charcoal" ]]; then
+            local key; key="$(charcoal_db_key "$target")"
+            yq eval -i -o=json "del(.databases.${key}.password)" "$target"
+        else
+            local pkey; pkey="$(db_password_key_for_scheme "$scheme")"
+            [[ -n "$pkey" ]] && unset_env_var "$target" "$pkey"
+        fi
+    fi
+    log_info "'$name': seeded its $cred from '$project's (DB credentials and URL rewritten for the preview)"
+}
+
+# One-time, right after the seed above: points URLs at the preview
+# instead of the parent. Replaces every literal occurrence of the
+# parent's https://<project>.$BASE_DOMAIN, then sets the scheme's
+# canonical URL key outright — the parent's may well be a custom domain
+# (https://www.client.com) that a preview must never claim.
+rewrite_preview_urls() {
+    local name="$1" dir="$2" project="$3" scheme="$4"
+    local cred; cred="$(persistent_db_credential_path "$scheme")"
+    [[ -n "$cred" ]] || return 0
+    local file="$PERSISTENT_ROOT/$name/$cred"
+    [[ -f "$file" ]] || return 0
+    local from="https://$project.$BASE_DOMAIN" to="https://$name.$BASE_DOMAIN"
+    local tmp; tmp="$(mktemp)"
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        printf '%s\n' "${line//"$from"/"$to"}"
+    done < "$file" > "$tmp"
+    cat "$tmp" > "$file"
+    rm -f "$tmp"
+    local key; key="$(preview_url_key_for_scheme "$scheme")"
+    if [[ -n "$key" ]]; then
+        if [[ "$scheme" == "craft" ]] || [[ -n "$(read_env_var "$file" "$key" || true)" ]]; then
+            write_env_var "$file" "$key" "$to"
+        fi
     fi
 }
 

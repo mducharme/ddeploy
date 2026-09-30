@@ -338,6 +338,27 @@ database/uploads/Linux user instead. `PREVIEW_SEED` (default `true`)
 seeds an isolated preview once at creation from the parent's current
 state; `--no-seed` for an empty database.
 
+**Each preview has its own config, seeded from its parent's** at
+creation — never overwritten afterwards, so tune a preview without
+touching the parent:
+
+- `.env` (or `config/config.local.json`): a copy of the parent's, with
+  DB credentials rewritten (the parent's DB in shared mode, a fresh
+  database user in isolated mode) and URLs pointed at the preview —
+  every literal `https://<project>.$BASE_DOMAIN` is replaced, and
+  `PRIMARY_SITE_URL` (Craft) / `APP_URL` (Laravel) is set to the
+  preview's URL outright. Lives in the persistent store like any site's
+  (`$PERSISTENT_ROOT/<preview>/.env`), so `deploy-preview`'s reset can't
+  touch it. Edit with `provision.sh env <preview> ...`.
+- `generated/<preview>.override.yaml`: a copy of the parent's operator
+  overrides (`provision.sh override`), minus hostnames. Edit with
+  `provision.sh override <preview> ...`.
+
+A preview never inherits the parent's `additional_hostnames` /
+`additional_fqdns` (those belong to the parent's vhost); give it one
+with `override <preview> additional_hostnames=...` if needed.
+`remove-preview --purge-files` deletes both files with the preview.
+
 `deploy-preview` does `git fetch && reset --hard`, not `--ff-only pull`
 — previews stay in-place, not atomic releases. Basic auth defaults **on**
 for previews (`--no-auth` to turn off), unlike normal sites. `init`
@@ -518,8 +539,9 @@ persistent_files:
   - .env.local
 ```
 
-Normal sites only — isolated previews stay disposable; shared previews
-already point at the parent's store.
+Normal sites only — previews get their own `.env` in the store (see
+"Branch previews"), but their uploads stay disposable (isolated) or are
+the parent's own (shared).
 
 **Editing `.env`.** `<site>/current/.env` is a symlink into the
 persistent store, and a few editing habits break on that: `sudoedit`

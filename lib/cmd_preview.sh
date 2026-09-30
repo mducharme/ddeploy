@@ -123,6 +123,7 @@ cmd_provision_preview() {
     fi
     git_trust_repo "$dir"
 
+    seed_preview_override "$name" "$project"
     resolve_preview_config "$name" "$project" "$mode"
     log_info "resolved: mode=$mode php=$PHP_VERSION docroot='${DOCROOT}'"
     scan_hooks "$name"
@@ -151,6 +152,10 @@ cmd_provision_preview() {
     local auth="${auth_flag:-${BASIC_AUTH_CONFIG:-true}}"
     install_vhost "$name" "$root" "$auth" "${CLIENT_MAX_BODY_SIZE_CONFIG:-$CLIENT_MAX_BODY_SIZE}" "${ADDITIONAL_HOSTNAMES[@]}"
 
+    # Before any DB credentials are written: those go through this link,
+    # on top of the copy of the parent's file it may have just seeded.
+    link_preview_credential_file "$name" "$dir" "$project" "$project_dir" "$DB_ENV_SCHEME" "$pool_user" "$mode"
+
     if [[ "$mode" == "shared" ]]; then
         link_shared_database "$name" "$dir" "$project" "$project_dir" "$DB_ENV_SCHEME"
     else
@@ -167,6 +172,13 @@ cmd_provision_preview() {
             fi
         fi
     fi
+
+    if [[ "$PREVIEW_CRED_SEEDED" -eq 1 ]]; then
+        rewrite_preview_urls "$name" "$dir" "$project" "$DB_ENV_SCHEME"
+    fi
+    # Parent had nothing to copy (or isn't a CMS ddeploy seeds): same
+    # add-only defaults a normal provision gets.
+    seed_cms_env "$name" "$dir" "$DB_ENV_SCHEME" "https://$name.$BASE_DOMAIN"
 
     write_preview_meta "$name" "$project" "$branch" "$mode"
     site_log "$name" "provision-preview: project=$project branch=$branch mode=$mode"
@@ -233,6 +245,14 @@ cmd_deploy_preview() {
     git -c safe.directory='*' -C "$dir" reset --hard "origin/$PREVIEW_BRANCH" 2>&1 | tee -a "$LOG_DIR/$name.log"
 
     resolve_preview_config "$name" "$PREVIEW_PROJECT" "$PREVIEW_MODE"
+    # Re-assert the persistent link after the reset: a no-op normally,
+    # but migrates a preview created before previews had one (its .env
+    # was a plain file in the checkout), and repairs a repo that tracks
+    # its own .env, which the reset just restored over the link.
+    local cred; cred="$(persistent_db_credential_path "$DB_ENV_SCHEME")"
+    if [[ -n "$cred" ]]; then
+        ensure_persistent_link "$name" "$dir" "$cred" "file" "$exec_user"
+    fi
     scan_hooks "$name"
     start_deploy_ssh_agent "$exec_user"
     trap 'stop_deploy_ssh_agent' EXIT
@@ -310,7 +330,11 @@ cmd_remove_preview() {
         # parent's directory — rm -rf on the preview's own dir removes
         # the symlinks themselves, never what they point to.
         rm -rf "$dir"
-        rm -f "$GENERATED_DIR/$name.yaml" "$GENERATED_DIR/$name.steps"
+        # A preview's persistent store only ever holds its own seeded
+        # credential file (uploads are the parent's, or copies inside the
+        # checkout) — nothing outlives the preview itself.
+        rm -rf "${PERSISTENT_ROOT:?}/$name"
+        rm -f "$GENERATED_DIR/$name.yaml" "$GENERATED_DIR/$name.steps" "$(override_config_path "$name")"
         if [[ "$mode" != "shared" ]] && id -u "www-$name" >/dev/null 2>&1; then
             userdel "www-$name" 2>/dev/null || true
         fi

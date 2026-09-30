@@ -1177,6 +1177,17 @@ rm -f "$BODY"
 
 PREVIEW=testsite-feature-a
 assert_cmd_fails "shared-mode preview has NO Linux user of its own" id -u "www-$PREVIEW"
+assert_cmd_ok "preview .env is a symlink into its own persistent store" \
+    test "$(readlink "$(site_dir "$PREVIEW")/.env")" = "$PERSISTENT_ROOT/$PREVIEW/.env"
+penv="$(cat "$PERSISTENT_ROOT/$PREVIEW/.env")"
+assert_contains "$penv" "PARENT_ONLY=from-parent" "preview .env seeded with the parent's non-DB settings"
+assert_contains "$penv" "APP_URL=https://$PREVIEW.staging.ddeploy.test" "preview's APP_URL points at the preview, not the parent"
+assert_contains "$penv" "DB_DATABASE=testsite" "shared preview's .env uses the parent's database"
+[[ "$(stat -c %U "$PERSISTENT_ROOT/$PREVIEW/.env")" == "www-testsite" ]] && pass "shared preview .env owned by the parent's user (who PHP runs as)" || fail "preview .env owner is $(stat -c %U "$PERSISTENT_ROOT/$PREVIEW/.env")"
+assert_file_exists "$GENERATED_DIR/$PREVIEW.override.yaml" "preview got its own override file"
+assert_cmd_fails "preview vhost doesn't claim the parent's additional hostname" grep -q "alt-testsite" "/etc/nginx/sites-available/$PREVIEW.conf"
+./provision.sh env "$PREVIEW" PREVIEW_ONLY=yes
+assert_cmd_fails "a preview's env edit doesn't touch the parent" grep -q PREVIEW_ONLY "$PERSISTENT_ROOT/testsite/.env"
 assert_file_exists "/etc/nginx/sites-enabled/$PREVIEW.conf" "preview vhost enabled"
 
 assert_cmd_fails "preview requires auth (no credentials -> non-2xx)" curl -fsSk --resolve "$PREVIEW.staging.ddeploy.test:443:127.0.0.1" "https://$PREVIEW.staging.ddeploy.test/"
@@ -1210,6 +1221,8 @@ flush_hooks
 sleep 1
 out="$(curl -fsSk -u "preview:$AUTH_PASS" --resolve "$PREVIEW.staging.ddeploy.test:443:127.0.0.1" "https://$PREVIEW.staging.ddeploy.test/")"
 assert_contains "$out" "MARKER=preview-v2" "webhook deploy-preview fetch+reset picked up the new commit"
+assert_cmd_ok "preview .env still a symlink after fetch+reset" test -L "$(site_dir "$PREVIEW")/.env"
+assert_cmd_ok "preview's own env edit survived its redeploy" grep -qx 'PREVIEW_ONLY=yes' "$PERSISTENT_ROOT/$PREVIEW/.env"
 assert_file_exists "$(site_dir "$PREVIEW")/web/dist/build.txt" "preview built its frontend too"
 [[ "$(stat -c %U "$(site_dir "$PREVIEW")/web/dist/build.txt")" == "www-testsite" ]] && pass "shared preview built as the parent's user" || fail "preview build output has the wrong owner"
 sink="$(cat /tmp/ddeploy-comment-sink.jsonl 2>/dev/null || true)"
@@ -1336,6 +1349,8 @@ step "prune-previews (feature-a branch deleted upstream)"
 git -C "$BARE" branch -D feature-a >/dev/null
 ./provision.sh prune-previews
 assert_file_absent "/etc/nginx/sites-enabled/$PREVIEW.conf" "prune-previews removed the preview whose branch is gone"
+assert_file_absent "$PERSISTENT_ROOT/$PREVIEW" "removing the preview removed its persistent .env too"
+assert_file_absent "$GENERATED_DIR/$PREVIEW.override.yaml" "removing the preview removed its override file"
 
 # --- persistent files: survive removal, restore automatically ----------
 
