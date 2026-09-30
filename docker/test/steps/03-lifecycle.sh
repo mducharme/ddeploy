@@ -129,6 +129,35 @@ print(json.dumps({
 ' "$event" "$branch" "$src_uuid" "$dst_uuid" "$HOOK_CLONE" > "$out"
 }
 
+# --- notification sink (NOTIFY_WEBHOOK) ---------------------------------
+# Generic JSON endpoint standing in for Slack: records "<path> <body>"
+# per POST. Started before provision so every event from here on lands.
+NOTIFY_SINK=/tmp/ddeploy-notify-sink.log
+: > "$NOTIFY_SINK"
+python3 - "$NOTIFY_SINK" <<'PY' &
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+out = sys.argv[1]
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or "0"))
+        with open(out, "ab") as f:
+            f.write(self.path.encode() + b" " + body + b"\n")
+        self.send_response(200)
+        self.end_headers()
+    def log_message(self, *_a):
+        pass
+HTTPServer(("127.0.0.1", 8802), H).serve_forever()
+PY
+NOTIFY_SINK_PID=$!
+sed -i '/^NOTIFY_WEBHOOK=/d' /opt/ddeploy/provisioner.conf
+echo 'NOTIFY_WEBHOOK="http://127.0.0.1:8802/global"' >> /opt/ddeploy/provisioner.conf
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    curl -fsS -o /dev/null -X POST -d '{}' http://127.0.0.1:8802/ready && break
+    sleep 0.2
+done
+notify_sink() { cat "$NOTIFY_SINK"; }
+
 # --- provision -------------------------------------------------------
 
 step "provision testsite"
@@ -138,6 +167,8 @@ LIVE="$(site_dir testsite)"
 
 step "provision: checks"
 assert_cmd_ok "www-testsite Linux user created" id -u www-testsite
+assert_contains "$(notify_sink)" '"event": "deploy-success", "site": "testsite"' "provision sent a deploy-success notification"
+assert_contains "$(notify_sink)" "testsite provisioned" "notification says what happened"
 assert_file_exists "/etc/nginx/sites-enabled/testsite.conf" "vhost enabled"
 assert_file_exists "/etc/php/8.3/fpm/pool.d/testsite.conf" "FPM pool installed"
 assert_cmd_ok "current is a symlink" test -L "$SITES_ROOT/testsite/current"
@@ -534,7 +565,11 @@ git -C "$WORK" config user.name 'ddeploy test'
 sed -i "s/const MARKER = 'fe-v1';/const MARKER = 'fe-broken'; process.exit(3);/" "$WORK/build.js"
 git -C "$WORK" commit -q -am 'broken frontend build'
 git -C "$WORK" push -q origin main
+: > "$NOTIFY_SINK"
 assert_cmd_fails "deploy fails when the build fails" ./provision.sh deploy testsite
+assert_contains "$(notify_sink)" '"event": "deploy-failure", "site": "testsite"' "a failed manual deploy sends deploy-failure"
+assert_contains "$(notify_sink)" "logs testsite" "failure message points at the full log"
+assert_not_contains "$(notify_sink)" "deploy-success" "a failed deploy sends no success message"
 assert_cmd_ok "current still points at the previous release" test "$BEFORE_REL" = "$(readlink -f "$LIVE")"
 assert_contains "$(build_txt)" "BUILD=fe-v1" "previous build output still served"
 assert_contains "$(./provision.sh doctor testsite 2>&1 || true)" "LAST BUILD FAILED" "doctor flags the failed build"
@@ -746,6 +781,7 @@ assert_contains "$wlog" "REJECTED: HMAC verification failed" "webhook log record
 assert_contains "$wlog" "github ping" "webhook log records the ping"
 assert_contains "$wlog" "-> ignored" "webhook log says a ping was ignored, not silently dropped"
 assert_contains "$wlog" "no provisioned site uses github.com/other/nope" "webhook log records a push for a repo nobody uses"
+assert_contains "$(notify_sink)" '"event": "webhook-rejected"' "a rejected webhook sent a notification"
 
 # --- PR preview comments (mock GitHub/Bitbucket API) -------------------
 
@@ -982,6 +1018,7 @@ out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "MARKER=v2" "webhook deploy pulled the new commit (GIT_DEPLOY_KEY end to end)"
 wlog="$(./provision.sh logs webhook -n 50)"
 assert_contains "$wlog" "deploy testsite: OK @ $(git -C "$LIVE" log -1 --format=%h)" "webhook log records the deploy with its new sha"
+assert_contains "$(notify_sink)" "webhook [" "deploy notification says the webhook triggered it"
 V2_RELEASE="$(readlink -f "$LIVE")"
 assert_cmd_ok "v2 is a distinct release directory" test -d "$V2_RELEASE"
 
@@ -1204,6 +1241,7 @@ assert_contains "$penv" "DB_DATABASE=testsite" "shared preview's .env uses the p
 [[ "$(stat -c %U "$PERSISTENT_ROOT/$PREVIEW/.env")" == "www-testsite" ]] && pass "shared preview .env owned by the parent's user (who PHP runs as)" || fail "preview .env owner is $(stat -c %U "$PERSISTENT_ROOT/$PREVIEW/.env")"
 assert_file_exists "$GENERATED_DIR/$PREVIEW.override.yaml" "preview got its own override file"
 assert_cmd_fails "preview vhost doesn't claim the parent's additional hostname" grep -q "alt-testsite" "/etc/nginx/sites-available/$PREVIEW.conf"
+assert_contains "$(notify_sink)" '"event": "preview-created", "site": "testsite-feature-a"' "preview creation sent a notification"
 ./provision.sh env "$PREVIEW" PREVIEW_ONLY=yes
 assert_cmd_fails "a preview's env edit doesn't touch the parent" grep -q PREVIEW_ONLY "$PERSISTENT_ROOT/testsite/.env"
 assert_file_exists "/etc/nginx/sites-enabled/$PREVIEW.conf" "preview vhost enabled"
@@ -1369,6 +1407,7 @@ git -C "$BARE" branch -D feature-a >/dev/null
 assert_file_absent "/etc/nginx/sites-enabled/$PREVIEW.conf" "prune-previews removed the preview whose branch is gone"
 assert_file_absent "$PERSISTENT_ROOT/$PREVIEW" "removing the preview removed its persistent .env too"
 assert_file_absent "$GENERATED_DIR/$PREVIEW.override.yaml" "removing the preview removed its override file"
+assert_contains "$(notify_sink)" '"event": "preview-removed", "site": "testsite-feature-a"' "preview removal sent a notification"
 
 # --- persistent files: survive removal, restore automatically ----------
 
@@ -1640,5 +1679,7 @@ assert_cmd_ok "nginx config still valid after removal" nginx -t
 assert_cmd_fails "worker #0's unit is gone after remove" systemctl is-active --quiet ddeploy-worker-testsite-0
 assert_file_absent "/etc/systemd/system/ddeploy-worker-testsite-0.service" "worker #0's unit file removed"
 assert_file_absent "/etc/cron.d/ddeploy-site-testsite" "schedule cron.d file removed"
+
+kill "$NOTIFY_SINK_PID" 2>/dev/null || true
 
 echo "ALL LIFECYCLE CHECKS PASSED" | tee -a "$STEP_LOG"

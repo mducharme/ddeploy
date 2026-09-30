@@ -254,10 +254,12 @@ actually reachable when either backup is on, and — per site — reports
 how many database dumps are recoverable (with the newest one's age) and
 whether uploads have synced anything at all. Point `NOTIFY_WEBHOOK` (in `provisioner.conf`)
 at a Slack/Discord incoming webhook URL and a failure from `doctor`, the
-backup cron, `prune-previews`, or the git-push worker pages it — success
-stays silent,
-and the same command+site won't repage until `NOTIFY_COOLDOWN` seconds
-pass (default 3600). See README "Health check" / "Failure paging".
+backup cron, or `prune-previews` pages it (the same command+site won't
+repage until `NOTIFY_COOLDOWN` seconds pass, default 3600). The same URL
+also gets deploy successes/failures, previews coming and going, and
+rejected webhooks (`NOTIFY_EVENTS`), and a site can have a channel of
+its own (`provision.sh notify <name> --set-url`). See README "Health
+check" / "Notifications".
 
 ## Checklist: verify each feature actually works
 

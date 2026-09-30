@@ -108,12 +108,13 @@ prune-previews [project]      remove previews whose branch no longer exists
 preview-url <project> <branch>   print the preview URL (site need not exist)
 logs <name> [-n N] [-f]       tail a site or fleet log; `logs webhook` for git-push deliveries (see -h)
 env <name> [KEY=value] [opts] show/edit a site's persistent .env (see -h)
+notify <name> [opts]          per-site Slack/Discord channel for deploy notifications (see -h)
 doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
 node-gc [--yes]               remove Node versions nothing uses any more (see -h)
 ```
 
 `init`, `init-db`, `provision`, `deploy`, `remove`, `backup-uploads`,
-`backup-database`, `logs`, `env`, `node-gc`, and the `*-preview`/`prune-previews` commands need root.
+`backup-database`, `logs`, `env`, `notify`, `node-gc`, and the `*-preview`/`prune-previews` commands need root.
 
 ## Configuration
 
@@ -405,7 +406,8 @@ for why). Consequence: **every structurally-valid POST gets `202`**,
 correctly signed or not. A missing signature header gets a synchronous
 `401`; a present-and-wrong one (e.g. a typo'd secret) is accepted and
 rejected later, asynchronously — so the forge's delivery log shows it
-as delivered. Check `provision.sh logs webhook` instead.
+as delivered. Check `provision.sh logs webhook` instead (and turn on the
+`webhook-rejected` notification, see "Notifications").
 
 **The webhook log** (`provision.sh logs webhook [-n N] [-f]`, file
 `logs/webhook.log`) has one line per delivery and one per action it led
@@ -670,17 +672,47 @@ wire into cron/monitoring. One site's malformed config only produces one
 `[fail]` row, doesn't abort the rest.
 
 `NOTIFY_WEBHOOK` in `provisioner.conf` pages on `[fail]` (not `[warn]`).
-See "Failure paging."
+See "Notifications."
 
-## Failure paging
+## Notifications
 
-Set `NOTIFY_WEBHOOK` to a Slack incoming webhook, Discord webhook, or
-any URL accepting a JSON POST with `text`/`content`. Credential — don't
-commit it. Empty (default) is off.
+Set `NOTIFY_WEBHOOK` (`provisioner.conf`) to a Slack incoming webhook
+(Slack → Apps → Incoming Webhooks → pick a channel → copy the URL), a
+Discord webhook, or any URL accepting a JSON POST. Credential — don't
+commit it. Empty (default) is off. Try it: `provision.sh notify --test`.
 
-Only **failures** page. Same command+site won't page again until
-`NOTIFY_COOLDOWN` seconds pass (default 3600). SSH `deploy` doesn't page
-(you're watching); a git-push deploy that fails after the `202` does.
+`NOTIFY_EVENTS` picks what's sent (default: all of them):
+
+| Event              | When                                                                  |
+| ------------------ | --------------------------------------------------------------------- |
+| `deploy-success`   | `deploy`, `deploy-preview`, `provision` finished — URL, commit, duration, and who triggered it (`webhook [id]` or the sudo user) |
+| `deploy-failure`   | any of those failed — the error line and where the full log is       |
+| `preview-created`  | a branch preview is up, with its URL                                  |
+| `preview-removed`  | a branch preview was torn down                                        |
+| `webhook-rejected` | a delivery failed HMAC verification — almost always a wrong secret in the forge's webhook settings |
+
+Slack and Discord get colored messages (green/red); any other URL gets a
+flat JSON object (`text`, `content`, `event`, `site`, `status`, ...).
+`webhook-rejected` won't repeat for `NOTIFY_COOLDOWN` seconds (default
+3600); deploy messages are never rate-limited.
+
+**Per-site channel.** A site's own events can also go to a channel of
+its own — a client's, say — on top of the server-wide one:
+
+```
+echo "$SLACK_URL" | sudo ./provision.sh notify <name> --set-url   # or run it and paste at the prompt
+sudo ./provision.sh notify <name> --test
+sudo ./provision.sh notify <name> --unset
+```
+
+Stored root-only in `generated/<name>.notify-url` (read from stdin so it
+never lands in shell history or `ps`). Previews use their parent's
+channel unless given their own.
+
+**Failure paging** for unattended commands (`backup-uploads`,
+`backup-database` cron, `prune-previews`, `doctor`) goes to
+`NOTIFY_WEBHOOK` only, regardless of `NOTIFY_EVENTS`; the same
+command+site won't page again until `NOTIFY_COOLDOWN` passes.
 
 ## Server & operations
 

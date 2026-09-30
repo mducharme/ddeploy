@@ -66,6 +66,7 @@ cmd_provision_preview() {
     [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage_provision_preview; return 0; }
     load_conf
     require_root
+    local started="$SECONDS"
 
     local project="${1:-}" branch="${2:-}"
     [[ -n "$project" && -n "$branch" ]] || { usage_provision_preview; die "project and branch required"; }
@@ -194,11 +195,13 @@ cmd_provision_preview() {
 
     record_preview_deployed "$name" "$dir"
     log_info "provisioned preview ($mode): https://$name.$BASE_DOMAIN"
+    notify_deploy_success preview-created "$name" "$dir" "$((SECONDS - started))" "preview created ($project / $branch)"
 }
 
 cmd_deploy_preview() {
     load_conf
     require_root
+    local started="$SECONDS"
 
     local project="${1:-}" branch="${2:-}" if_changed=0
     [[ -n "$project" && -n "$branch" ]] || die "usage: provision.sh deploy-preview <project> <branch> [--if-changed]"
@@ -267,8 +270,9 @@ cmd_deploy_preview() {
 
     local sha; sha="$(git -C "$dir" log -1 --format=%h)"
     record_preview_deployed "$name" "$dir"
-    site_log "$name" "deploy-preview: done at $sha"
+    site_log "$name" "deploy-preview: done at $sha ($(notify_trigger))"
     log_info "deployed preview $name @ $sha"
+    notify_deploy_success deploy-success "$name" "$dir" "$((SECONDS - started))" "deployed (preview of $PREVIEW_PROJECT / $PREVIEW_BRANCH)"
 }
 
 cmd_remove_preview() {
@@ -344,7 +348,8 @@ cmd_remove_preview() {
     remove_node_modules_cache "$name"
     rm -f "$(build_state_path "$name")"
     rm -f "$GENERATED_DIR/$name.preview" "$(preview_deployed_path "$name")"
-    site_log "$name" "removed preview (purge_db=$purge_db purge_files=$purge_files)"
+    site_log "$name" "removed preview (purge_db=$purge_db purge_files=$purge_files, $(notify_trigger))"
+    notify_event preview-removed "$name" "$name removed" "Preview of $project / $branch — $(notify_trigger)"
 }
 
 # Compares every provisioned preview against its branch's actual remote

@@ -94,6 +94,7 @@ load_conf() {
     WEBHOOK_LISTEN="${WEBHOOK_LISTEN:-127.0.0.1:8787}"
     NOTIFY_WEBHOOK="${NOTIFY_WEBHOOK:-}"
     NOTIFY_COOLDOWN="${NOTIFY_COOLDOWN:-3600}"
+    NOTIFY_EVENTS="${NOTIFY_EVENTS:-deploy-success deploy-failure preview-created preview-removed webhook-rejected}"
     PREVIEW_COMMENT_CREDENTIALS="${PREVIEW_COMMENT_CREDENTIALS:-}"
     RELEASES_KEEP="${RELEASES_KEEP:-5}"
     NODE_ENABLED="${NODE_ENABLED:-true}"

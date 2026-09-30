@@ -113,6 +113,7 @@ hook_verify_and_process() {
     case "$rc" in
         2)
             hook_log warn "$summary -> REJECTED: HMAC verification failed (the secret in the forge's webhook settings doesn't match $secret_path, or this isn't a genuine delivery) — dropped"
+            notify_event webhook-rejected "" "Webhook rejected" "${summary}: signature doesn't match the webhook secret — check the secret in the forge's webhook settings" cooldown
             rm -f "$claimed"
             return
             ;;
@@ -121,6 +122,7 @@ hook_verify_and_process() {
             # double-quoted ${var:-word} is a quote character to bash.
             [[ -n "$reason" ]] || reason="could not verify/parse the request"
             hook_log warn "$summary -> REJECTED: $reason — dropped"
+            notify_event webhook-rejected "" "Webhook rejected" "${summary}: $reason" cooldown
             rm -f "$claimed"
             return
             ;;
@@ -143,19 +145,24 @@ hook_verify_and_process() {
 
     local job_file="$claimed.job"
     printf '%s' "$report" | yq -p=json -o=json -I=0 eval '.job' - > "$job_file"
+    # Seen by every provision.sh this job runs, for their own logs and
+    # Slack messages ("deployed by webhook [id]").
+    export DDEPLOY_TRIGGER="webhook [$WEBHOOK_LOG_ID]"
     if ! hook_process_job "$job_file"; then
         hook_log error "job failed — kept at $failed/$(basename "$job_file") for inspection"
         mv -f "$job_file" "$failed/" || rm -f "$job_file"
     else
         rm -f "$job_file"
     fi
+    unset DDEPLOY_TRIGGER
     rm -f "$claimed"
 }
 
 # $1 label (deploy, deploy-preview, ...) $2 site, rest the command to
 # run under that site's lock. Logs start and outcome (with the new sha
 # and duration, or the tail of the site's own log on failure) to
-# webhook.log, and pages NOTIFY_WEBHOOK on failure.
+# webhook.log. Failure notifications come from the provision.sh
+# subprocess itself (see run_notifying in provision.sh), not here.
 hook_run_site() {
     local label="$1" site="$2"; shift 2
     local started="$SECONDS" rc=0
@@ -173,7 +180,6 @@ hook_run_site() {
         fi
     else
         hook_log error "$label $site: FAILED (exit $rc, ${took}s) — $(notify_log_snippet "$LOG_DIR/$site.log") — full log: provision.sh logs $site"
-        notify_failure "$label" "$site" "$(notify_log_snippet "$LOG_DIR/$site.log")"
     fi
     return "$rc"
 }

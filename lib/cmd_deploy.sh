@@ -32,6 +32,7 @@ cmd_deploy() {
     [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage_deploy; return 0; }
     load_conf
     require_root
+    local started="$SECONDS"
 
     local name="${1:-}"
     [[ -n "$name" ]] || { usage_deploy; die "site name required"; }
@@ -186,10 +187,12 @@ cmd_deploy() {
     local sha; sha="$(git -C "$dir" log -1 --format=%h)"
     record_deploy "$name" "$full_sha"
     if [[ "$rollback" -eq 1 ]]; then
-        site_log "$name" "rollback: done at $sha"
+        site_log "$name" "rollback: done at $sha ($(notify_trigger))"
         log_info "rolled back $name @ $sha"
+        notify_deploy_success deploy-success "$name" "$dir" "$((SECONDS - started))" "rolled back"
     else
-        site_log "$name" "deploy: done at $sha"
+        site_log "$name" "deploy: done at $sha ($(notify_trigger))"
         log_info "deployed $name @ $sha"
+        notify_deploy_success deploy-success "$name" "$dir" "$((SECONDS - started))" "deployed"
     fi
 }

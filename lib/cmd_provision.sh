@@ -55,6 +55,7 @@ cmd_provision() {
 
     load_conf
     require_root
+    local started="$SECONDS"
 
     local name="${1:-}"
     if [[ -n "$name" ]]; then
@@ -241,4 +242,5 @@ cmd_provision() {
     for fqdn in "${ADDITIONAL_FQDNS[@]}"; do
         log_info "  also: https://$fqdn"
     done
+    notify_deploy_success deploy-success "$name" "$dir" "$((SECONDS - started))" "provisioned"
 }

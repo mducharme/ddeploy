@@ -85,6 +85,63 @@ source "$LIB_DIR/cmd_hook.sh"
 # shellcheck source=lib/cmd_node_gc.sh
 source "$LIB_DIR/cmd_node_gc.sh"
 
+# Runs a deploy-type command ($3...) for site $2 and, if it fails, sends
+# a deploy-failure notification carrying the error it printed. The
+# command runs in a subshell so its die/exit and EXIT traps behave
+# exactly as when called directly; set -e is re-enabled inside it
+# explicitly — bash silently disables errexit for anything on the left
+# of || / &&, which is why this isn't simply `( "$@" ) || rc=$?`.
+# $1 label for the message (deploy, provision-preview, ...).
+run_notifying() {
+    local label="$1" site="$2"; shift 2
+    if [[ -z "$site" ]]; then
+        "$@"
+        return
+    fi
+    local errlog; errlog="$(mktemp)"
+    local started="$SECONDS" rc
+    # stderr is copied to $errlog through a pipeline (the pipeline waits
+    # for tee, so the file is complete when we read it); stdout goes
+    # straight through on fd 3. rc is the command's, not tee's.
+    set +e
+    { ( set -e; "$@" ) 2>&1 1>&3 3>&- | tee "$errlog" >&2; } 3>&1
+    rc="${PIPESTATUS[0]}"
+    set -e
+    if [[ "$rc" -ne 0 ]]; then
+        local err
+        err="$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | grep -E '^\[error\]' | tail -n 2 | cut -c1-300)"
+        [[ -n "$err" ]] || err="$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | tail -n 3 | cut -c1-300)"
+        (
+            load_conf
+            notify_event deploy-failure "$site" "$site: $label FAILED" \
+                "${err}"$'\n'"Took $((SECONDS - started))s — $(notify_trigger)"$'\n'"Full log: provision.sh logs $site"
+        ) || true
+    fi
+    rm -f "$errlog"
+    return "$rc"
+}
+
+# The site a deploy-type invocation is about, for run_notifying — empty
+# for help/read-only invocations, which never notify.
+notify_site_arg() {
+    local kind="$1"; shift
+    local a
+    for a in "$@"; do
+        case "$a" in -h|--help|--history) return 0 ;; esac
+    done
+    case "$kind" in
+        site) [[ -n "${1:-}" && "$1" != -* ]] && printf '%s' "$1" ;;
+        preview)
+            if [[ -n "${1:-}" && -n "${2:-}" && "$1" != -* && "$2" != -* ]]; then
+                # Subshell: preview_slug die()s on a nonsense pair, and
+                # that must be the command's own error, reported by it.
+                (preview_slug "$1" "$2") 2>/dev/null || true
+            fi
+            ;;
+    esac
+    return 0
+}
+
 usage() {
     cat <<'EOF'
 usage: provision.sh <command> [args]
@@ -111,6 +168,7 @@ commands:
   prune-previews [project]      remove previews whose branch no longer exists
   preview-url <project> <branch>   print https://<slug>.$BASE_DOMAIN (see -h)
   logs <name> [-n N] [-f]       tail a site or fleet log, or the webhook log: logs webhook (see -h)
+  notify <name> [opts]          per-site Slack/Discord webhook for deploy notifications (see -h)
   doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
   node-gc [--yes]               remove Node versions nothing uses any more (see -h)
   hook-worker                   drain the git-push webhook queue (systemd; not an operator command)
@@ -126,10 +184,10 @@ main() {
         configure)      cmd_configure "$@" ;;
         init)           cmd_init "$@" ;;
         init-db)        cmd_init_db "$@" ;;
-        provision)      cmd_provision "$@" ;;
+        provision)      run_notifying provision "$(notify_site_arg site "$@")" cmd_provision "$@" ;;
         override)       cmd_override "$@" ;;
         env)            cmd_env "$@" ;;
-        deploy)         cmd_deploy "$@" ;;
+        deploy)         run_notifying deploy "$(notify_site_arg site "$@")" cmd_deploy "$@" ;;
         remove)         cmd_remove "$@" ;;
         list)           cmd_list "$@" ;;
         provision-all)  cmd_provision_all "$@" ;;
@@ -138,12 +196,13 @@ main() {
         backup-database) cmd_backup_database "$@" ;;
         restore-uploads) cmd_restore_uploads "$@" ;;
         restore-database) cmd_restore_database "$@" ;;
-        provision-preview) cmd_provision_preview "$@" ;;
-        deploy-preview) cmd_deploy_preview "$@" ;;
+        provision-preview) run_notifying provision-preview "$(notify_site_arg preview "$@")" cmd_provision_preview "$@" ;;
+        deploy-preview) run_notifying deploy-preview "$(notify_site_arg preview "$@")" cmd_deploy_preview "$@" ;;
         remove-preview) cmd_remove_preview "$@" ;;
         prune-previews) cmd_prune_previews "$@" ;;
         preview-url)    cmd_preview_url "$@" ;;
         logs)           cmd_logs "$@" ;;
+        notify)         cmd_notify "$@" ;;
         doctor)         cmd_doctor "$@" ;;
         node-gc)        cmd_node_gc "$@" ;;
         hook-worker)    cmd_hook_worker "$@" ;;
