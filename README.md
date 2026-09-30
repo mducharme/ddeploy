@@ -106,7 +106,7 @@ deploy-preview <project> <branch>       pull + redeploy a preview
 remove-preview <project> <branch> [opts]   remove a preview (see -h)
 prune-previews [project]      remove previews whose branch no longer exists
 preview-url <project> <branch>   print the preview URL (site need not exist)
-logs <name> [-n N] [-f]       tail a site or fleet log (see -h)
+logs <name> [-n N] [-f]       tail a site or fleet log; `logs webhook` for git-push deliveries (see -h)
 env <name> [KEY=value] [opts] show/edit a site's persistent .env (see -h)
 doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
 node-gc [--yes]               remove Node versions nothing uses any more (see -h)
@@ -404,9 +404,28 @@ later, in a root-context step (see [docs/security.md](docs/security.md)
 for why). Consequence: **every structurally-valid POST gets `202`**,
 correctly signed or not. A missing signature header gets a synchronous
 `401`; a present-and-wrong one (e.g. a typo'd secret) is accepted and
-rejected later, asynchronously — check `journalctl -u
-ddeploy-hook-worker` or this tool's own logs, not the forge's delivery
-log.
+rejected later, asynchronously — so the forge's delivery log shows it
+as delivered. Check `provision.sh logs webhook` instead.
+
+**The webhook log** (`provision.sh logs webhook [-n N] [-f]`, file
+`logs/webhook.log`) has one line per delivery and one per action it led
+to, tagged with the forge's delivery id (first 8 chars — the same id
+GitHub/Bitbucket show in their webhook UI):
+
+```
+2026-09-30T14:02:11Z [3f9a1c02] github push repo=org/site branch=main by=someone from=140.82.115.4 -> accepted: push_head
+2026-09-30T14:02:11Z [3f9a1c02] deploy site: started
+2026-09-30T14:02:58Z [3f9a1c02] deploy site: OK @ a1b2c3d (47s)
+2026-09-30T14:05:40Z [77e0b5d1] github push repo=org/site branch=feature-x -> accepted: push_head
+2026-09-30T14:05:40Z [77e0b5d1] skip site: it deploys 'main', push was to feature-x
+2026-09-30T14:09:03Z [c41d9e8a] github push from=203.0.113.9 -> REJECTED: HMAC verification failed (...) — dropped
+2026-09-30T14:10:00Z [0b6f2a7e] github ping repo=org/site -> ignored: nothing to do for event 'ping'
+```
+
+A failed action logs `FAILED (exit N, 12s)` with the tail of the site's
+own log; `provision.sh logs <site>` has the full build output. Requests
+refused before they're queued (no signature header, oversized body)
+only show up in `journalctl -u ddeploy-hook`.
 
 | Forge           | URL                                    | Events                                                                 |
 | --------------- | -------------------------------------- | ---------------------------------------------------------------------- |

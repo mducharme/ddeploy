@@ -732,6 +732,21 @@ flush_hooks
 assert_file_absent "/etc/nginx/sites-enabled/testsite-feature-a.conf" "Bitbucket fork PR did not provision a preview"
 rm -f "$BODY"
 
+step "webhook log: every delivery and its outcome in logs/webhook.log"
+# A garbled envelope (only reachable by writing into the spool directly)
+# takes the "couldn't parse" branch, which the HTTP tests above can't.
+printf '{not json' > /var/lib/ddeploy/queue/new/raw-0badc0de00000000000000000000000000.json
+chown root:ddeploy-hook /var/lib/ddeploy/queue/new/raw-0badc0de00000000000000000000000000.json
+flush_hooks
+wlog="$(./provision.sh logs webhook -n 500)"
+assert_contains "$wlog" "[0badc0de]" "a delivery with no forge id is tagged with its spool id"
+assert_contains "$wlog" "REJECTED: malformed envelope — dropped" "webhook log records an unparseable envelope"
+assert_contains "$wlog" "github push" "webhook log names provider and forge event"
+assert_contains "$wlog" "REJECTED: HMAC verification failed" "webhook log records a wrong signature"
+assert_contains "$wlog" "github ping" "webhook log records the ping"
+assert_contains "$wlog" "-> ignored" "webhook log says a ping was ignored, not silently dropped"
+assert_contains "$wlog" "no provisioned site uses github.com/other/nope" "webhook log records a push for a repo nobody uses"
+
 # --- PR preview comments (mock GitHub/Bitbucket API) -------------------
 
 step "preview PR comments (upsert + webhook wiring)"
@@ -965,6 +980,8 @@ sleep 1
 
 out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "MARKER=v2" "webhook deploy pulled the new commit (GIT_DEPLOY_KEY end to end)"
+wlog="$(./provision.sh logs webhook -n 50)"
+assert_contains "$wlog" "deploy testsite: OK @ $(git -C "$LIVE" log -1 --format=%h)" "webhook log records the deploy with its new sha"
 V2_RELEASE="$(readlink -f "$LIVE")"
 assert_cmd_ok "v2 is a distinct release directory" test -d "$V2_RELEASE"
 
@@ -975,6 +992,7 @@ code="$(post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY")"
 flush_hooks
 assert_cmd_ok "redelivered push did not build a new release" test "$V2_RELEASE" = "$(readlink -f "$LIVE")"
 assert_cmd_ok "worker logged the skip" grep -q 'deploy: skipped (--if-changed)' "$LOG_DIR/testsite.log"
+assert_contains "$(./provision.sh logs webhook -n 5)" "deploy testsite: already up to date" "webhook log says the redelivery had nothing to do"
 if_out="$(./provision.sh deploy testsite --if-changed 2>&1)"
 assert_contains "$if_out" "nothing to deploy" "deploy --if-changed is a no-op at the remote tip"
 rm -f "$BODY"

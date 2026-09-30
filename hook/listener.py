@@ -37,6 +37,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -131,16 +132,30 @@ class HookHandler(BaseHTTPRequestHandler):
             self._send(400, "invalid json\n")
             return
 
+        # delivery/received_at/remote are for the root worker's webhook
+        # log only (logs/webhook.log) — unverified, informational, never
+        # used to decide anything. X-Real-IP is set by our own nginx
+        # vhost; the TCP peer is always 127.0.0.1 behind it.
+        if provider == "github":
+            delivery = self.headers.get("X-GitHub-Delivery") or ""
+        else:
+            delivery = (self.headers.get("X-Request-UUID")
+                        or self.headers.get("X-Hook-UUID") or "")
         _spool_raw(
             self.spool,
             {
                 "provider": provider,
                 "sig_header": sig_header,
                 "forge_event": forge_event,
+                "delivery": delivery[:100],
+                "received_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "remote": (self.headers.get("X-Real-IP")
+                           or self.client_address[0])[:64],
                 "body_b64": base64.b64encode(body).decode("ascii"),
             },
         )
-        _log("queued (unverified) provider=%s forge_event=%s" % (provider, forge_event))
+        _log("queued (unverified) provider=%s forge_event=%s delivery=%s"
+             % (provider, forge_event, delivery[:100]))
         self._send(202, "queued\n")
 
 
