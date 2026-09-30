@@ -74,3 +74,46 @@ cms_defaults() {
             ;;
     esac
 }
+
+# Fills in the non-DB .env variables a CMS refuses to boot without, so a
+# first provision serves a page instead of a 500. Only ever adds keys
+# that are missing — never overwrites a value an operator (or a previous
+# run) already set, so it's safe on every provision. Keyed off
+# DB_ENV_SCHEME rather than detect_cms: that's the setting that already
+# decided this site's .env is in that CMS's format. Values that are
+# secrets are never logged, only the key names.
+# $1 name, $2 site dir (.env at its root), $3 scheme, $4 site URL.
+seed_cms_env() {
+    local name="$1" dir="$2" scheme="$3" url="$4"
+    local env_file="$dir/.env"
+    local -a added=()
+
+    case "$scheme" in
+        craft)
+            [[ -e "$env_file" ]] || return 0
+            if [[ -z "$(read_env_var "$env_file" CRAFT_APP_ID || true)" ]]; then
+                write_env_var "$env_file" CRAFT_APP_ID "CraftCMS--$(cat /proc/sys/kernel/random/uuid)"
+                added+=(CRAFT_APP_ID)
+            fi
+            if [[ -z "$(read_env_var "$env_file" CRAFT_SECURITY_KEY || true)" ]]; then
+                write_env_var "$env_file" CRAFT_SECURITY_KEY "$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32)"
+                added+=(CRAFT_SECURITY_KEY)
+            fi
+            if [[ -z "$(read_env_var "$env_file" CRAFT_ENVIRONMENT || true)" ]]; then
+                write_env_var "$env_file" CRAFT_ENVIRONMENT "staging"
+                added+=(CRAFT_ENVIRONMENT)
+            fi
+            if [[ -z "$(read_env_var "$env_file" PRIMARY_SITE_URL || true)" ]]; then
+                write_env_var "$env_file" PRIMARY_SITE_URL "$url"
+                added+=(PRIMARY_SITE_URL)
+            fi
+            ;;
+        *) return 0 ;;
+    esac
+
+    [[ "${#added[@]}" -gt 0 ]] || return 0
+    log_info "'$name': added missing .env keys: ${added[*]} (values not logged — see 'provision.sh env $name --show')"
+    if [[ " ${added[*]} " == *" CRAFT_SECURITY_KEY "* ]]; then
+        log_warn "'$name': generated a fresh CRAFT_SECURITY_KEY — if you import a database from another environment, set that environment's key instead ('provision.sh env $name CRAFT_SECURITY_KEY=...') or anything Craft encrypted won't decrypt"
+    fi
+}

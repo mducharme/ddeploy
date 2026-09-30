@@ -58,6 +58,8 @@ source "$LIB_DIR/cmd_init_db.sh"
 source "$LIB_DIR/cmd_provision.sh"
 # shellcheck source=lib/cmd_override.sh
 source "$LIB_DIR/cmd_override.sh"
+# shellcheck source=lib/cmd_env.sh
+source "$LIB_DIR/cmd_env.sh"
 # shellcheck source=lib/cmd_deploy.sh
 source "$LIB_DIR/cmd_deploy.sh"
 # shellcheck source=lib/cmd_remove.sh
@@ -93,6 +95,7 @@ commands:
   init-db                       set up a dedicated database server
   provision <name> [repo-url]   stand up a site (see: provision.sh provision -h)
   override <name> [opts]        operator-side config override, no repo access needed (see -h)
+  env <name> [KEY=value] [opts] show/edit a site's persistent .env (see -h)
   deploy <name> [opts]          new release + re-apply vhost/FPM config + replay hooks (see -h)
   remove <name> [opts]          disable a site (see: provision.sh remove -h)
   list                          table of provisioned sites
@@ -125,6 +128,7 @@ main() {
         init-db)        cmd_init_db "$@" ;;
         provision)      cmd_provision "$@" ;;
         override)       cmd_override "$@" ;;
+        env)            cmd_env "$@" ;;
         deploy)         cmd_deploy "$@" ;;
         remove)         cmd_remove "$@" ;;
         list)           cmd_list "$@" ;;

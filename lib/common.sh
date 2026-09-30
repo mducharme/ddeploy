@@ -256,17 +256,42 @@ render_template() {
     printf '%s\n' "$content" > "$out"
 }
 
-# Idempotent upsert of KEY=value in a .env file.
+# Idempotent upsert of KEY=value in a .env file. Rewrites the file in
+# place (`cat tmp > file`, never `mv tmp file`): a site's .env is usually
+# a symlink into PERSISTENT_ROOT, and an mv would replace that symlink
+# with a plain file in the release — the persistent copy would silently
+# stop being the one PHP reads, until the next deploy re-linked it and
+# threw the edit away. In-place also keeps the file's owner and mode.
+# Values go through ENVIRON, not awk -v, which would expand backslash
+# escapes inside them.
 write_env_var() {
     local env_file="$1" key="$2" val="$3"
     touch "$env_file"
     if grep -q "^${key}=" "$env_file" 2>/dev/null; then
         local tmp; tmp="$(mktemp)"
-        awk -v k="$key" -v v="$val" -F'=' 'BEGIN{OFS="="} $1==k{$0=k"="v} {print}' "$env_file" > "$tmp"
-        mv "$tmp" "$env_file"
+        K="$key" V="$val" awk 'BEGIN{k=ENVIRON["K"]; v=ENVIRON["V"]} index($0, k "=")==1 {$0=k "=" v} {print}' "$env_file" > "$tmp"
+        cat "$tmp" > "$env_file"
+        rm -f "$tmp"
     else
+        # A file whose last line has no trailing newline would otherwise
+        # get this key glued onto the end of that line.
+        if [[ -s "$env_file" && -n "$(tail -c1 "$env_file")" ]]; then
+            printf '\n' >> "$env_file"
+        fi
         printf '%s=%s\n' "$key" "$val" >> "$env_file"
     fi
+}
+
+# Removes KEY from a .env file, in place (same symlink reasoning as
+# write_env_var). No-op if the file or key isn't there.
+unset_env_var() {
+    local env_file="$1" key="$2"
+    [[ -f "$env_file" ]] || return 0
+    grep -q "^${key}=" "$env_file" 2>/dev/null || return 0
+    local tmp; tmp="$(mktemp)"
+    K="$key" awk 'BEGIN{k=ENVIRON["K"]} index($0, k "=")!=1 {print}' "$env_file" > "$tmp"
+    cat "$tmp" > "$env_file"
+    rm -f "$tmp"
 }
 
 read_env_var() {

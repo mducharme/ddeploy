@@ -107,12 +107,13 @@ remove-preview <project> <branch> [opts]   remove a preview (see -h)
 prune-previews [project]      remove previews whose branch no longer exists
 preview-url <project> <branch>   print the preview URL (site need not exist)
 logs <name> [-n N] [-f]       tail a site or fleet log (see -h)
+env <name> [KEY=value] [opts] show/edit a site's persistent .env (see -h)
 doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
 node-gc [--yes]               remove Node versions nothing uses any more (see -h)
 ```
 
 `init`, `init-db`, `provision`, `deploy`, `remove`, `backup-uploads`,
-`backup-database`, `logs`, `node-gc`, and the `*-preview`/`prune-previews` commands need root.
+`backup-database`, `logs`, `env`, `node-gc`, and the `*-preview`/`prune-previews` commands need root.
 
 ## Configuration
 
@@ -520,6 +521,24 @@ persistent_files:
 Normal sites only — isolated previews stay disposable; shared previews
 already point at the parent's store.
 
+**Editing `.env`.** `<site>/current/.env` is a symlink into the
+persistent store, and a few editing habits break on that: `sudoedit`
+refuses symlinks outright, and anything that writes a temp file and
+renames it over the path replaces the link with a plain file in that
+one release — the next deploy re-links it and your edit is gone. Use:
+
+```
+sudo ./provision.sh env <name>                        # show (secrets masked; --reveal for all)
+sudo ./provision.sh env <name> KEY=value OTHER=value  # set
+sudo ./provision.sh env <name> --unset KEY
+sudo ./provision.sh env <name> --edit                 # $EDITOR on the real file
+sudo ./provision.sh env <name> --path                 # where it really is
+```
+
+Or edit `$PERSISTENT_ROOT/<name>/.env` directly. Changes are live on
+the next request (PHP reads `.env` per request) unless the app caches
+its config.
+
 ## Data protection
 
 ### Backups
@@ -666,6 +685,19 @@ in `.ddeploy/config.yaml` or the sidecar):
 
 `charcoal` creates `config/config.local.json` if it doesn't exist,
 reuses its own `default_database` key if already set.
+
+`craft` also gets the other keys Craft won't boot without, **added only
+when missing** (never overwritten, so an existing `.env` is left alone):
+`CRAFT_APP_ID`, `CRAFT_SECURITY_KEY` (random), `CRAFT_ENVIRONMENT=staging`,
+`PRIMARY_SITE_URL=https://<name>.$BASE_DOMAIN`. If the database comes
+from another environment, set that environment's security key
+(`provision.sh env <name> CRAFT_SECURITY_KEY=...`) — anything Craft
+encrypted with the old one won't decrypt otherwise.
+
+**Lost the `.env`, or the password in it?** Re-run `provision <name>`
+(no repo URL needed). It reads the password from `.env`, generates a new
+one if it's missing, and always `ALTER USER`s MariaDB to match — the
+database itself is untouched.
 
 ### Deploy hooks
 

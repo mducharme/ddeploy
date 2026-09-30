@@ -207,6 +207,7 @@ cmd_provision() {
     fi
 
     db_ensure "$name" "$dest"   # each scheme re-owns the file it writes itself
+    seed_cms_env "$name" "$dest" "$DB_ENV_SCHEME" "https://$name.$BASE_DOMAIN"
 
     site_log "$name" "provision: php=$PHP_VERSION docroot=$DOCROOT"
 

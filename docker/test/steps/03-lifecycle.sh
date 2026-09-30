@@ -303,6 +303,26 @@ assert_cmd_ok "persistent_files entry (shared-notes.txt) is a symlink" test -L "
 assert_contains "$(readlink "$LIVE/shared-notes.txt")" "$PERSISTENT_ROOT/testsite/shared-notes.txt" "persistent_files entry symlinked into PERSISTENT_ROOT"
 echo "important client note" > "$LIVE/shared-notes.txt"
 
+step "env: edits the persistent .env in place, never replaces the symlink"
+./provision.sh env testsite APP_URL=https://testsite.staging.ddeploy.test PARENT_ONLY=from-parent
+assert_cmd_ok ".env is still a symlink after 'env' writes" test -L "$LIVE/.env"
+assert_cmd_ok "'env' wrote into the persistent copy" grep -qx 'PARENT_ONLY=from-parent' "$PERSISTENT_ROOT/testsite/.env"
+[[ "$(stat -L -c '%U %a' "$LIVE/.env")" == "www-testsite 600" ]] && pass ".env still www-testsite, 600 after 'env'" || fail ".env is $(stat -L -c '%U %a' "$LIVE/.env") after 'env'"
+show_out="$(./provision.sh env testsite --show 2>/dev/null)"
+assert_contains "$show_out" "DB_PASSWORD=********" "env --show masks the DB password"
+assert_contains "$show_out" "PARENT_ONLY=from-parent" "env --show prints ordinary values"
+assert_contains "$(./provision.sh env testsite --path)" "$PERSISTENT_ROOT/testsite/.env" "env --path prints the real file"
+./provision.sh env testsite THROWAWAY=1
+./provision.sh env testsite --unset THROWAWAY
+assert_cmd_fails "env --unset removed the key" grep -q '^THROWAWAY=' "$PERSISTENT_ROOT/testsite/.env"
+assert_cmd_fails "env refuses an invalid key" ./provision.sh env testsite 'BAD-KEY=x'
+# What db_ensure does to an existing key on every re-provision — this
+# used to mv a temp file over the symlink.
+write_env_var "$LIVE/.env" DB_HOST "$(read_env_var "$LIVE/.env" DB_HOST)"
+assert_cmd_ok "updating an existing .env key keeps it a symlink" test -L "$LIVE/.env"
+out="$(curl_site testsite.staging.ddeploy.test)"
+assert_contains "$out" "DB_OK" "site still reads its DB credentials after the env edits"
+
 step "per-site config overrides (.ddeploy/config.yaml)"
 assert_cmd_ok "vhost has the overridden client_max_body_size" grep -q "client_max_body_size 256m;" /etc/nginx/sites-available/testsite.conf
 assert_cmd_ok "FPM pool has the overridden pm.max_children" grep -q "pm.max_children = 20" /etc/php/8.3/fpm/pool.d/testsite.conf
@@ -1337,6 +1357,7 @@ step "provision re-links and restores automatically"
 sleep 1
 out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "DB_OK" "re-provisioned site reconnects to its DB"
+assert_cmd_ok ".env is still a symlink after re-provision rewrote its DB keys" test -L "$LIVE/.env"
 assert_file_exists "$LIVE/private-uploads/marker.txt" "uploads immediately present again, no restore step needed"
 db_pass_after="$(grep '^DB_PASSWORD=' "$LIVE/.env" | cut -d= -f2-)"
 [[ "$db_pass_before" == "$db_pass_after" ]] && pass "same DB password reused — zero credential churn" || fail "DB password changed across remove/re-provision (before='$db_pass_before' after='$db_pass_after')"
