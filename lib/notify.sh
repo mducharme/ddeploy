@@ -7,7 +7,7 @@
 # Where a message goes:
 #   - NOTIFY_WEBHOOK (provisioner.conf) — the server-wide channel, gets
 #     everything.
-#   - a per-site URL (`provision.sh notify <name> --set-url`), stored
+#   - a per-site URL (`ddeploy notify <name> --set-url`), stored
 #     root-only in generated/<name>.notify-url — that site's own events
 #     also go there (a client channel, say). A preview uses its parent's.
 # Which events are sent at all: NOTIFY_EVENTS (provisioner.conf).
@@ -201,8 +201,8 @@ notify_deploy_success() {
 # `ps` and shell history).
 usage_notify() {
     cat <<'EOF'
-usage: provision.sh notify <name> [--set-url | --unset | --show | --test]
-       provision.sh notify --test
+usage: ddeploy notify <name> [--set-url | --unset | --show | --test]
+       ddeploy notify --test
 
 Per-site chat webhook (Slack incoming webhook, Discord, or anything that
 accepts a JSON POST). That site's events (deploys, failures, its
@@ -210,7 +210,7 @@ previews) go there in addition to the server-wide NOTIFY_WEBHOOK. A
 preview uses its parent's URL unless it has its own.
 
   --set-url   read the URL from stdin (prompted when interactive), e.g.
-              echo "$URL" | sudo ./provision.sh notify mysite --set-url
+              echo "$URL" | ddeploy notify mysite --set-url
   --unset     remove this site's URL
   --show      say whether a URL is set (the URL itself is not printed)
   --test      send a test message to every URL this site's events use
@@ -258,7 +258,7 @@ cmd_notify() {
             mkdir -p "$GENERATED_DIR"
             install -m 600 -o root -g root /dev/null "$f"
             printf '%s\n' "$url" > "$f"
-            log_info "'$name': notification URL saved (root-only, $f) — try it with 'provision.sh notify $name --test'"
+            log_info "'$name': notification URL saved (root-only, $f) — try it with 'ddeploy notify $name --test'"
             ;;
         unset)
             rm -f "$f"

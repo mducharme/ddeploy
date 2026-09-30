@@ -74,8 +74,17 @@ sudo ./provision.sh configure               # writes provisioner.conf (domain, p
 # place a Cloudflare API token at CF_CREDENTIALS (chmod 600)
 # place a shared git SSH key at GIT_DEPLOY_KEY (chmod 600) — see "Git access"
 sudo ./provision.sh init                    # nginx/PHP/MariaDB/certbot, wildcard cert, firewall
-sudo ./provision.sh provision <name> <repo-url>   # clone, config, vhost/FPM/DB, first deploy
+ddeploy provision <name> <repo-url>         # clone, config, vhost/FPM/DB, first deploy
 ```
+
+`init` installs the **`ddeploy` command** (`/usr/local/bin/ddeploy`), so
+from then on it's `ddeploy <command>` from any directory, no `sudo`
+needed — it adds sudo itself (as `sudo <checkout>/provision.sh ...`, so
+a sudoers rule scoped to provision.sh still matches), and skips it for
+`-h`/`help`. Bash completion for commands and site names comes with it.
+`./provision.sh <command>` keeps working. On a server set up before
+this existed (or after moving the checkout): `sudo ./provision.sh
+install-cli`.
 
 `configure` + `init` are also just `./install.sh` (skips `configure` if
 `provisioner.conf` already exists).
@@ -86,6 +95,8 @@ domains, branch previews, backups, health-check paging: see
 [docs/new-project.md](docs/new-project.md).
 
 ## Commands
+
+`ddeploy <command>` (or `./provision.sh <command>` from the checkout):
 
 ```
 configure                     create/update provisioner.conf (see -h)
@@ -111,10 +122,11 @@ env <name> [KEY=value] [opts] show/edit a site's persistent .env (see -h)
 notify <name> [opts]          per-site Slack/Discord channel for deploy notifications (see -h)
 doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
 node-gc [--yes]               remove Node versions nothing uses any more (see -h)
+install-cli                   (re)install the ddeploy command + bash completion (init does this)
 ```
 
 `init`, `init-db`, `provision`, `deploy`, `remove`, `backup-uploads`,
-`backup-database`, `logs`, `env`, `notify`, `node-gc`, and the `*-preview`/`prune-previews` commands need root.
+`backup-database`, `logs`, `env`, `notify`, `node-gc`, `install-cli`, and the `*-preview`/`prune-previews` commands need root.
 
 ## Configuration
 
@@ -127,11 +139,11 @@ permanent is this":
 | `.ddev/config.yaml`                              | Real DDEV fields: `php_version`, `nodejs_version`, `docroot`, `upload_dirs`, `hooks.post-start`, `database.*` | the client's repo                      | yes — it's DDEV's own file            |
 | `.ddeploy/config.yaml`                           | ddeploy-only per-site keys that aren't real DDEV fields (below)                             | the client's repo, sibling to `.ddev/` | yes                                   |
 | `generated/<name>.yaml`                          | Sidecar ddeploy writes itself for a repo with no `.ddev/config.yaml` yet                    | this repo, on the server               | no — `generated/` is gitignored       |
-| `generated/<name>.override.yaml`                 | Operator override (`provision.sh override`, see "Overriding a project's config" below), wins over both of the above | this repo, on the server               | no — `generated/` is gitignored       |
+| `generated/<name>.override.yaml`                 | Operator override (`ddeploy override`, see "Overriding a project's config" below), wins over both of the above | this repo, on the server               | no — `generated/` is gitignored       |
 | CLI flags (`--db`, `--hostnames`, `--auth`, ...) | A one-off override for this run of `provision`, always wins                                 | the terminal                           | n/a                                   |
 
 **Precedence, per key:** CLI flag on `provision` > operator override
-(`provision.sh override`) > `.ddeploy/config.yaml` > `.ddev/config.yaml`
+(`ddeploy override`) > `.ddeploy/config.yaml` > `.ddev/config.yaml`
 (or the sidecar, whichever exists). `--db`, `--hostnames`,
 `--custom-domains`, `--upload-dirs`, `--deploy-cmd` apply on every run
 they're passed, not just the first (`provision -h`).
@@ -272,7 +284,7 @@ a warning. Invalid extra config fails `nginx -t` and the deploy aborts.
 For a change without repo write access, or without waiting on a commit:
 
 ```
-sudo ./provision.sh override <name> key=value [key=value ...]
+ddeploy override <name> key=value [key=value ...]
 ```
 
 Writes `generated/<name>.override.yaml` (server-side only). Highest
@@ -292,10 +304,10 @@ space-separated (quote the value): `additional_hostnames`,
 a command likely to contain its own spaces.
 
 ```
-sudo ./provision.sh override client "additional_hostnames=alt-name alt2"
-sudo ./provision.sh override client --show      # print current overrides
-sudo ./provision.sh override client --unset basic_auth
-sudo ./provision.sh override client --clear     # remove every override
+ddeploy override client "additional_hostnames=alt-name alt2"
+ddeploy override client --show      # print current overrides
+ddeploy override client --unset basic_auth
+ddeploy override client --clear     # remove every override
 ```
 
 ## Site lifecycle
@@ -350,10 +362,10 @@ touching the parent:
   `PRIMARY_SITE_URL` (Craft) / `APP_URL` (Laravel) is set to the
   preview's URL outright. Lives in the persistent store like any site's
   (`$PERSISTENT_ROOT/<preview>/.env`), so `deploy-preview`'s reset can't
-  touch it. Edit with `provision.sh env <preview> ...`.
+  touch it. Edit with `ddeploy env <preview> ...`.
 - `generated/<preview>.override.yaml`: a copy of the parent's operator
-  overrides (`provision.sh override`), minus hostnames. Edit with
-  `provision.sh override <preview> ...`.
+  overrides (`ddeploy override`), minus hostnames. Edit with
+  `ddeploy override <preview> ...`.
 
 A preview never inherits the parent's `additional_hostnames` /
 `additional_fqdns` (those belong to the parent's vhost); give it one
@@ -406,10 +418,10 @@ for why). Consequence: **every structurally-valid POST gets `202`**,
 correctly signed or not. A missing signature header gets a synchronous
 `401`; a present-and-wrong one (e.g. a typo'd secret) is accepted and
 rejected later, asynchronously — so the forge's delivery log shows it
-as delivered. Check `provision.sh logs webhook` instead (and turn on the
+as delivered. Check `ddeploy logs webhook` instead (and turn on the
 `webhook-rejected` notification, see "Notifications").
 
-**The webhook log** (`provision.sh logs webhook [-n N] [-f]`, file
+**The webhook log** (`ddeploy logs webhook [-n N] [-f]`, file
 `logs/webhook.log`) has one line per delivery and one per action it led
 to, tagged with the forge's delivery id (first 8 chars — the same id
 GitHub/Bitbucket show in their webhook UI):
@@ -425,7 +437,7 @@ GitHub/Bitbucket show in their webhook UI):
 ```
 
 A failed action logs `FAILED (exit N, 12s)` with the tail of the site's
-own log; `provision.sh logs <site>` has the full build output. Requests
+own log; `ddeploy logs <site>` has the full build output. Requests
 refused before they're queued (no signature header, oversized body)
 only show up in `journalctl -u ddeploy-hook`.
 
@@ -482,11 +494,11 @@ If `PREVIEW_COMMENT_CREDENTIALS` is set (chmod 600, `GITHUB_TOKEN` and/or
 posts/updates a PR comment `Preview: https://<slug>.$BASE_DOMAIN`. A
 failed comment is a warning, not a failed deploy.
 
-`provision.sh logs <name> [-n N] [-f]`, `provision.sh preview-url
+`ddeploy logs <name> [-n N] [-f]`, `ddeploy preview-url
 <project> <branch>` — useful when CI is the deploy trigger instead of
 the webhook.
 
-`provision.sh deploy` over SSH is still valid. For repos that can't use
+`ddeploy deploy` over SSH is still valid. For repos that can't use
 an org/workspace webhook:
 `[examples/ci/github-action](examples/ci/github-action/action.yml)` or
 `[examples/ci/bitbucket-pipelines.yml](examples/ci/bitbucket-pipelines.yml)`.
@@ -497,7 +509,7 @@ By default a site tracks whatever branch it was cloned on (the remote's
 default). To pin a specific branch instead:
 
 ```
-provision.sh provision <name> --branch develop
+ddeploy provision <name> --branch develop
 ```
 
 Saved server-side, not in the client's repo; takes effect immediately.
@@ -571,11 +583,11 @@ renames it over the path replaces the link with a plain file in that
 one release — the next deploy re-links it and your edit is gone. Use:
 
 ```
-sudo ./provision.sh env <name>                        # show (secrets masked; --reveal for all)
-sudo ./provision.sh env <name> KEY=value OTHER=value  # set
-sudo ./provision.sh env <name> --unset KEY
-sudo ./provision.sh env <name> --edit                 # $EDITOR on the real file
-sudo ./provision.sh env <name> --path                 # where it really is
+ddeploy env <name>                        # show (secrets masked; --reveal for all)
+ddeploy env <name> KEY=value OTHER=value  # set
+ddeploy env <name> --unset KEY
+ddeploy env <name> --edit                 # $EDITOR on the real file
+ddeploy env <name> --path                 # where it really is
 ```
 
 Or edit `$PERSISTENT_ROOT/<name>/.env` directly. Changes are live on
@@ -631,7 +643,7 @@ Dumps older than `DB_BACKUP_RETENTION_DAYS` (default 7) pruned each run.
 `init` installs `rclone`/`cron` and writes
 `/etc/cron.d/ddeploy-backup-uploads` / `-database` (root). Not in
 `crontab -l` for any user — check `cat
-/etc/cron.d/ddeploy-backup-uploads` or `sudo ./provision.sh doctor`.
+/etc/cron.d/ddeploy-backup-uploads` or `ddeploy doctor`.
 
 Both skip shared-mode previews (uploads/database are the parent's).
 
@@ -679,7 +691,7 @@ See "Notifications."
 Set `NOTIFY_WEBHOOK` (`provisioner.conf`) to a Slack incoming webhook
 (Slack → Apps → Incoming Webhooks → pick a channel → copy the URL), a
 Discord webhook, or any URL accepting a JSON POST. Credential — don't
-commit it. Empty (default) is off. Try it: `provision.sh notify --test`.
+commit it. Empty (default) is off. Try it: `ddeploy notify --test`.
 
 `NOTIFY_EVENTS` picks what's sent (default: all of them):
 
@@ -700,9 +712,9 @@ flat JSON object (`text`, `content`, `event`, `site`, `status`, ...).
 its own — a client's, say — on top of the server-wide one:
 
 ```
-echo "$SLACK_URL" | sudo ./provision.sh notify <name> --set-url   # or run it and paste at the prompt
-sudo ./provision.sh notify <name> --test
-sudo ./provision.sh notify <name> --unset
+echo "$SLACK_URL" | ddeploy notify <name> --set-url   # or run it and paste at the prompt
+ddeploy notify <name> --test
+ddeploy notify <name> --unset
 ```
 
 Stored root-only in `generated/<name>.notify-url` (read from stdin so it
@@ -764,7 +776,7 @@ when missing** (never overwritten, so an existing `.env` is left alone):
 `CRAFT_APP_ID`, `CRAFT_SECURITY_KEY` (random), `CRAFT_ENVIRONMENT=staging`,
 `PRIMARY_SITE_URL=https://<name>.$BASE_DOMAIN`. If the database comes
 from another environment, set that environment's security key
-(`provision.sh env <name> CRAFT_SECURITY_KEY=...`) — anything Craft
+(`ddeploy env <name> CRAFT_SECURITY_KEY=...`) — anything Craft
 encrypted with the old one won't decrypt otherwise.
 
 **Lost the `.env`, or the password in it?** Re-run `provision <name>`
@@ -805,7 +817,7 @@ just works.
 
 **Which Node version**, first match wins:
 
-1. `provision.sh override <name> nodejs_version=20`
+1. `ddeploy override <name> nodejs_version=20`
 2. `nodejs_version` in `.ddeploy/config.yaml`
 3. `nodejs_version` in `.ddev/config.yaml` (DDEV's `auto`, or empty,
    falls through to the next)
@@ -986,7 +998,7 @@ Set the domain's SSL/TLS mode to "Full (strict)" in Cloudflare once
 ```
 bootstrap.sh               deploy user + packages + clone, for a droplet with nothing on it yet
 install.sh                 configure (if needed) + init, chained for a fresh server
-provision.sh               entrypoint
+provision.sh               entrypoint (`ddeploy` in /usr/local/bin runs this — see "Quickstart")
 provisioner.example.conf   tracked template; `configure` copies it to provisioner.conf
 provisioner.conf           per-server config, gitignored — created by `configure`
 manifest.example           tracked template; copy to manifest yourself if you want it

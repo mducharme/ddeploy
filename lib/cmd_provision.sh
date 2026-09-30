@@ -5,7 +5,7 @@
 
 usage_provision() {
     cat <<'EOF'
-usage: provision.sh provision <name> [repo-url] [options]
+usage: ddeploy provision <name> [repo-url] [options]
 
 options:
   --non-interactive        never prompt; error if required info is missing

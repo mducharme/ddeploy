@@ -7,7 +7,7 @@
 
 usage_doctor() {
     cat <<'EOF'
-usage: provision.sh doctor [name]
+usage: ddeploy doctor [name]
 
 Read-only checks (nginx, PHP-FPM, database reachability, disk space,
 certificate expiry, Node toolchain and each site's last frontend

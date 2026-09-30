@@ -48,6 +48,24 @@ assert_cmd_ok "ops nginx extra dir exists (root-owned, not from a client repo)" 
 hook_health="$(curl -fsSk --resolve "hooks.staging.ddeploy.test:443:127.0.0.1" "https://hooks.staging.ddeploy.test/health")"
 assert_contains "$hook_health" "ok" "webhook /health through the vhost"
 
+step "init: the ddeploy command"
+assert_cmd_ok "ddeploy installed, root-owned, executable" test -x /usr/local/bin/ddeploy
+[[ "$(stat -c %U /usr/local/bin/ddeploy)" == "root" ]] && pass "ddeploy wrapper is root-owned" || fail "ddeploy wrapper owned by $(stat -c %U /usr/local/bin/ddeploy)"
+assert_file_exists /etc/bash_completion.d/ddeploy "bash completion installed"
+out="$(cd / && ddeploy list 2>&1)"
+assert_not_contains "$out" "error" "ddeploy runs the checkout from any directory"
+out="$(sudo -u deploy ddeploy --help 2>&1)"
+assert_contains "$out" "usage: ddeploy" "help works for a non-root user without sudo"
+# A sudoers rule scoped to provision.sh alone (the kind a CI deploy key
+# gets) must keep matching when going through the wrapper — it sudo's
+# provision.sh itself, never the wrapper.
+echo 'deploy ALL=(root) NOPASSWD: /opt/ddeploy/provision.sh' > /etc/sudoers.d/ddeploy-test
+chmod 440 /etc/sudoers.d/ddeploy-test
+assert_cmd_ok "non-root ddeploy re-runs itself through a provision.sh-scoped sudo rule" sudo -u deploy ddeploy list
+rm -f /etc/sudoers.d/ddeploy-test
+completions="$(bash -c 'source /etc/bash_completion.d/ddeploy; COMP_WORDS=(ddeploy dep); COMP_CWORD=1; _ddeploy; echo "${COMPREPLY[*]}"')"
+assert_contains "$completions" "deploy-preview" "completion offers commands from the live usage text"
+
 step "init: idempotent re-run"
 before="$(md5sum /etc/nginx/htpasswd/default | cut -d' ' -f1)"
 ./provision.sh init

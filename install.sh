@@ -37,4 +37,4 @@ echo "== sudo ./provision.sh init =="
 sudo ./provision.sh init
 
 echo
-echo "Done. Next: sudo ./provision.sh provision <name> <repo-url>"
+echo "Done. The ddeploy command is installed — next: ddeploy provision <name> <repo-url>"

@@ -14,7 +14,7 @@ unconditionally: the backup-uploads/backup-database/prune-previews cron
 entries `init` writes, and the webhook worker's systemd unit
 (`ddeploy-hook-worker.service` — the listener itself is unprivileged and
 runs a copy at `/usr/local/lib/ddeploy/listener.py`, not this checkout,
-but the worker that actually runs `provision.sh deploy` on a queued job
+but the worker that actually runs `ddeploy deploy` on a queued job
 is root).
 
 If this tree were writable by `deploy` or by whatever SSHes in to

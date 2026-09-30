@@ -6,7 +6,7 @@
 
 usage_provision_preview() {
     cat <<'EOF'
-usage: provision.sh provision-preview <project> <branch> [repo-url] [options]
+usage: ddeploy provision-preview <project> <branch> [repo-url] [options]
 
 repo-url is only needed when it can't be inferred: it's read from the
 parent project's own git remote if already provisioned, else looked up
@@ -27,7 +27,7 @@ EOF
 
 usage_remove_preview() {
     cat <<'EOF'
-usage: provision.sh remove-preview <project> <branch> [--purge-db] [--purge-files]
+usage: ddeploy remove-preview <project> <branch> [--purge-db] [--purge-files]
 
 --purge-db is only honored for an isolated-mode preview (it has its own
 database to drop); for a shared-mode preview it's a no-op — that
@@ -39,7 +39,7 @@ EOF
 
 usage_preview_url() {
     cat <<'EOF'
-usage: provision.sh preview-url <project> <branch>
+usage: ddeploy preview-url <project> <branch>
 
 Print https://<slug>.$BASE_DOMAIN for this pair. The preview does not
 have to exist — the name is the same one provision-preview would use.
@@ -204,7 +204,7 @@ cmd_deploy_preview() {
     local started="$SECONDS"
 
     local project="${1:-}" branch="${2:-}" if_changed=0
-    [[ -n "$project" && -n "$branch" ]] || die "usage: provision.sh deploy-preview <project> <branch> [--if-changed]"
+    [[ -n "$project" && -n "$branch" ]] || die "usage: ddeploy deploy-preview <project> <branch> [--if-changed]"
     if [[ "${3:-}" == "--if-changed" ]]; then
         if_changed=1
     fi

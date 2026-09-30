@@ -22,7 +22,7 @@ NODE_GC_GRACE_MINUTES=60
 
 usage_node_gc() {
     cat <<'EOF'
-usage: provision.sh node-gc [--yes]
+usage: ddeploy node-gc [--yes]
 
 Removes Node versions under NVM_ROOT that no site, provisioner.conf
 default, queue worker/schedule wrapper, or running process uses, and

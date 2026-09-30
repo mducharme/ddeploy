@@ -17,7 +17,7 @@ OVERRIDE_ARRAY_KEYS="additional_hostnames additional_fqdns persistent_files auth
 
 usage_override() {
     cat <<EOF
-usage: provision.sh override <name> [key=value ...] [options]
+usage: ddeploy override <name> [key=value ...] [options]
 
 Sets an operator-side override for .ddeploy/config.yaml-style settings —
 server-side only, never written into the client repo. Always wins over
@@ -134,7 +134,7 @@ cmd_override() {
             key="${kv%%=*}"
             val="${kv#*=}"
             kind="$(override_key_kind "$key")"
-            [[ -n "$kind" ]] || die "unknown override key '$key' — see 'provision.sh override -h' for the supported list"
+            [[ -n "$kind" ]] || die "unknown override key '$key' — see 'ddeploy override -h' for the supported list"
             if [[ "$kind" == "array" ]]; then
                 local -a items=()
                 read -ra items <<< "$val"
@@ -150,7 +150,7 @@ cmd_override() {
         done
         for key in "${unsets[@]}"; do
             kind="$(override_key_kind "$key")"
-            [[ -n "$kind" ]] || die "unknown override key '$key' — see 'provision.sh override -h' for the supported list"
+            [[ -n "$kind" ]] || die "unknown override key '$key' — see 'ddeploy override -h' for the supported list"
             yq eval -i "del(.${key})" "$f"
             log_info "'$name': unset override $key"
         done

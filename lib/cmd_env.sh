@@ -10,7 +10,7 @@
 
 usage_env() {
     cat <<'EOF'
-usage: provision.sh env <name> [KEY=value ...] [options]
+usage: ddeploy env <name> [KEY=value ...] [options]
 
 Reads or changes <name>'s .env — the persistent copy under
 PERSISTENT_ROOT that every release symlinks to, so a change survives
@@ -48,9 +48,9 @@ env_file_for_site() {
         return
     fi
     if [[ -e "$link" && ! -L "$link" ]]; then
-        die "'$name' has a .env, but it's a plain file in the checkout, not in the persistent store — a deploy would lose edits to it. Redeploy '$name' first (deploy / deploy-preview re-link it), or add .env to persistent_files ('provision.sh override $name persistent_files=.env')"
+        die "'$name' has a .env, but it's a plain file in the checkout, not in the persistent store — a deploy would lose edits to it. Redeploy '$name' first (deploy / deploy-preview re-link it), or add .env to persistent_files ('ddeploy override $name persistent_files=.env')"
     fi
-    die "'$name' has no persistent .env — its db_env_scheme keeps credentials elsewhere. Add it with 'provision.sh override $name persistent_files=.env' and redeploy"
+    die "'$name' has no persistent .env — its db_env_scheme keeps credentials elsewhere. Add it with 'ddeploy override $name persistent_files=.env' and redeploy"
 }
 
 # The Linux user PHP-FPM runs as for $1 — the parent's for a shared-mode

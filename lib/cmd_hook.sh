@@ -5,7 +5,7 @@
 # parsed internal job, never from forge JSON directly.
 #
 # Every delivery and every action it leads to gets a line in
-# logs/webhook.log (`provision.sh logs webhook`), tagged with a short
+# logs/webhook.log (`ddeploy logs webhook`), tagged with a short
 # delivery id so one push's lines can be followed through: received ->
 # verified/rejected/ignored -> per-site skip/deploy OK/FAILED.
 
@@ -179,7 +179,7 @@ hook_run_site() {
             hook_log info "$label $site: OK${sha:+ @ $sha} (${took}s)"
         fi
     else
-        hook_log error "$label $site: FAILED (exit $rc, ${took}s) — $(notify_log_snippet "$LOG_DIR/$site.log") — full log: provision.sh logs $site"
+        hook_log error "$label $site: FAILED (exit $rc, ${took}s) — $(notify_log_snippet "$LOG_DIR/$site.log") — full log: ddeploy logs $site"
     fi
     return "$rc"
 }

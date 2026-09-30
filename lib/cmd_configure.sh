@@ -12,7 +12,7 @@
 
 usage_configure() {
     cat <<'EOF'
-usage: provision.sh configure [backups|webhook]
+usage: ddeploy configure [backups|webhook]
 
 (no argument) Creates ./provisioner.conf from provisioner.example.conf
 (if it doesn't exist yet) and interactively sets the fields provision.sh
@@ -187,7 +187,7 @@ EOF
     echo
     log_info "wrote $target"
     log_info "next: sudo ./provision.sh init (installs rclone + the backup cron entries), then a project needs upload_dirs: declared (.ddev/config.yaml or --upload-dirs) before backup-uploads does anything for it — backup-database needs no per-project config"
-    log_info "test on demand any time: sudo ./provision.sh backup-uploads <name> / backup-database <name>"
+    log_info "test on demand any time: ddeploy backup-uploads <name> / backup-database <name>"
 }
 
 cmd_configure_webhook() {

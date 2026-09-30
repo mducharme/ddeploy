@@ -13,13 +13,13 @@ see README "Quickstart"). A few features here are **server-wide,
 one-time settings** (enable once in `provisioner.conf`, then every
 project on the box gets them, usually via a `provision.sh configure
 <area>` wizard); others are **per-project config**, set either in the
-client repo itself or, without touching the repo at all, via `provision.sh
+client repo itself or, without touching the repo at all, via `ddeploy
 override` (step 3). Each step below says which.
 
 ## 1. Provision the site
 
 ```
-sudo ./provision.sh provision <name> <repo-url>
+ddeploy provision <name> <repo-url>
 ```
 
 `<name>` becomes `<name>.$BASE_DOMAIN`, the Linux username suffix
@@ -92,7 +92,7 @@ immediately, an extra hostname needs adding before the dev team gets to
 it:
 
 ```
-sudo ./provision.sh override <name> basic_auth=true "additional_hostnames=alt1 alt2"
+ddeploy override <name> basic_auth=true "additional_hostnames=alt1 alt2"
 ```
 
 Server-side only (`generated/<name>.override.yaml`), never written into
@@ -129,7 +129,7 @@ no risk of a stale value fighting a later `git pull` on the ddeploy
 checkout itself:
 
 ```
-sudo ./provision.sh provision <name> --branch develop
+ddeploy provision <name> --branch develop
 ```
 
 The next deploy switches onto it. `--clear-branch` removes the override.
@@ -157,7 +157,7 @@ opened/synced/closed drives branch previews (step 7) the same way.
 
 Can't use an org-wide webhook for this particular repo (different org,
 client-controlled CI, etc.)? Use the SSH escape hatch instead —
-`provision.sh deploy` over SSH is always valid, and
+`ddeploy deploy` over SSH is always valid, and
 [examples/ci/github-action](../examples/ci/github-action/action.yml) /
 [examples/ci/bitbucket-pipelines.yml](../examples/ci/bitbucket-pipelines.yml)
 wrap it for a repo's own CI pipeline.
@@ -190,7 +190,7 @@ Nothing to configure to get previews at all; two optional add-ons:
   — the normal cleanup path (`remove-preview` on PR close) already
   handles the common case; this is the safety net.
 
-CI-triggered instead of the webhook? `provision.sh preview-url <project>
+CI-triggered instead of the webhook? `ddeploy preview-url <project>
 <branch>` prints the same URL the PR comment would, so your own pipeline
 can post it itself.
 
@@ -218,7 +218,7 @@ and one bucket (with a `<name>/` prefix per site) covers every project.
 
 Either way, re-run `init` — it installs `rclone` and `cron` itself, and
 writes the schedule to `/etc/cron.d/ddeploy-backup-uploads` / `-database`
-(root, not any user's `crontab -l` — check `sudo ./provision.sh doctor`
+(root, not any user's `crontab -l` — check `ddeploy doctor`
 or `cat` the file directly).
 
 **Per-project, for uploads only:** declare `upload_dirs:` in
@@ -258,7 +258,7 @@ backup cron, or `prune-previews` pages it (the same command+site won't
 repage until `NOTIFY_COOLDOWN` seconds pass, default 3600). The same URL
 also gets deploy successes/failures, previews coming and going, and
 rejected webhooks (`NOTIFY_EVENTS`), and a site can have a channel of
-its own (`provision.sh notify <name> --set-url`). See README "Health
+its own (`ddeploy notify <name> --set-url`). See README "Health
 check" / "Notifications".
 
 ## Checklist: verify each feature actually works
@@ -280,12 +280,12 @@ check" / "Notifications".
 - [ ] Open a test PR → a preview appears at
       `https://<project>-<branch-slug>.$BASE_DOMAIN` within a few
       seconds, and (if configured) a comment lands on the PR
-- [ ] `sudo ./provision.sh backup-uploads <name>` /
+- [ ] `ddeploy backup-uploads <name>` /
       `backup-database <name>` — check the bucket for
       `<bucket>/<name>/...`
-- [ ] `sudo ./provision.sh override <name> basic_auth=true && sudo
-      ./provision.sh deploy <name>` then confirm the site now requires
+- [ ] `ddeploy override <name> basic_auth=true && sudo
+      ddeploy deploy <name>` then confirm the site now requires
       auth, without touching the repo — `--clear` it afterward
-- [ ] `sudo ./provision.sh doctor <name>` — every line `[ok]`
-- [ ] `sudo ./provision.sh list` — confirms mode, DB, and (for previews)
+- [ ] `ddeploy doctor <name>` — every line `[ok]`
+- [ ] `ddeploy list` — confirms mode, DB, and (for previews)
       parent resolution all look right

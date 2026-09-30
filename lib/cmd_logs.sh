@@ -7,7 +7,7 @@
 
 usage_logs() {
     cat <<'EOF'
-usage: provision.sh logs <name> [-n lines] [-f]
+usage: ddeploy logs <name> [-n lines] [-f]
 
 Print the last lines of logs/<name>.log (provision/deploy/preview for a
 site, or backup-uploads / backup-database / prune-previews for fleet

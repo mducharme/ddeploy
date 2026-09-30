@@ -270,7 +270,7 @@ upload_dir_url_path() {
 # from DDEV's tooling) — so nothing already relying on that breaks.
 ext_config_path() { echo "$(config_checkout_dir "$1")/.ddeploy/config.yaml"; }
 
-# Operator-side override (`provision.sh override`, see README "Overriding
+# Operator-side override (`ddeploy override`, see README "Overriding
 # a project's config without touching the repo") — same key vocabulary
 # as .ddeploy/config.yaml, but lives server-side under $GENERATED_DIR,
 # never in the client's checkout. Highest precedence of the three: an

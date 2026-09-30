@@ -48,6 +48,8 @@ source "$LIB_DIR/hook.sh"
 source "$LIB_DIR/notify.sh"
 # shellcheck source=lib/preview_comment.sh
 source "$LIB_DIR/preview_comment.sh"
+# shellcheck source=lib/cli.sh
+source "$LIB_DIR/cli.sh"
 # shellcheck source=lib/cmd_configure.sh
 source "$LIB_DIR/cmd_configure.sh"
 # shellcheck source=lib/cmd_init.sh
@@ -114,7 +116,7 @@ run_notifying() {
         (
             load_conf
             notify_event deploy-failure "$site" "$site: $label FAILED" \
-                "${err}"$'\n'"Took $((SECONDS - started))s — $(notify_trigger)"$'\n'"Full log: provision.sh logs $site"
+                "${err}"$'\n'"Took $((SECONDS - started))s — $(notify_trigger)"$'\n'"Full log: ddeploy logs $site"
         ) || true
     fi
     rm -f "$errlog"
@@ -144,17 +146,17 @@ notify_site_arg() {
 
 usage() {
     cat <<'EOF'
-usage: provision.sh <command> [args]
+usage: ddeploy <command> [args]
 
 commands:
   configure                     create/update provisioner.conf (see -h)
   init                          set up a web server (packages, PHP, TLS, firewall)
   init-db                       set up a dedicated database server
-  provision <name> [repo-url]   stand up a site (see: provision.sh provision -h)
+  provision <name> [repo-url]   stand up a site (see: ddeploy provision -h)
   override <name> [opts]        operator-side config override, no repo access needed (see -h)
   env <name> [KEY=value] [opts] show/edit a site's persistent .env (see -h)
   deploy <name> [opts]          new release + re-apply vhost/FPM config + replay hooks (see -h)
-  remove <name> [opts]          disable a site (see: provision.sh remove -h)
+  remove <name> [opts]          disable a site (see: ddeploy remove -h)
   list                          table of provisioned sites
   provision-all                 provision every site in ./manifest
   deploy-all                    deploy every provisioned site
@@ -171,6 +173,7 @@ commands:
   notify <name> [opts]          per-site Slack/Discord webhook for deploy notifications (see -h)
   doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
   node-gc [--yes]               remove Node versions nothing uses any more (see -h)
+  install-cli                   (re)install the ddeploy command + bash completion (init does this too)
   hook-worker                   drain the git-push webhook queue (systemd; not an operator command)
 EOF
 }
@@ -205,6 +208,7 @@ main() {
         notify)         cmd_notify "$@" ;;
         doctor)         cmd_doctor "$@" ;;
         node-gc)        cmd_node_gc "$@" ;;
+        install-cli)    cmd_install_cli "$@" ;;
         hook-worker)    cmd_hook_worker "$@" ;;
         -h|--help|help|"") usage ;;
         *) usage; die "unknown command: $cmd" ;;

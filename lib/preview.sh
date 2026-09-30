@@ -141,7 +141,7 @@ resolve_preview_config() {
 # a copy of the parent's operator overrides — so a preview behaves like
 # its parent by default (same basic_auth, php_ini-free knobs, build
 # settings...) but can then be tuned on its own with
-# `provision.sh override <preview> ...` without touching the parent.
+# `ddeploy override <preview> ...` without touching the parent.
 # Never overwrites an existing file (a re-run of provision-preview keeps
 # whatever the operator changed). The parent's hostnames/fqdns are
 # dropped — they belong to the parent's vhost.
@@ -156,7 +156,7 @@ seed_preview_override() {
     else
         echo "{}" > "$own"
     fi
-    log_info "'$name': created its own override file from '$project's (edit with 'provision.sh override $name ...')"
+    log_info "'$name': created its own override file from '$project's (edit with 'ddeploy override $name ...')"
 }
 
 # --- the preview's own credential file (.env / config.local.json) -----
@@ -178,7 +178,7 @@ db_password_key_for_scheme() {
 
 # Links the preview's credential file into the persistent store (so
 # `git reset --hard` on deploy-preview, or anything else touching the
-# checkout, can't lose it, and `provision.sh env <preview>` edits it like
+# checkout, can't lose it, and `ddeploy env <preview>` edits it like
 # any other site's) and — the first time only — seeds it with a copy of
 # the parent's, so the preview gets every non-DB setting the parent has
 # (CRAFT_SECURITY_KEY, mail config, API keys, ...) instead of a bare

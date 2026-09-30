@@ -295,5 +295,8 @@ EOF
         log_info "PREVIEW_PRUNE_ENABLED=false — skipping preview-prune cron"
     fi
 
-    log_info "init complete."
+    log_info "== ddeploy command =="
+    install_cli
+
+    log_info "init complete — from here on, 'ddeploy <command>' works from anywhere (e.g. ddeploy provision <name> <repo-url>)"
 }

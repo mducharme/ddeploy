@@ -5,7 +5,7 @@
 
 usage_remove() {
     cat <<'EOF'
-usage: provision.sh remove <name> [--purge-db] [--purge-files] [--purge-persistent]
+usage: ddeploy remove <name> [--purge-db] [--purge-files] [--purge-persistent]
 
 By default only disables/removes the vhost and FPM pool. Add --purge-db
 to drop the database and DB user, --purge-files to delete the site

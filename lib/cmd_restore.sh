@@ -5,7 +5,7 @@
 
 usage_restore_uploads() {
     cat <<'EOF'
-usage: provision.sh restore-uploads <name> --yes
+usage: ddeploy restore-uploads <name> --yes
 
 Downloads the current backed-up state of <name>'s upload_dirs, OVERWRITING
 whatever's on local disk now. Without --yes, shows what would be restored
@@ -15,7 +15,7 @@ EOF
 
 usage_restore_database() {
     cat <<'EOF'
-usage: provision.sh restore-database <name> [--from <filename> | --from-file <path>] --yes
+usage: ddeploy restore-database <name> [--from <filename> | --from-file <path>] --yes
 
 Restores a database dump, OVERWRITING the current database.
 

@@ -9,8 +9,8 @@
 
 usage_deploy() {
     cat <<'EOF'
-usage: provision.sh deploy <name> [--rollback [<sha>] | --if-changed]
-       provision.sh deploy <name> --history
+usage: ddeploy deploy <name> [--rollback [<sha>] | --if-changed]
+       ddeploy deploy <name> --history
 
 options:
   --rollback [<sha>]   instead of pulling, retarget `current` at <sha> (or,

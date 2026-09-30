@@ -93,6 +93,7 @@ Done. Next, as the deploy user:
   ./install.sh
 
 That runs 'sudo provision.sh configure' (interactive — domain, paths, PHP
-versions) and then 'sudo provision.sh init'. Updating ddeploy's own code
+versions) and then 'sudo provision.sh init', which installs the
+'ddeploy' command — use that from then on. Updating ddeploy's own code
 later is 'sudo git -C $target_dir pull' — deliberately a root-only step.
 EOF

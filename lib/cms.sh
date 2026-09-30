@@ -112,8 +112,8 @@ seed_cms_env() {
     esac
 
     [[ "${#added[@]}" -gt 0 ]] || return 0
-    log_info "'$name': added missing .env keys: ${added[*]} (values not logged — see 'provision.sh env $name --show')"
+    log_info "'$name': added missing .env keys: ${added[*]} (values not logged — see 'ddeploy env $name --show')"
     if [[ " ${added[*]} " == *" CRAFT_SECURITY_KEY "* ]]; then
-        log_warn "'$name': generated a fresh CRAFT_SECURITY_KEY — if you import a database from another environment, set that environment's key instead ('provision.sh env $name CRAFT_SECURITY_KEY=...') or anything Craft encrypted won't decrypt"
+        log_warn "'$name': generated a fresh CRAFT_SECURITY_KEY — if you import a database from another environment, set that environment's key instead ('ddeploy env $name CRAFT_SECURITY_KEY=...') or anything Craft encrypted won't decrypt"
     fi
 }
