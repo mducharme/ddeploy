@@ -154,7 +154,8 @@ def serve() -> None:
     spool.mkdir(parents=True, exist_ok=True)
 
     httpd = ThreadingHTTPServer((host, port), HookHandler)
-    _log("listening on %s spool=%s (unverified — real HMAC check happens in hook-worker)" % (listen, spool))
+    _log("listening on %s spool=%s (unverified — real HMAC check happens"
+         " in hook-worker)" % (listen, spool))
     httpd.serve_forever()
 
 
