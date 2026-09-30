@@ -245,6 +245,38 @@ EOF
     done
 }
 
+# 404s node_modules/ and package-manager manifests for every package.json
+# that nginx could otherwise serve: the repo root's when the docroot IS
+# the repo root, and build.path's or the docroot's own when they sit
+# under it. Normally node_modules is gone after a build anyway
+# (lib/node.sh) — this covers keep_node_modules, a hook that runs npm
+# itself, and the manifests, which list exact dependency versions.
+# `return` (rewrite phase), so no fallthrough to the front controller.
+build_node_deny_block() {
+    local name="$1"
+    local checkout; checkout="$(site_dir "$name")"
+    local doc="${DOCROOT%/}" build_path="${BUILD_PATH:-}" d rel url re seen=" "
+    for d in "" "${build_path%/}" "$doc"; do
+        [[ -f "$checkout${d:+/$d}/package.json" ]] || continue
+        if [[ -z "$doc" ]]; then
+            rel="$d"
+        elif [[ "$d" == "$doc" ]]; then
+            rel=""
+        elif [[ "$d" == "$doc"/* ]]; then
+            rel="${d#"$doc"/}"
+        else
+            continue
+        fi
+        url="/${rel:+$rel/}"
+        [[ "$url" =~ ^/[A-Za-z0-9._/-]*$ ]] || continue
+        [[ "$seen" == *" $url "* ]] && continue
+        seen+="$url "
+        re="${url//./\\.}"
+        printf '    location ^~ %snode_modules/ { return 404; }\n' "$url"
+        printf '    location ~ ^%s(?:package\\.json|package-lock\\.json|npm-shrinkwrap\\.json|pnpm-lock\\.yaml|pnpm-workspace\\.yaml|yarn\\.lock)$ { return 404; }\n' "$re"
+    done
+}
+
 # Static-asset expires. We own the extension regex; the client only
 # picks the duration. `expires` sets Cache-Control, so this location
 # does not use add_header (which would drop the server-level security
@@ -296,6 +328,7 @@ install_vhost() {
     local security_headers_block; security_headers_block="$(build_security_headers_block)"
     local redirects_block; redirects_block="$(build_redirects_block)"
     local deny_php_block; deny_php_block="$(build_deny_php_block)"
+    local node_deny_block; node_deny_block="$(build_node_deny_block "$name")"
     local static_cache_block; static_cache_block="$(build_static_cache_block)"
     local ops_extra_block; ops_extra_block="$(build_ops_extra_block "$name")"
 
@@ -303,8 +336,8 @@ install_vhost() {
         "NAME=$name" "SERVER_NAMES=$server_names" "ROOT=$root" "CERT_NAME=$BASE_DOMAIN" \
         "AUTH_BLOCK=$auth_block" "MAX_BODY_SIZE=$max_body_size" "AUTH_MAP_BLOCK=$auth_map_block" \
         "SECURITY_HEADERS_BLOCK=$security_headers_block" "REDIRECTS_BLOCK=$redirects_block" \
-        "DENY_PHP_BLOCK=$deny_php_block" "STATIC_CACHE_BLOCK=$static_cache_block" \
-        "OPS_EXTRA_BLOCK=$ops_extra_block"
+        "DENY_PHP_BLOCK=$deny_php_block" "NODE_DENY_BLOCK=$node_deny_block" \
+        "STATIC_CACHE_BLOCK=$static_cache_block" "OPS_EXTRA_BLOCK=$ops_extra_block"
 
     ln -sf "/etc/nginx/sites-available/$name.conf" "/etc/nginx/sites-enabled/$name.conf"
     nginx -t

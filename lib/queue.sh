@@ -20,17 +20,18 @@
 WORKER_UNIT_DIR="/etc/systemd/system"
 SCHEDULE_CRON_DIR="/etc/cron.d"
 
-# $1 script path  $2 site dir (cd target)  $3 raw command  $4 PHP shim
-# dir  $5 HOME. Root-owned; systemd's User=/cron's own user field — not
-# this script — is what actually drops privileges to www-<name>.
+# $1 script path  $2 site dir (cd target)  $3 raw command  $4 PATH
+# (toolchain_path — PHP shim + Node, lib/node.sh)  $5 HOME. Root-owned;
+# systemd's User=/cron's own user field — not this script — is what
+# actually drops privileges to www-<name>.
 write_worker_script() {
-    local path="$1" dir="$2" cmd="$3" shim="$4" home="$5"
+    local path="$1" dir="$2" cmd="$3" toolpath="$4" home="$5"
     cat > "$path" <<EOF
 #!/bin/bash
 set -e
 cd '$dir'
 export HOME='$home'
-export PATH='$shim:/usr/bin:/bin'
+export PATH='$toolpath'
 $cmd
 EOF
     chmod 755 "$path"
@@ -44,13 +45,14 @@ install_queue_workers() {
     local name="$1" php="$2" dir="$3" exec_user="$4" exec_group="$5" home="$6"
     shift 6
     local -a workers=("$@")
-    local shim; shim="$(ensure_php_shim "$php")"
+    prepare_site_node "$name"
+    local toolpath; toolpath="$(toolchain_path "$php")"
 
     local i script unit
     for ((i = 0; i < ${#workers[@]}; i++)); do
         script="$GENERATED_DIR/$name.worker-$i.sh"
         unit="$WORKER_UNIT_DIR/ddeploy-worker-$name-$i.service"
-        write_worker_script "$script" "$dir" "${workers[$i]}" "$shim" "$home"
+        write_worker_script "$script" "$dir" "${workers[$i]}" "$toolpath" "$home"
         render_template "$PROVISIONER_DIR/templates/queue-worker.service.tmpl" "$unit" \
             "NAME=$name" "INDEX=$i" "POOL_USER=$exec_user" "POOL_GROUP=$exec_group" "WRAPPER=$script"
     done
@@ -118,7 +120,8 @@ install_schedule() {
         return 0
     fi
 
-    local shim; shim="$(ensure_php_shim "$php")"
+    prepare_site_node "$name"
+    local toolpath; toolpath="$(toolchain_path "$php")"
     local tmp; tmp="$(mktemp)"
     local i entry cron cmd script
     for ((i = 0; i < ${#entries[@]}; i++)); do
@@ -126,7 +129,7 @@ install_schedule() {
         cron="${entry%%$'\t'*}"
         cmd="${entry#*$'\t'}"
         script="$GENERATED_DIR/$name.schedule-$i.sh"
-        write_worker_script "$script" "$dir" "$cmd" "$shim" "$home"
+        write_worker_script "$script" "$dir" "$cmd" "$toolpath" "$home"
         # NOT `<user>` as the cron.d field directly — www-<name> is
         # created with --shell /usr/sbin/nologin (lib/vhost.sh), and cron
         # silently refuses to exec anything for a user whose shell isn't

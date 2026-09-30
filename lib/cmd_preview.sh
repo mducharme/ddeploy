@@ -55,6 +55,13 @@ cmd_preview_url() {
     preview_url "$project" "$branch"
 }
 
+# The commit a preview's last successful provision/deploy finished at —
+# see cmd_deploy_preview's --if-changed check.
+preview_deployed_path() { echo "$GENERATED_DIR/$1.deployed-sha"; }
+record_preview_deployed() {
+    git -c safe.directory='*' -C "$2" rev-parse HEAD > "$(preview_deployed_path "$1")"
+}
+
 cmd_provision_preview() {
     [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage_provision_preview; return 0; }
     load_conf
@@ -173,6 +180,7 @@ cmd_provision_preview() {
     trap - EXIT
     run_ops_hooks "post-provision" "$name" "$dir" "$PHP_VERSION"
 
+    record_preview_deployed "$name" "$dir"
     log_info "provisioned preview ($mode): https://$name.$BASE_DOMAIN"
 }
 
@@ -180,8 +188,11 @@ cmd_deploy_preview() {
     load_conf
     require_root
 
-    local project="${1:-}" branch="${2:-}"
-    [[ -n "$project" && -n "$branch" ]] || die "usage: provision.sh deploy-preview <project> <branch>"
+    local project="${1:-}" branch="${2:-}" if_changed=0
+    [[ -n "$project" && -n "$branch" ]] || die "usage: provision.sh deploy-preview <project> <branch> [--if-changed]"
+    if [[ "${3:-}" == "--if-changed" ]]; then
+        if_changed=1
+    fi
 
     local name; name="$(preview_slug "$project" "$branch")"
     local dir; dir="$(site_dir "$name")"
@@ -196,6 +207,18 @@ cmd_deploy_preview() {
         # See lib/cmd_provision.sh's identical cleanup — older ddeploy
         # versions copied GIT_DEPLOY_KEY into this user's own $HOME/.ssh.
         rm -rf "$dir/.ssh"
+    fi
+
+    # See checkout_matches_remote (lib/releases.sh) — what the webhook
+    # worker passes, so a burst of pushes to one PR builds once.
+    # Previews update in place — a deploy whose build failed has already
+    # moved HEAD, so HEAD alone matching the remote isn't enough: it must
+    # also be the commit the last *successful* deploy finished at.
+    if [[ "$if_changed" -eq 1 ]] && checkout_matches_remote "$name" "$dir" "$PREVIEW_BRANCH" \
+        && [[ "$(cat "$(preview_deployed_path "$name")" 2>/dev/null)" == "$(git -c safe.directory='*' -C "$dir" rev-parse HEAD)" ]]; then
+        log_info "'$name': already at the tip of origin/$PREVIEW_BRANCH — nothing to deploy"
+        site_log "$name" "deploy-preview: skipped (--if-changed), already at the remote tip"
+        return 0
     fi
 
     # fetch + hard reset, not --ff-only pull: PR branches get rebased and
@@ -223,6 +246,7 @@ cmd_deploy_preview() {
     nginx -t && systemctl reload nginx
 
     local sha; sha="$(git -C "$dir" log -1 --format=%h)"
+    record_preview_deployed "$name" "$dir"
     site_log "$name" "deploy-preview: done at $sha"
     log_info "deployed preview $name @ $sha"
 }
@@ -293,7 +317,9 @@ cmd_remove_preview() {
         log_info "removed preview $name"
     fi
 
-    rm -f "$GENERATED_DIR/$name.preview"
+    remove_node_modules_cache "$name"
+    rm -f "$(build_state_path "$name")"
+    rm -f "$GENERATED_DIR/$name.preview" "$(preview_deployed_path "$name")"
     site_log "$name" "removed preview (purge_db=$purge_db purge_files=$purge_files)"
 }
 

@@ -126,6 +126,19 @@ cmd_init() {
     log_info "== composer =="
     install_composer
 
+    log_info "== node (nvm): $BASELINE_NODE =="
+    if [[ "$NODE_ENABLED" == "true" ]]; then
+        install_nvm
+        # Re-running init is also how patch releases get picked up: a
+        # deploy only ever installs a spec nothing installed matches yet.
+        local spec
+        for spec in $BASELINE_NODE; do
+            refresh_node_version "$spec"
+        done
+    else
+        log_info "NODE_ENABLED=false — skipping nvm/node"
+    fi
+
     log_info "== sites root =="
     mkdir -p "$SITES_ROOT"
     if id -u deploy >/dev/null 2>&1; then

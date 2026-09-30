@@ -18,6 +18,7 @@ server {
 
 {{REDIRECTS_BLOCK}}
 {{DENY_PHP_BLOCK}}
+{{NODE_DENY_BLOCK}}
 {{STATIC_CACHE_BLOCK}}
 {{OPS_EXTRA_BLOCK}}
     location / { try_files $uri $uri/ /index.php?$query_string; }

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Hook replay: executes a site's normalized deploy steps
 # ($GENERATED_DIR/<name>.steps, written by config.sh) as the site's own
-# Linux user, under its pinned PHP version.
+# Linux user, under its pinned PHP version and resolved Node version
+# (lib/node.sh). A `node` step is the frontend build parse_config
+# inserted from `build:` (or auto-detected) — its parameters are the
+# BUILD_* globals, not the step's own text, which is just a label.
 
 guardrail_match() {
     local cmd="$1"
@@ -39,7 +42,11 @@ replay_hooks() {
     local steps="$GENERATED_DIR/$name.steps"
     [[ -f "$steps" ]] || { log_info "no deploy steps for $name"; return 0; }
 
-    local shim; shim="$(ensure_php_shim "$php")"
+    # Node on PATH for every step, not just the `node` build step — an
+    # `exec: npm run build` in hooks.post-start is how most DDEV projects
+    # already declare their build.
+    prepare_site_node "$name"
+    local path; path="$(toolchain_path "$php")"
     local type cmd
     while IFS=$'\t' read -r type cmd; do
         [[ -z "$type" ]] && continue
@@ -50,14 +57,17 @@ replay_hooks() {
         fi
         case "$type" in
             exec)
-                log_info "exec ($name, php$php): $cmd"
+                log_info "exec ($name, php$php${NODE_VERSION:+, node $NODE_VERSION}): $cmd"
                 site_log "$name" "deploy: exec: $cmd"
-                sudo -u "$exec_user" env HOME="$exec_home" PATH="$shim:/usr/bin:/bin" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" bash -lc "cd '$dir' && $cmd"
+                sudo -u "$exec_user" env HOME="$exec_home" PATH="$path" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" bash -lc "cd '$dir' && $cmd"
                 ;;
             composer)
                 log_info "composer ($name, php$php): $cmd"
                 site_log "$name" "deploy: composer: $cmd"
-                sudo -u "$exec_user" env HOME="$exec_home" PATH="$shim:/usr/bin:/bin" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" bash -lc "cd '$dir' && composer $cmd"
+                sudo -u "$exec_user" env HOME="$exec_home" PATH="$path" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" bash -lc "cd '$dir' && composer $cmd"
+                ;;
+            node)
+                run_node_build "$name" "$dir" "$exec_user" "$exec_home" "$path"
                 ;;
             exec-host)
                 log_warn "exec-host step skipped by default — host-context command, review before trusting: $cmd"

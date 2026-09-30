@@ -15,8 +15,13 @@
 # (cron<TAB>cmd — see lib/queue.sh, README "Queue workers & scheduled
 # tasks"), DEPLOY_BRANCH (empty unless the
 # operator set one — see README "Default branch"),
+# NODE_VERSION_SPEC NODE_VERSION_SOURCE (resolved to an installed
+# toolchain later, by prepare_site_node — lib/node.sh), BUILD_ENABLED
+# BUILD_PATH BUILD_PACKAGE_MANAGER BUILD_INSTALL BUILD_SCRIPT
+# BUILD_COMMAND BUILD_ENV[] BUILD_OUTPUTS[] BUILD_KEEP_NODE_MODULES
+# (README "Frontend builds"),
 # and writes $GENERATED_DIR/<name>.steps (TYPE<TAB>CMD per line, TYPE in
-# exec|composer|exec-host).
+# exec|composer|exec-host|node).
 #
 # DB_NAME_OVERRIDE DB_USER_OVERRIDE ADDITIONAL_HOSTNAMES_OVERRIDE
 # ADDITIONAL_FQDNS_OVERRIDE UPLOAD_DIRS_OVERRIDE DEPLOY_CMDS_OVERRIDE, set
@@ -211,6 +216,17 @@ validate_db_grant_host() {
     [[ "$val" =~ ^[A-Za-z0-9.:_%-]{1,255}$ ]] || die "DB_GRANT_HOST ('$val') is not a hostname, IP, or '%' — refusing to interpolate it into SQL"
 }
 
+# A Node version spec, from nodejs_version / .nvmrc / .node-version —
+# handed to nvm as its own argv element (never shell-interpolated), but
+# still held to the forms ddeploy documents: a (partial) version number
+# or an lts alias (or nvm's `node`, the latest release). "lts" alone is
+# normalized to "lts/*" by the caller.
+validate_node_version_spec() {
+    local val="$1" label="$2"
+    local re='^(v?[0-9]+(\.[0-9]+){0,2}|lts/(\*|[a-z]+)|node)$'
+    [[ "$val" =~ $re ]] || die "$label ('$val') is not a Node version like 22, 22.11.0, or lts/* — refusing to use it"
+}
+
 # A schedule[].cron entry: a plain 5-field cron expression, safe charset
 # only — this goes straight into a generated /etc/cron.d file, one entry
 # per line, so a newline or an unexpected field count would corrupt that
@@ -303,11 +319,247 @@ extract_hooks() {
     : > "$out"
     count="$(yq eval '.hooks.post-start | length' "$cfg" 2>/dev/null)"
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    local ddev_node_re='^ddev[[:space:]]+((npm|npx|pnpm|yarn)([[:space:]].*)?)$'
     for ((i = 0; i < count; i++)); do
         type="$(yq eval ".hooks.post-start[$i] | to_entries | .[0].key" "$cfg")"
         val="$(yq eval ".hooks.post-start[$i] | to_entries | .[0].value" "$cfg")"
+        # `exec-host: ddev npm run build` is how most DDEV projects
+        # declare a frontend build. Exactly that shape — `ddev` followed
+        # directly by a package manager — becomes a plain exec step (run
+        # as the site user, Node on PATH). Anything else still mentioning
+        # ddev (`... && ddev exec ...`) keeps hitting the guardrail.
+        if [[ ( "$type" == "exec" || "$type" == "exec-host" ) && "$val" =~ $ddev_node_re ]]; then
+            type="exec"
+            val="${BASH_REMATCH[1]}"
+        fi
         printf '%s\t%s\n' "$type" "$val" >> "$out"
     done
+}
+
+# Whether any exec/composer step in $1 (a .steps file) already runs a
+# Node package manager — the project declared its own build in
+# hooks.post-start, so no automatic build step is added on top.
+steps_run_node() {
+    local steps="$1" type cmd
+    local re='(^|[[:space:];&|(])(npm|npx|pnpm|yarn|corepack)([[:space:]]|$)'
+    [[ -f "$steps" ]] || return 1
+    while IFS=$'\t' read -r type cmd; do
+        [[ "$type" == "exec" && "$cmd" =~ $re ]] && return 0
+    done < "$steps"
+    return 1
+}
+
+# First meaningful line of an .nvmrc/.node-version: comments and blank
+# lines skipped, whitespace and a CRLF trimmed. Empty if none.
+read_version_file() {
+    local f="$1" line
+    [[ -f "$f" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%#*}"
+        line="${line//$'\r'/}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -n "$line" ]] && { printf '%s' "$line"; return 0; }
+    done < "$f"
+}
+
+# Sets NODE_VERSION_SPEC + NODE_VERSION_SOURCE for $1. Precedence:
+# operator override > .ddeploy/config.yaml > .ddev/config.yaml (or
+# sidecar) nodejs_version — where DDEV's own "auto" (and an empty value)
+# means "use .nvmrc" — then .nvmrc / .node-version (build.path's, then
+# the repo root's), then DEFAULT_NODE.
+resolve_node_version_spec() {
+    local name="$1" override_cfg="$2" ext_cfg="$3" cfg="$4" build_path="$5"
+    local checkout; checkout="$(config_checkout_dir "$name")"
+    local spec source="" f d
+    spec="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.nodejs_version // ""')"
+    spec="${spec//\"/}"
+    [[ "$spec" == "null" || "$spec" == "auto" ]] && spec=""
+    [[ -n "$spec" ]] && source="nodejs_version"
+    if [[ -z "$spec" ]]; then
+        for d in "${build_path:+$checkout/${build_path%/}}" "$checkout"; do
+            [[ -n "$d" ]] || continue
+            for f in .nvmrc .node-version; do
+                spec="$(read_version_file "$d/$f")"
+                if [[ -n "$spec" ]]; then
+                    source="${d#"$checkout"}/$f"; source="${source#/}"
+                    break 2
+                fi
+            done
+        done
+    fi
+    if [[ -z "$spec" ]]; then
+        spec="${DEFAULT_NODE:-}"
+        source="default"
+    fi
+    [[ "$spec" == "lts" || "$spec" == "lts/" ]] && spec="lts/*"
+    NODE_VERSION_SPEC="$spec"
+    NODE_VERSION_SOURCE="$source"
+    [[ -z "$spec" ]] || validate_node_version_spec "$spec" "node version for '$name' (from $source)"
+}
+
+# Resets every BUILD_* global to "no build".
+reset_build_config() {
+    BUILD_ENABLED=false
+    BUILD_PATH=""
+    BUILD_PACKAGE_MANAGER="auto"
+    BUILD_INSTALL=true
+    BUILD_SCRIPT="build"
+    BUILD_COMMAND=""
+    BUILD_ENV=()
+    BUILD_OUTPUTS=()
+    BUILD_KEEP_NODE_MODULES=false
+}
+
+# Reads the `build:` map from $2 into the BUILD_* globals (label $1).
+parse_build_map() {
+    local name="$1" src="$2" v
+    local label="build for '$name'"
+    BUILD_PATH="$(yq eval '.build.path // ""' "$src")"
+    [[ "$BUILD_PATH" == "null" || "$BUILD_PATH" == "." ]] && BUILD_PATH=""
+    validate_relative_path "$BUILD_PATH" "$label: path"
+    # Also rendered into an nginx location (build_node_deny_block,
+    # lib/vhost.sh) when it sits under the docroot — plain path charset only.
+    [[ -z "$BUILD_PATH" || "$BUILD_PATH" =~ ^[A-Za-z0-9._/-]+$ ]] \
+        || die "$label: path ('$BUILD_PATH') may only contain letters, digits, '.', '_', '-' and '/'"
+
+    BUILD_PACKAGE_MANAGER="$(yq eval '.build.package_manager // "auto"' "$src")"
+    case "$BUILD_PACKAGE_MANAGER" in
+        auto|npm|pnpm|yarn) ;;
+        *) die "$label: package_manager ('$BUILD_PACKAGE_MANAGER') must be auto, npm, pnpm, or yarn" ;;
+    esac
+
+    # Not `// true`: yq's alternative operator treats a boolean false as
+    # missing too, so `install: false` would read back as true.
+    BUILD_INSTALL="$(yq eval '.build.install' "$src")"
+    [[ "$BUILD_INSTALL" == "null" ]] && BUILD_INSTALL=true
+    validate_bool "$BUILD_INSTALL" "$label: install"
+    BUILD_KEEP_NODE_MODULES="$(yq eval '.build.keep_node_modules' "$src")"
+    [[ "$BUILD_KEEP_NODE_MODULES" == "null" ]] && BUILD_KEEP_NODE_MODULES=false
+    validate_bool "$BUILD_KEEP_NODE_MODULES" "$label: keep_node_modules"
+
+    local script command
+    script="$(yq eval '.build.script // ""' "$src")"
+    command="$(yq eval '.build.command // ""' "$src")"
+    [[ "$script" == "null" ]] && script=""
+    [[ "$command" == "null" ]] && command=""
+    [[ -n "$script" && -n "$command" ]] && die "$label: set script: or command:, not both"
+    if [[ -n "$command" ]]; then
+        [[ "$command" != *$'\n'* ]] || die "$label: command contains a newline — refusing to use it"
+        guardrail_match "$command" && die "$label: command references ddev/a container path — refusing to use it"
+        BUILD_COMMAND="$command"
+        BUILD_SCRIPT=""
+    else
+        BUILD_SCRIPT="${script:-build}"
+        [[ "$BUILD_SCRIPT" =~ ^[A-Za-z0-9:._-]+$ ]] || die "$label: script ('$BUILD_SCRIPT') must be a plain package.json script name"
+    fi
+
+    # Passed to `env` as separate argv elements (never through a shell),
+    # but still a closed key charset, and no newline in a value.
+    mapfile -t BUILD_ENV < <(yq eval '(.build.env // {}) | to_entries | .[] | .key + "=" + (.value | tostring)' "$src" 2>/dev/null)
+    (( ${#BUILD_ENV[@]} > 30 )) && die "$label: env has more than 30 entries — refusing to use it"
+    for v in "${BUILD_ENV[@]}"; do
+        [[ "${v%%=*}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "$label: env key '${v%%=*}' is not a plain variable name"
+        case "${v%%=*}" in
+            PATH|HOME|SSH_AUTH_SOCK|NODE_OPTIONS|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV)
+                die "$label: env cannot set ${v%%=*}" ;;
+        esac
+        [[ "${v#*=}" != *$'\n'* ]] || die "$label: env value for '${v%%=*}' contains a newline"
+    done
+
+    mapfile -t BUILD_OUTPUTS < <(yq eval '.build.outputs[]' "$src" 2>/dev/null | grep -vx 'null' || true)
+    (( ${#BUILD_OUTPUTS[@]} > 30 )) && die "$label: outputs has more than 30 entries — refusing to use it"
+    for v in "${BUILD_OUTPUTS[@]}"; do
+        [[ -n "$v" ]] || die "$label: empty outputs entry"
+        validate_relative_path "${v%/}" "$label: outputs entry"
+    done
+}
+
+# Resolves BUILD_* for $1 and, when a build is on, inserts a `node` step
+# into the .steps file — after the last composer step (a build that
+# reads vendor/, e.g. Tailwind content globs or a Laravel Vite plugin,
+# needs it installed first), before migrations/cache-clears. Sources:
+#   - operator override `build: false` — always off;
+#   - `build:` in .ddeploy/config.yaml (or the primary config): a map
+#     (explicit settings), `true` (auto settings, required), or `false`;
+#   - otherwise automatic, like the composer-install default: a root
+#     package.json with a `build` script plus a lockfile, unless
+#     hooks.post-start already runs npm/pnpm/yarn itself.
+resolve_build_config() {
+    local name="$1" override_cfg="$2" ext_cfg="$3" cfg="$4" is_deploy="$5"
+    local steps="$GENERATED_DIR/$name.steps"
+    local checkout; checkout="$(config_checkout_dir "$name")"
+    reset_build_config
+
+    local ov=""
+    if [[ -f "$override_cfg" ]]; then
+        ov="$(yq eval '.build' "$override_cfg" 2>/dev/null)"
+        [[ "$ov" == "null" ]] && ov=""
+        validate_bool "$ov" "build override for '$name'"
+    fi
+
+    local src="" tag="" f
+    for f in "$ext_cfg" "$cfg"; do
+        [[ -n "$f" && -f "$f" ]] || continue
+        tag="$(yq eval '.build | tag' "$f" 2>/dev/null || true)"
+        [[ -n "$tag" && "$tag" != "!!null" ]] && { src="$f"; break; }
+    done
+
+    local mode="auto"
+    if [[ "$ov" == "false" ]]; then
+        mode="off"
+    elif [[ -n "$src" ]]; then
+        case "$tag" in
+            '!!map') mode="explicit"; parse_build_map "$name" "$src" ;;
+            '!!bool')
+                if [[ "$(yq eval '.build' "$src")" == "true" ]]; then mode="required"; else mode="off"; fi
+                ;;
+            *) die "build for '$name' must be a map, true, or false — refusing to use it" ;;
+        esac
+    fi
+    [[ "$mode" == "off" ]] && return 0
+
+    local pkg="$checkout"
+    [[ -n "$BUILD_PATH" ]] && pkg="$checkout/${BUILD_PATH%/}"
+    local has_script=""
+    if [[ -f "$pkg/package.json" && -z "$BUILD_COMMAND" ]]; then
+        has_script="$(yq -p json eval ".scripts.\"$BUILD_SCRIPT\" // \"\"" "$pkg/package.json" 2>/dev/null || true)"
+    fi
+
+    case "$mode" in
+        auto)
+            [[ -f "$pkg/package.json" && -n "$has_script" ]] || return 0
+            if steps_run_node "$steps"; then
+                [[ "$is_deploy" == "1" ]] && log_info "'$name': hooks.post-start already runs a Node package manager — no automatic build step added"
+                return 0
+            fi
+            if ! has_node_lockfile "$pkg"; then
+                [[ "$is_deploy" == "1" ]] && log_warn "'$name': package.json has a '$BUILD_SCRIPT' script but no lockfile — NOT building it automatically; commit a lockfile or declare build: in .ddeploy/config.yaml"
+                return 0
+            fi
+            [[ "$is_deploy" == "1" ]] && log_info "'$name': package.json '$BUILD_SCRIPT' script + lockfile found — building the frontend on deploy (build: false in .ddeploy/config.yaml to turn off)"
+            ;;
+        explicit|required)
+            [[ -f "$pkg/package.json" ]] || die "build for '$name': no package.json at '${BUILD_PATH:-.}'"
+            [[ -n "$BUILD_COMMAND" || -n "$has_script" ]] || die "build for '$name': package.json has no '$BUILD_SCRIPT' script"
+            ;;
+    esac
+
+    if [[ "$NODE_ENABLED" != "true" ]]; then
+        log_warn "'$name': a frontend build is configured but NODE_ENABLED=false on this server — NOT building it"
+        return 0
+    fi
+    BUILD_ENABLED=true
+
+    # Insert after the last composer line (or first, if none).
+    local tmp; tmp="$(mktemp)"
+    awk -v label="build ${BUILD_PATH:-.}" '
+        { lines[NR] = $0; if ($0 ~ /^composer\t/) last = NR }
+        END {
+            if (!last) print "node\t" label
+            for (i = 1; i <= NR; i++) { print lines[i]; if (i == last) print "node\t" label }
+        }' "$steps" > "$tmp" 2>/dev/null || printf 'node\tbuild %s\n' "${BUILD_PATH:-.}" > "$tmp"
+    mv "$tmp" "$steps"
 }
 
 # $1 name, $2 path to a config.yaml-shaped file, $3 "is_deploy" (1/0) —
@@ -711,6 +963,11 @@ parse_config() {
         # would otherwise repeat this same line every single run.
         [[ "$is_deploy" == "1" ]] && log_info "'$name': no hooks.post-start declared but composer.json exists — defaulting to 'composer install' as the deploy step (add hooks.post-start to .ddev/config.yaml to override)"
     fi
+
+    # After the steps file is final — the build step is placed relative
+    # to its composer steps, and skipped if they already run npm/pnpm/yarn.
+    resolve_build_config "$name" "$override_cfg" "$ext_cfg" "$cfg" "$is_deploy"
+    resolve_node_version_spec "$name" "$override_cfg" "$ext_cfg" "$cfg" "$BUILD_PATH"
 }
 
 # Writes a sidecar at $GENERATED_DIR/<name>.yaml in the same shape as a
@@ -832,7 +1089,30 @@ interactive_fallback() {
     local db_env_scheme="laravel"
     [[ "$use_detected" -eq 1 ]] && db_env_scheme="$CMS_DB_ENV_SCHEME"
 
+    # Frontend: only asked when there's a package.json. Accepting the
+    # default writes nothing, so a later .nvmrc change is still followed.
+    local node_spec="" build_answer=""
+    if [[ -f "$dir/package.json" && "$NODE_ENABLED" == "true" ]]; then
+        local node_default
+        node_default="$(read_version_file "$dir/.nvmrc")"
+        [[ -n "$node_default" ]] || node_default="$(read_version_file "$dir/.node-version")"
+        node_default="${node_default:-$DEFAULT_NODE}"
+        read -rp "Node version for the frontend build [$node_default]: " node_spec
+        [[ "$node_spec" == "$node_default" ]] && node_spec=""
+        [[ "$node_spec" == "lts" ]] && node_spec="lts/*"
+        [[ -z "$node_spec" ]] || validate_node_version_spec "$node_spec" "node version"
+        if [[ -n "$(yq -p json eval '.scripts.build // ""' "$dir/package.json" 2>/dev/null || true)" ]]; then
+            read -rp "Build the frontend (package.json 'build' script) on every deploy? [Y/n]: " build_answer
+        fi
+    fi
+
     write_sidecar "$name" "$php" "$docroot" "$db_name" "$db_user" "$hostnames" "$db_env_scheme" "$cms" "$custom_domains" "${deploy_steps[@]}"
+    if [[ -n "$node_spec" ]]; then
+        yq eval -i ".nodejs_version = \"$node_spec\"" "$GENERATED_DIR/$name.yaml"
+    fi
+    if [[ "$build_answer" =~ ^[Nn] ]]; then
+        yq eval -i '.build = false' "$GENERATED_DIR/$name.yaml"
+    fi
     set_sidecar_upload_dirs "$name" "$upload_dirs"
 }
 

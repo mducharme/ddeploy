@@ -9,7 +9,7 @@
 
 usage_deploy() {
     cat <<'EOF'
-usage: provision.sh deploy <name> [--rollback [<sha>]]
+usage: provision.sh deploy <name> [--rollback [<sha>] | --if-changed]
        provision.sh deploy <name> --history
 
 options:
@@ -21,6 +21,10 @@ options:
                         undo (database migrations are not reversed)
   --history             print this site's deploy history (newest last) and
                         exit — use a SHA from here with --rollback
+  --if-changed          do nothing if the live release is already at the
+                        tracked branch's remote tip (what git-push
+                        webhooks use, so queued pushes collapse into one
+                        deploy)
 EOF
 }
 
@@ -38,7 +42,7 @@ cmd_deploy() {
         die "'$name' is a preview — use deploy-preview, not deploy"
     fi
 
-    local rollback=0 rollback_sha="" history=0
+    local rollback=0 rollback_sha="" history=0 if_changed=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --rollback)
@@ -46,6 +50,7 @@ cmd_deploy() {
                 if [[ -n "${2:-}" && "$2" != --* ]]; then rollback_sha="$2"; shift; fi
                 ;;
             --history) history=1 ;;
+            --if-changed) if_changed=1 ;;
             -h|--help) usage_deploy; return 0 ;;
             *) die "unknown option: $1" ;;
         esac
@@ -77,6 +82,18 @@ cmd_deploy() {
     rm -rf "$wrapper/.ssh"
 
     local current_sha; current_sha="$(git -C "$dir" log -1 --format=%H)"
+
+    if [[ "$if_changed" -eq 1 && "$rollback" -eq 0 ]]; then
+        # A pending deploy_branch switch always counts as a change.
+        local tracked; tracked="$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+        local target; target="$(read_deploy_branch "$name")"
+        if [[ ( -z "$target" || "$target" == "$tracked" ) ]] && checkout_matches_remote "$name" "$dir" "$tracked"; then
+            log_info "'$name': already at ${current_sha:0:12}, the tip of origin/$tracked — nothing to deploy"
+            site_log "$name" "deploy: skipped (--if-changed), already at ${current_sha:0:12}"
+            return 0
+        fi
+    fi
+
     local dest run_hooks=1
     ROLLBACK_RELEASE_KIND=""
 

@@ -63,6 +63,8 @@ cmd_remove() {
     # (globs by name, same as remove_fpm_pool doesn't need config either).
     remove_all_queue_workers "$name" || log_warn "removing queue workers for '$name' hit an error — continuing with the rest of removal"
     remove_schedule "$name"
+    remove_node_modules_cache "$name"
+    rm -f "$(build_state_path "$name")"
 
     local ver=""
     local cfg_path; cfg_path="$(resolve_config_path "$name")"

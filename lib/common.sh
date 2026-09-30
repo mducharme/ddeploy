@@ -96,6 +96,22 @@ load_conf() {
     NOTIFY_COOLDOWN="${NOTIFY_COOLDOWN:-3600}"
     PREVIEW_COMMENT_CREDENTIALS="${PREVIEW_COMMENT_CREDENTIALS:-}"
     RELEASES_KEEP="${RELEASES_KEEP:-5}"
+    NODE_ENABLED="${NODE_ENABLED:-true}"
+    NVM_ROOT="${NVM_ROOT:-/opt/nvm}"
+    BASELINE_NODE="${BASELINE_NODE:-22}"
+    DEFAULT_NODE="${DEFAULT_NODE:-22}"
+    NODE_BUILD_TIMEOUT="${NODE_BUILD_TIMEOUT:-1200}"
+    NODE_BUILD_MEMORY_MAX="${NODE_BUILD_MEMORY_MAX:-2G}"
+    NODE_REUSE_MODULES="${NODE_REUSE_MODULES:-true}"
+    validate_bool "$NODE_ENABLED" "NODE_ENABLED"
+    validate_bool "$NODE_REUSE_MODULES" "NODE_REUSE_MODULES"
+    [[ "$NVM_ROOT" == /* && "$NVM_ROOT" != "/" ]] || die "provisioner.conf: NVM_ROOT must be an absolute path"
+    validate_node_version_spec "$DEFAULT_NODE" "provisioner.conf: DEFAULT_NODE"
+    local spec
+    for spec in $BASELINE_NODE; do validate_node_version_spec "$spec" "provisioner.conf: BASELINE_NODE entry"; done
+    [[ "$NODE_BUILD_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "provisioner.conf: NODE_BUILD_TIMEOUT must be a positive number of seconds"
+    [[ -z "$NODE_BUILD_MEMORY_MAX" || "$NODE_BUILD_MEMORY_MAX" =~ ^[1-9][0-9]*[KMG]?$ ]] \
+        || die "provisioner.conf: NODE_BUILD_MEMORY_MAX must look like 2G / 1536M (or be empty for no cap)"
 }
 
 # Lighter loader for `init-db`, run on a dedicated database server that

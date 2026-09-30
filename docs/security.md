@@ -148,6 +148,46 @@ without going through cron's own shell lookup, so the job still actually
 runs as the site's own user; root only ever appears in the cron.d file's
 own user field.
 
+## Frontend builds: one root-owned toolchain, project code as the site user
+
+Node versions live in one nvm install at `NVM_ROOT`, `root:root`,
+readable by everyone and writable by root only. Only root ever runs
+`nvm install`; a site user only ever gets a resolved
+`versions/node/<ver>/bin` on its `PATH` — which is all `nvm use` does —
+so no site can swap the `node` binary another site's deploy (or its own
+queue worker) will execute. nvm itself is cloned at a pinned tag and
+refused unless HEAD is the expected commit, same as the pinned yq.
+
+nvm downloads prebuilt binaries only (`-b`, never a source build) and
+checks each against nodejs.org's `SHASUMS256.txt`. The pin matters
+there: before v0.40.8, nvm's checksum-mismatch branch returned from a
+subshell instead of the function (`|| ( ...; return 6 )`), so a tarball
+that failed its check was installed anyway. Don't pin an older nvm.
+
+Root never lets nvm read the client repo: ddeploy resolves the version
+itself (`nodejs_version`, `.nvmrc`), validates it to a plain version or
+`lts/` alias, and passes it to nvm as its own argument — never a bare
+`nvm install` in a release directory, where nvm would parse a
+client-controlled `.nvmrc` as root. nvm also runs in a child shell with
+a scrubbed environment, never sourced into this tool's own process.
+
+The install and build themselves (`npm ci` lifecycle scripts, the
+build script) are project code, run as `www-<name>` — the same trust
+level as `composer install` and any `hooks.post-start` step, inside the
+same per-deploy ssh-agent window for a private git dependency.
+
+A reused `node_modules` (README "Frontend builds") sits between deploys
+in a `root:root` `700` cache outside every release, not in the site's
+own `$HOME` — otherwise the site's web-facing code could plant a
+modified dependency there and have the next deploy's build run it. It
+is only as trustworthy as the install that produced it (same user, same
+lockfile), never more. A
+`build.env` entry is passed to `env` as its own argument, never through
+a shell, and can't set `PATH`, `HOME`, `SSH_AUTH_SOCK`, `NODE_OPTIONS`,
+`LD_*` or `BASH_ENV`. Each step runs in its own systemd scope with a
+memory cap and a timeout, so a runaway build can't starve php-fpm or
+MariaDB on the same server.
+
 ## The database admin account is broader than any one site needs
 
 `init-db`'s admin account has `GRANT ALL ON *.* WITH GRANT OPTION` — full

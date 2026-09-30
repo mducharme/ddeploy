@@ -38,6 +38,15 @@ options:
                             merged with them)
   --auth                    force basic auth on for this site
   --no-auth                 force basic auth off for this site
+  --node <version>          pin this site's Node version (22, 22.11.0, lts/*);
+                            saved as an operator override (`override`), so
+                            it wins over nodejs_version/.nvmrc on every
+                            later deploy too — `override <name> --unset
+                            nodejs_version` to drop it
+  --no-build                turn this site's frontend build off (saved as
+                            override build=false)
+  --build                   undo --no-build (back to the repo's own build:
+                            or auto-detection)
 EOF
 }
 
@@ -56,6 +65,7 @@ cmd_provision() {
 
     local repo_url="" non_interactive=0
     local opt_php="" opt_docroot="" opt_db="" opt_hostnames="" opt_custom_domains="" opt_upload_dirs="" opt_deploy_cmds="" opt_branch="" opt_clear_branch=0 auth_flag=""
+    local opt_node="" opt_build=""
 
     if [[ "${1:-}" != "" && "${1:-}" != --* ]]; then
         repo_url="$1"; shift
@@ -75,6 +85,9 @@ cmd_provision() {
             --deploy-cmd) opt_deploy_cmds="${opt_deploy_cmds}${2}"$'\n'; shift ;;
             --auth) auth_flag="true" ;;
             --no-auth) auth_flag="false" ;;
+            --node) opt_node="$2"; shift ;;
+            --no-build) [[ "$opt_build" != "true" ]] || die "--build and --no-build are mutually exclusive"; opt_build="false" ;;
+            --build) [[ "$opt_build" != "false" ]] || die "--build and --no-build are mutually exclusive"; opt_build="true" ;;
             -h|--help) usage_provision; return 0 ;;
             *) die "unknown option: $1" ;;
         esac
@@ -82,6 +95,10 @@ cmd_provision() {
     done
 
     [[ -n "$opt_branch" && "$opt_clear_branch" -eq 1 ]] && die "--branch and --clear-branch are mutually exclusive"
+    if [[ -n "$opt_node" ]]; then
+        [[ "$opt_node" == "lts" ]] && opt_node="lts/*"
+        validate_node_version_spec "$opt_node" "--node"
+    fi
 
     local wrapper; wrapper="$(site_root "$name")"
     local dir dest
@@ -127,6 +144,20 @@ cmd_provision() {
         cfg_path="$GENERATED_DIR/$name.yaml"
     fi
 
+    # Persisted as operator overrides (lib/cmd_override.sh), not one-off
+    # flags: a later plain `deploy` has to keep honoring them.
+    if [[ -n "$opt_node" ]]; then
+        override_set_scalar "$name" nodejs_version "$opt_node"
+        log_info "'$name': node pinned to $opt_node (operator override)"
+    fi
+    if [[ "$opt_build" == "false" ]]; then
+        override_set_scalar "$name" build false
+        log_info "'$name': frontend build turned off (operator override)"
+    elif [[ "$opt_build" == "true" ]]; then
+        override_unset_key "$name" build
+        log_info "'$name': frontend build override removed"
+    fi
+
     if [[ -n "$opt_db" ]]; then
         DB_NAME_OVERRIDE="$opt_db"
         DB_USER_OVERRIDE="$opt_db"
@@ -137,7 +168,7 @@ cmd_provision() {
     [[ -n "$opt_deploy_cmds" ]] && DEPLOY_CMDS_OVERRIDE="$opt_deploy_cmds"
     parse_config "$name" "$cfg_path" 1
 
-    log_info "resolved: php=$PHP_VERSION docroot='${DOCROOT}' hostnames=[${ADDITIONAL_HOSTNAMES[*]:-}]${DEPLOY_BRANCH:+ deploy_branch=$DEPLOY_BRANCH}"
+    log_info "resolved: php=$PHP_VERSION node=${NODE_VERSION_SPEC:--} build=$BUILD_ENABLED docroot='${DOCROOT}' hostnames=[${ADDITIONAL_HOSTNAMES[*]:-}]${DEPLOY_BRANCH:+ deploy_branch=$DEPLOY_BRANCH}"
     scan_hooks "$name"
 
     ensure_php_installed "$PHP_VERSION"

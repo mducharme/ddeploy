@@ -2,7 +2,8 @@
 
 Provisions and deploys PHP sites on Ubuntu 24.04: nginx, one PHP-FPM
 pool per site, one Linux user per site, one MariaDB database per site, a
-shared wildcard TLS certificate. No containers. Reads a project's own
+shared wildcard TLS certificate, and an on-server frontend build (Node
+via nvm, per-site version). No containers. Reads a project's own
 `.ddev/config.yaml` as config; never runs DDEV itself.
 
 Built for staging/QA/client-review — no staging→production promotion
@@ -37,7 +38,7 @@ Unedited output from an actual run, provisioning one site:
 $ ./provision.sh provision testsite ssh://gitfixture@127.0.0.1/srv/git/testsite.git
 [info]  cloning ssh://gitfixture@127.0.0.1/srv/git/testsite.git -> /home/deploy/sites/testsite
 Cloning into '/home/deploy/sites/testsite/releases/.staging-…'...
-[info]  resolved: php=8.3 docroot='web' hostnames=[alt-testsite]
+[info]  resolved: php=8.3 node=20 build=true docroot='web' hostnames=[alt-testsite]
 [info]  php8.3-fpm and configured extensions already installed
 [info]  created system user www-testsite
 [info]  installed FPM pool for testsite (php8.3, user=www-testsite, pm.max_children=20)
@@ -91,7 +92,7 @@ configure                     create/update provisioner.conf (see -h)
 init                          set up a web server (packages, PHP, TLS, firewall)
 init-db                       set up a dedicated database server
 provision <name> [repo-url]   add a site
-deploy <name> [--rollback [<sha>]] [--history]   new release + re-apply vhost/FPM config + run deploy steps (see -h)
+deploy <name> [--rollback [<sha>]] [--history] [--if-changed]   new release + re-apply vhost/FPM config + run deploy steps (see -h)
 remove <name> [--purge-db] [--purge-files] [--purge-persistent]
 list                          table of provisioned sites
 provision-all                 provision every site in ./manifest
@@ -107,10 +108,11 @@ prune-previews [project]      remove previews whose branch no longer exists
 preview-url <project> <branch>   print the preview URL (site need not exist)
 logs <name> [-n N] [-f]       tail a site or fleet log (see -h)
 doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
+node-gc [--yes]               remove Node versions nothing uses any more (see -h)
 ```
 
 `init`, `init-db`, `provision`, `deploy`, `remove`, `backup-uploads`,
-`backup-database`, `logs`, and the `*-preview`/`prune-previews` commands need root.
+`backup-database`, `logs`, `node-gc`, and the `*-preview`/`prune-previews` commands need root.
 
 ## Configuration
 
@@ -120,7 +122,7 @@ permanent is this":
 | Where                                            | What goes here                                                                              | Lives in                               | Git-tracked                           |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------- |
 | `provisioner.conf`                               | Server-wide defaults — every site on this box starts from these                             | this repo, on the server               | no — gitignored, created by `./provision.sh configure` from the tracked `provisioner.example.conf` |
-| `.ddev/config.yaml`                              | Real DDEV fields: `php_version`, `docroot`, `upload_dirs`, `hooks.post-start`, `database.*` | the client's repo                      | yes — it's DDEV's own file            |
+| `.ddev/config.yaml`                              | Real DDEV fields: `php_version`, `nodejs_version`, `docroot`, `upload_dirs`, `hooks.post-start`, `database.*` | the client's repo                      | yes — it's DDEV's own file            |
 | `.ddeploy/config.yaml`                           | ddeploy-only per-site keys that aren't real DDEV fields (below)                             | the client's repo, sibling to `.ddev/` | yes                                   |
 | `generated/<name>.yaml`                          | Sidecar ddeploy writes itself for a repo with no `.ddev/config.yaml` yet                    | this repo, on the server               | no — `generated/` is gitignored       |
 | `generated/<name>.override.yaml`                 | Operator override (`provision.sh override`, see "Overriding a project's config" below), wins over both of the above | this repo, on the server               | no — `generated/` is gitignored       |
@@ -132,9 +134,10 @@ permanent is this":
 `--custom-domains`, `--upload-dirs`, `--deploy-cmd` apply on every run
 they're passed, not just the first (`provision -h`).
 
-**Takes effect on next `deploy`:** `php_version`, `docroot`,
-`basic_auth`, `client_max_body_size`, `fpm_max_children`, `php_ini`,
-`additional_hostnames`, `additional_fqdns`. **`provision`-time only:**
+**Takes effect on next `deploy`:** `php_version`, `nodejs_version`,
+`build`, `docroot`, `basic_auth`, `client_max_body_size`,
+`fpm_max_children`, `php_ini`, `additional_hostnames`,
+`additional_fqdns`. **`provision`-time only:**
 `--db`, `--upload-dirs`, `--deploy-cmd`, `--custom-domains`, and the
 fallback fields.
 
@@ -169,12 +172,17 @@ itself.
 ### `.ddeploy/config.yaml`
 
 `additional_hostnames`, `additional_fqdns`, `persistent_files`,
-`db_env_scheme`, `queue_workers`, and `schedule` aren't real DDEV
-fields. Declare them in `.ddeploy/config.yaml` instead, git-tracked,
+`db_env_scheme`, `queue_workers`, `schedule`, and `build` aren't real
+DDEV fields. Declare them in `.ddeploy/config.yaml` instead, git-tracked,
 sitting next to `.ddev/config.yaml`:
 
 ```yaml
 db_env_scheme: charcoal
+nodejs_version: "22"        # also read from .ddev/config.yaml, .nvmrc — see "Frontend builds"
+build:
+  script: build
+  outputs:
+    - web/dist
 additional_hostnames:
   - alt-name
 additional_fqdns:
@@ -271,12 +279,14 @@ precedence of the three config sources. Takes effect on the site's next
 
 Scalar keys: `basic_auth`, `client_max_body_size`, `fpm_max_children`,
 `db_env_scheme`, `security_headers`, `static_cache`,
-`deny_php_in_uploads`, `db_backup_retention_days`. List keys,
+`deny_php_in_uploads`, `db_backup_retention_days`, `nodejs_version`,
+`build` (`false` turns a site's frontend build off; `true` just
+doesn't). List keys,
 space-separated (quote the value): `additional_hostnames`,
 `additional_fqdns`, `persistent_files`, `auth_exempt_paths`,
 `backup_exclude`, `deny_php_paths`. Not supported here (need
 `.ddeploy/config.yaml` in the repo): `redirects`, `php_ini`,
-`queue_workers`, `schedule` — structured data, or (for `queue_workers`)
+`queue_workers`, `schedule`, a `build:` map — structured data, or (for `queue_workers`)
 a command likely to contain its own spaces.
 
 ```
@@ -411,9 +421,14 @@ Registering once covers every client repo. Optional
 What runs:
 
 - Push to a site's checked-out branch (or its `deploy_branch` override,
-"Default branch") → `deploy <name>`. Other branches ignored.
+"Default branch") → `deploy <name> --if-changed`. Other branches ignored.
 - PR opened/synced (same-repo only) → `provision-preview` or
-`deploy-preview`.
+`deploy-preview --if-changed`.
+- `--if-changed` skips the deploy when the live code is already at the
+branch's remote tip. Several pushes queued behind one slow build
+collapse into one deploy of the latest commit, and a forge redelivering
+a push is a no-op. A preview whose last deploy failed is always
+redeployed.
 - PR closed/merged/declined → `remove-preview --purge-files`
 (`--purge-db` too if isolated).
 - Fork PRs refused.
@@ -673,6 +688,124 @@ the client repo — run as `www-<name>`, same as any hook step.
 runs every deploy.
 - `hooks/post-provision.d/*.sh` / `hooks/post-deploy.d/*.sh` in this
 repo — run as root, for every site. See `hooks/README.md`.
+
+### Frontend builds
+
+Node comes from one shared nvm install at `NVM_ROOT` (default
+`/opt/nvm`), root-owned, pinned to a verified nvm commit by `init`.
+Every step that runs as the site user — `hooks.post-start`,
+`.provisioner/*.sh`, queue workers, `schedule` — gets the site's Node on
+`PATH` next to its pinned PHP, so an existing `exec: npm run build` hook
+just works.
+
+**Which Node version**, first match wins:
+
+1. `provision.sh override <name> nodejs_version=20`
+2. `nodejs_version` in `.ddeploy/config.yaml`
+3. `nodejs_version` in `.ddev/config.yaml` (DDEV's `auto`, or empty,
+   falls through to the next)
+4. `.nvmrc` / `.node-version` (in `build.path`, then the repo root)
+5. `DEFAULT_NODE` (`provisioner.conf`)
+
+`22`, `22.11.0`, `lts/*`, `lts/jod` and `node` are accepted. A
+major-only version uses the newest installed patch of that major; a
+version nothing installed matches is installed on the spot
+(`nvm install -b` — prebuilt binary, SHA-256-checked, never compiled
+from source). `init` pre-installs `BASELINE_NODE` and refreshes it to
+the newest patch release on every run.
+
+**What gets built.** Automatic when the repo root's `package.json` has
+a `build` script **and** a lockfile, unless `hooks.post-start` already
+runs npm/pnpm/yarn itself. Or explicitly, in `.ddeploy/config.yaml`:
+
+```yaml
+build:
+  path: web/themes/site      # dir with package.json (default: repo root)
+  package_manager: auto      # auto | npm | pnpm | yarn
+  install: true              # lockfile-exact install first
+  script: build              # runs `<pm> run build` — or command: "..." instead
+  env:
+    VITE_BASE: /dist/
+  outputs:                   # checked after the build: missing/empty fails the deploy
+    - web/dist
+  keep_node_modules: false
+```
+
+`build: false` turns it off (so does `override <name> build=false`);
+`build: true` uses the defaults but fails the deploy if there's nothing
+to build. The build runs as a deploy step right after the composer
+steps (so it can read `vendor/`), before migrations/cache clears — in
+the new release, before `current` switches. A failed install or build
+leaves the previous release serving; a rollback to a release still on
+disk reuses its build output instead of rebuilding.
+
+**Package manager and install.** `package.json`'s `packageManager`
+field wins, then the lockfile:
+
+| Lockfile            | Install                                                    |
+| ------------------- | ---------------------------------------------------------- |
+| `package-lock.json` | `npm ci`                                                   |
+| `pnpm-lock.yaml`    | `pnpm install --frozen-lockfile`                           |
+| `yarn.lock`         | `yarn install --immutable` (berry) / `--frozen-lockfile` (classic) |
+
+No lockfile: refused (commit one, or `install: false`) — a build that
+resolves fresh dependencies every deploy isn't one a rollback can
+reproduce. Bun isn't supported. pnpm and yarn run through corepack,
+which honors (and hash-checks) a pinned `packageManager` version.
+
+**Environment.** The install runs without `NODE_ENV` (devDependencies —
+vite, webpack, tailwind — are needed to build); the build step gets
+`NODE_ENV=production` unless `env:` sets it. `CI=true` for both. Package
+caches (npm, pnpm store, corepack) live in the site's own `$HOME`, never
+shared between sites. `node_modules` is deleted after a successful build
+unless `keep_node_modules: true`.
+
+**Limits.** `NODE_BUILD_TIMEOUT` (default 1200s) and
+`NODE_BUILD_MEMORY_MAX` (default `2G`, a systemd scope; V8's heap is
+capped at ¾ of it) apply to the install and the build separately — an
+out-of-memory build is killed on its own, not php-fpm or MariaDB with
+it.
+
+**DDEV compatibility.** A `hooks.post-start` step that is exactly
+`ddev npm|npx|pnpm|yarn ...` (typically `exec-host: ddev npm run build`)
+is rewritten to a plain `exec` step. Any other `ddev` reference still
+hits the guardrail.
+
+**Reusing `node_modules`.** After a successful build, `node_modules` is
+moved (not deleted) into a root-only cache outside the releases
+(`$SITES_ROOT/.node-modules-cache/<name>/`), keyed on the lockfile,
+`package.json`, `.npmrc`/`.yarnrc.yml`, the Node version and the package
+manager. The next deploy with the same key moves it back and skips the
+install entirely; any change is a normal install. `NODE_REUSE_MODULES=false`
+turns it off. `remove`/`remove-preview` delete the site's cache.
+
+**Not served.** Wherever a `package.json` sits under the docroot (the
+whole repo when the docroot is the repo root, or a theme folder inside
+it), nginx 404s its `node_modules/` and the package manifests/lockfiles.
+
+**At provision time.** `provision <name> --node 20` pins the version
+and `--no-build` turns the build off (`--build` undoes it); both are
+saved as operator overrides, so later deploys keep honoring them. With
+no `.ddev/config.yaml`, the interactive setup asks for a Node version
+and whether to build when the repo has a `package.json`.
+
+**Checking on it.** `doctor` reports the nvm install (pinned commit,
+installed versions, missing `BASELINE_NODE`), each site's resolved Node
+version, and its last build — with a `[warn]` when the most recent
+build failed and an older release is still live. `list` has a `NODE`
+column (`20+build` = Node 20, builds a frontend).
+
+**Cleaning up old versions.** Versions accumulate: `init` refreshes
+each `BASELINE_NODE` major to its newest patch (the old one stays), and
+a site that changes `nodejs_version` leaves the previous one behind.
+`node-gc` lists what it would keep (and why) and remove; `node-gc --yes`
+removes it. Kept: `DEFAULT_NODE`/`BASELINE_NODE`, every site's and
+preview's resolved version, anything a queue-worker/schedule wrapper or
+a running process uses, and anything installed in the last hour. It
+refuses to run while any site's config can't be resolved.
+
+Branch previews build too, in place, as the same user their other
+deploy steps run as.
 
 ### Queue workers & scheduled tasks
 

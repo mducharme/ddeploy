@@ -10,7 +10,8 @@ usage_doctor() {
 usage: provision.sh doctor [name]
 
 Read-only checks (nginx, PHP-FPM, database reachability, disk space,
-certificate expiry), printed as [ok]/[warn]/[fail] per line. Without a
+certificate expiry, Node toolchain and each site's last frontend
+build), printed as [ok]/[warn]/[fail] per line. Without a
 name, checks shared infrastructure plus every provisioned site; with
 one, shared infrastructure plus just that site (previews included).
 Exits nonzero if any check failed — fit for cron/monitoring. When
@@ -94,6 +95,8 @@ doctor_check_infra() {
         doctor_result ok "webhook listener" "disabled (WEBHOOK_ENABLED=false)"
     fi
 
+    doctor_check_node_toolchain
+
     if [[ "$BACKUP_ENABLED" == "true" ]]; then
         doctor_result ok "uploads backup" "enabled, schedule '$BACKUP_SCHEDULE'"
     else
@@ -143,6 +146,71 @@ doctor_check_infra() {
         doctor_result ok "certbot.timer" "active (handles renewal)"
     else
         doctor_result warn "certbot.timer" "not active — certificates won't auto-renew"
+    fi
+}
+
+# nvm at the pinned commit, and every BASELINE_NODE spec installed.
+doctor_check_node_toolchain() {
+    if [[ "$NODE_ENABLED" != "true" ]]; then
+        doctor_result ok "node (nvm)" "disabled (NODE_ENABLED=false)"
+        return
+    fi
+    if [[ ! -f "$NVM_ROOT/nvm.sh" ]]; then
+        doctor_result fail "node (nvm)" "nvm not installed at $NVM_ROOT — re-run 'init'"
+        return
+    fi
+    local head; head="$(git -C "$NVM_ROOT" rev-parse HEAD 2>/dev/null || true)"
+    if [[ "$head" != "$NVM_COMMIT" ]]; then
+        doctor_result fail "node (nvm)" "$NVM_ROOT is at '${head:-?}', expected $NVM_TAG ($NVM_COMMIT) — re-run 'init'"
+        return
+    fi
+    local installed
+    installed="$(find "$NVM_ROOT/versions/node" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort -V | tr '\n' ' ')"
+    doctor_result ok "node (nvm $NVM_TAG)" "installed: ${installed:-none}"
+    local spec ver
+    for spec in $BASELINE_NODE; do
+        ver="$(nvm_cmd version "$spec" 2>/dev/null || true)"
+        [[ "$ver" == v* ]] || doctor_result warn "node $spec" "in BASELINE_NODE but not installed — re-run 'init'"
+    done
+}
+
+# Seconds -> "3m" / "5h" / "2d".
+doctor_age() {
+    local s="$1"
+    if (( s < 3600 )); then echo "$((s / 60))m"
+    elif (( s < 172800 )); then echo "$((s / 3600))h"
+    else echo "$((s / 86400))d"
+    fi
+}
+
+# $1 site name, already resolved via parse_config. Resolved Node version,
+# and the last build's result (lib/node.sh's record_build_state).
+doctor_check_site_node() {
+    local name="$1"
+    [[ "$NODE_ENABLED" == "true" && -n "${NODE_VERSION_SPEC:-}" ]] || return 0
+    local needs=0
+    [[ "$BUILD_ENABLED" == "true" || "$NODE_VERSION_SOURCE" != "default" ]] && needs=1
+
+    local ver; ver="$(nvm_cmd version "$NODE_VERSION_SPEC" 2>/dev/null || true)"
+    if [[ "$ver" == v* ]]; then
+        [[ "$needs" -eq 1 ]] && doctor_result ok "$name: node" "$ver ($NODE_VERSION_SPEC, from $NODE_VERSION_SOURCE)"
+    elif [[ "$needs" -eq 1 ]]; then
+        doctor_result warn "$name: node" "$NODE_VERSION_SPEC (from $NODE_VERSION_SOURCE) isn't installed yet — the next deploy installs it"
+    fi
+
+    [[ "$BUILD_ENABLED" == "true" ]] || return 0
+    local f; f="$(build_state_path "$name")"
+    if [[ ! -s "$f" ]]; then
+        doctor_result warn "$name: frontend build" "enabled, but no build recorded yet"
+        return
+    fi
+    local status ts bver detail age
+    IFS=$'\t' read -r status ts bver detail < "$f"
+    age="$(doctor_age $(( $(date +%s) - ${ts:-0} )))"
+    if [[ "$status" == "ok" ]]; then
+        doctor_result ok "$name: frontend build" "built $age ago, node $bver ($detail)"
+    else
+        doctor_result warn "$name: frontend build" "LAST BUILD FAILED $age ago ($detail) — the live release is from an earlier deploy; see 'logs $name'"
     fi
 }
 
@@ -253,6 +321,8 @@ doctor_check_site() {
         when="$(git -C "$dir" log -1 --format=%cd --date=short 2>/dev/null || echo '?')"
         doctor_result ok "$name: last deploy" "$sha ($when)"
     fi
+
+    doctor_check_site_node "$name"
 
     # As the site's OWN user/credentials, not the admin connection
     # doctor_check_infra already tested — this catches a revoked grant

@@ -165,7 +165,7 @@ hook_process_job() {
                     continue
                 fi
                 log_info "webhook: deploy '$name'"
-                if ! with_site_lock "$name" "$PROVISIONER_DIR/provision.sh" deploy "$name"; then
+                if ! with_site_lock "$name" "$PROVISIONER_DIR/provision.sh" deploy "$name" --if-changed; then
                     failures=$((failures + 1))
                     notify_failure deploy "$name" "$(notify_log_snippet "$LOG_DIR/$name.log")"
                 fi
@@ -179,7 +179,7 @@ hook_process_job() {
                 preview="$(preview_slug "$parent" "$branch")"
                 if is_preview "$preview" || is_provisioned "$preview"; then
                     log_info "webhook: deploy-preview '$parent' '$branch'"
-                    if ! with_site_lock "$preview" "$PROVISIONER_DIR/provision.sh" deploy-preview "$parent" "$branch"; then
+                    if ! with_site_lock "$preview" "$PROVISIONER_DIR/provision.sh" deploy-preview "$parent" "$branch" --if-changed; then
                         failures=$((failures + 1))
                         notify_failure deploy-preview "$preview" "$(notify_log_snippet "$LOG_DIR/$preview.log")"
                     else

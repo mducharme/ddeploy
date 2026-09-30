@@ -67,10 +67,16 @@ redirects:
   - from: /old-page
     to: /new-page
     code: 301
+nodejs_version: "22"              # or .nvmrc / .ddev nodejs_version — see README "Frontend builds"
+build:                            # automatic anyway when package.json has a build script + a lockfile
+  path: .                         # dir with package.json
+  script: build
+  outputs:
+    - web/dist                    # deploy fails if this is missing/empty after the build
 ```
 
 Full explanation of every key: README "Configuration" →
-`.ddeploy/config.yaml`. Redeclare nothing you don't need — an absent key
+`.ddeploy/config.yaml` (and "Frontend builds" for `build:`). Redeclare nothing you don't need — an absent key
 just means "server default" or "off."
 
 Re-apply any change here with a plain `deploy <name>` — all of it,
@@ -261,6 +267,11 @@ pass (default 3600). See README "Health check" / "Failure paging".
       cert is for the right domain, not the wildcard
 - [ ] `curl https://<name>.$BASE_DOMAIN/health` — 200 with no
       credentials, if `auth_exempt_paths` is set
+- [ ] Frontend: the deploy log shows `node build (<name>, node vX, npm, ...)`
+      with the Node version you expect, and a built asset loads (e.g.
+      `curl -I https://<name>.$BASE_DOMAIN/dist/<file>`). No build line
+      at all? Check for a lockfile — without one, nothing is built
+      automatically
 - [ ] Push a commit to the tracked branch → site updates (`logs <name>
       -f` while it happens, or `list` afterward to confirm the deployed
       sha)

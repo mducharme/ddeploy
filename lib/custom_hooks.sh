@@ -24,10 +24,11 @@ run_repo_hook() {
         return 0
     fi
 
-    local shim; shim="$(ensure_php_shim "$php")"
+    prepare_site_node "$name"
+    local path; path="$(toolchain_path "$php")"
     log_info "running $label: $script_rel"
     site_log "$name" "$label: $script_rel"
-    sudo -u "$exec_user" env HOME="$exec_home" PATH="$shim:/usr/bin:/bin" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" bash -lc "cd '$dir' && ./$script_rel"
+    sudo -u "$exec_user" env HOME="$exec_home" PATH="$path" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" bash -lc "cd '$dir' && ./$script_rel"
 }
 
 # $1 stage ("post-provision" or "post-deploy"), $2 name, $3 site dir, $4 php.

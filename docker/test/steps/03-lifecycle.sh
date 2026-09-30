@@ -443,6 +443,171 @@ sleep 1
 assert_file_exists "/etc/php/8.3/fpm/pool.d/testsite.conf" "reverted back to a php8.3 FPM pool"
 assert_file_absent "/etc/php/8.2/fpm/pool.d/testsite.conf" "php8.2 pool cleaned up again on revert"
 
+# --- frontend builds (nvm + package manager + build step) --------------
+
+build_txt() {
+    curl -fsSk --resolve "testsite.staging.ddeploy.test:443:127.0.0.1" "https://testsite.staging.ddeploy.test/dist/build.txt"
+}
+
+step "frontend build: auto-detected, node version from .nvmrc"
+REL="$(readlink -f "$LIVE")"
+assert_file_exists "$REL/web/dist/build.txt" "deploy built the frontend (package.json build script + lockfile, nothing declared)"
+out="$(build_txt)"
+assert_contains "$out" "BUILD=fe-v1" "nginx serves the build output"
+assert_contains "$out" "NODE=v20." "build ran under node 20, from the repo's .nvmrc (not DEFAULT_NODE=22)"
+assert_contains "$out" "NODE_ENV=production" "build step ran with NODE_ENV=production"
+assert_contains "$out" "DEP=dep-ok" "npm ci installed the lockfile's dependencies"
+assert_file_absent "$REL/node_modules" "node_modules removed after the build"
+[[ "$(stat -c %U "$REL/web/dist/build.txt")" == "www-testsite" ]] && pass "build ran as the site's own user" || fail "build output owned by $(stat -c %U "$REL/web/dist/build.txt"), expected www-testsite"
+assert_cmd_ok "steps file has the node build step" grep -q $'^node\t' "$GENERATED_DIR/testsite.steps"
+[[ "$(git -C "$NVM_ROOT" rev-parse HEAD)" == "a885b885fef16fac4bc544188fb25e9e37ae83e8" ]] && pass "nvm is at the pinned commit" || fail "nvm at unexpected commit"
+assert_cmd_ok "nvm tree is root-owned" test "$(stat -c %U "$NVM_ROOT")" = root
+assert_cmd_ok "site user cannot write into the nvm tree" bash -c "! sudo -u www-testsite touch $NVM_ROOT/versions/node/pwned 2>/dev/null"
+assert_cmd_ok "pnpm/yarn corepack shims present for node 22" test -e "$(ls -d "$NVM_ROOT"/versions/node/v22.*/bin | tail -1)/pnpm"
+
+step "frontend build: node_modules reused when nothing that decides it changed"
+SLOT="$SITES_ROOT/.node-modules-cache/testsite/."
+# -L, not -e: npm links a file: dependency as a relative symlink
+# (../local-dep), which dangles while parked here and resolves again
+# once moved back into a release.
+assert_cmd_ok "last build's node_modules stashed in the cache slot" test -L "$SLOT/node_modules/local-dep"
+[[ "$(stat -c '%U %a' "$SITES_ROOT/.node-modules-cache")" == "root 700" ]] && pass "cache root is root-only (site user can't tamper between deploys)" || fail "cache root is $(stat -c '%U %a' "$SITES_ROOT/.node-modules-cache"), expected root 700"
+deploy_out="$(./provision.sh deploy testsite 2>&1)"
+assert_contains "$deploy_out" "reusing node_modules" "unchanged lockfile/package.json/node: install skipped"
+assert_not_contains "$deploy_out" "npm ci" "no npm ci ran"
+sleep 1
+assert_contains "$(build_txt)" "DEP=dep-ok" "build still resolves its dependency from the reused node_modules"
+assert_file_absent "$(readlink -f "$LIVE")/node_modules" "reused node_modules moved back out of the release after the build"
+
+step "frontend build: doctor and list report it"
+doctor_out="$(./provision.sh doctor testsite 2>&1 || true)"
+assert_contains "$doctor_out" "node (nvm v0.40.8)" "doctor: nvm toolchain row"
+assert_contains "$doctor_out" "testsite: node" "doctor: site's resolved node row"
+assert_contains "$doctor_out" "testsite: frontend build" "doctor: last build row"
+assert_contains "$doctor_out" "built " "doctor: last build succeeded"
+list_out="$(./provision.sh list)"
+assert_contains "$list_out" "20+build" "list: NODE column shows the spec + that it builds"
+
+step "frontend build: operator overrides (nodejs_version, build=false)"
+./provision.sh override testsite nodejs_version=22
+deploy_out="$(./provision.sh deploy testsite 2>&1)"
+assert_not_contains "$deploy_out" "reusing node_modules" "a different node version is a cache miss (native modules are per-version)"
+sleep 1
+assert_contains "$(build_txt)" "NODE=v22." "nodejs_version override wins over .nvmrc"
+./provision.sh override testsite build=false
+./provision.sh deploy testsite
+sleep 1
+assert_file_absent "$(readlink -f "$LIVE")/web/dist/build.txt" "build=false override: the new release was not built"
+./provision.sh override testsite --clear
+./provision.sh deploy testsite
+sleep 1
+assert_contains "$(build_txt)" "NODE=v20." "overrides cleared: back to .nvmrc's node 20, building again"
+
+step "frontend build: a failing build never goes live"
+BEFORE_REL="$(readlink -f "$LIVE")"
+count_releases() { find "$SITES_ROOT/testsite/releases" -mindepth 1 -maxdepth 1 -type d | wc -l; }
+BEFORE_COUNT="$(count_releases)"
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+sed -i "s/const MARKER = 'fe-v1';/const MARKER = 'fe-broken'; process.exit(3);/" "$WORK/build.js"
+git -C "$WORK" commit -q -am 'broken frontend build'
+git -C "$WORK" push -q origin main
+assert_cmd_fails "deploy fails when the build fails" ./provision.sh deploy testsite
+assert_cmd_ok "current still points at the previous release" test "$BEFORE_REL" = "$(readlink -f "$LIVE")"
+assert_contains "$(build_txt)" "BUILD=fe-v1" "previous build output still served"
+assert_contains "$(./provision.sh doctor testsite 2>&1 || true)" "LAST BUILD FAILED" "doctor flags the failed build"
+[[ "$(count_releases)" -eq "$BEFORE_COUNT" ]] && pass "failed release directory was discarded" || fail "failed deploy left a release directory behind ($BEFORE_COUNT -> $(count_releases))"
+git -C "$WORK" revert --no-edit HEAD >/dev/null
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+./provision.sh deploy testsite
+sleep 1
+assert_contains "$(build_txt)" "BUILD=fe-v1" "fixed build deploys again"
+
+step "frontend build: 'exec-host: ddev npm run build' becomes a native step"
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+printf 'hooks:\n  post-start:\n    - exec-host: ddev npm ci\n    - exec-host: ddev npm run build\n' >> "$WORK/.ddev/config.yaml"
+git -C "$WORK" commit -q -am 'ddev-style build hook'
+git -C "$WORK" push -q origin main
+./provision.sh deploy testsite
+sleep 1
+assert_cmd_ok "hooks rewritten to plain exec steps" grep -qx $'exec\tnpm ci' "$GENERATED_DIR/testsite.steps"
+assert_cmd_ok "hooks rewritten to plain exec steps (build)" grep -qx $'exec\tnpm run build' "$GENERATED_DIR/testsite.steps"
+assert_cmd_fails "no automatic build step on top of the project's own" grep -q $'^node\t' "$GENERATED_DIR/testsite.steps"
+assert_contains "$(build_txt)" "NODE=v20." "the hook's npm ran under the site's node (.nvmrc)"
+git -C "$WORK" revert --no-edit HEAD >/dev/null
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+./provision.sh deploy testsite
+sleep 1
+assert_cmd_ok "reverted: automatic build step is back" grep -q $'^node\t' "$GENERATED_DIR/testsite.steps"
+
+step "frontend build: nginx 404s node_modules/manifests that sit under the docroot"
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+printf '{ "name": "theme", "private": true }\n' > "$WORK/web/package.json"
+git -C "$WORK" add web/package.json
+git -C "$WORK" commit -q -m 'package.json under the docroot'
+git -C "$WORK" push -q origin main
+./provision.sh deploy testsite
+sleep 1
+assert_cmd_ok "vhost has a node_modules deny for the docroot" grep -qF 'location ^~ /node_modules/ { return 404; }' /etc/nginx/sites-available/testsite.conf
+mkdir -p "$(readlink -f "$LIVE")/web/node_modules"
+echo secret > "$(readlink -f "$LIVE")/web/node_modules/probe.txt"
+chmod 644 "$(readlink -f "$LIVE")/web/node_modules/probe.txt"
+code="$(curl -sk -o /dev/null -w '%{http_code}' --resolve "testsite.staging.ddeploy.test:443:127.0.0.1" "https://testsite.staging.ddeploy.test/node_modules/probe.txt")"
+[[ "$code" == "404" ]] && pass "/node_modules/ under the docroot is not served" || fail "/node_modules/probe.txt returned $code, expected 404"
+code="$(curl -sk -o /dev/null -w '%{http_code}' --resolve "testsite.staging.ddeploy.test:443:127.0.0.1" "https://testsite.staging.ddeploy.test/package.json")"
+[[ "$code" == "404" ]] && pass "/package.json under the docroot is not served" || fail "/package.json returned $code, expected 404"
+assert_contains "$(build_txt)" "BUILD=fe-v1" "the build output itself is still served"
+git -C "$WORK" rm -q web/package.json
+git -C "$WORK" commit -q -m 'drop docroot package.json'
+git -C "$WORK" push -q origin main
+rm -rf "$WORK"
+./provision.sh deploy testsite
+sleep 1
+assert_cmd_fails "no docroot package.json: no deny rendered" grep -qF 'location ^~ /node_modules/' /etc/nginx/sites-available/testsite.conf
+
+step "frontend build: provision --node / --no-build / --build persist as overrides"
+./provision.sh provision testsite --node 22 --no-build >/dev/null 2>&1
+show_out="$(./provision.sh override testsite --show)"
+assert_contains "$show_out" "nodejs_version: \"22\"" "provision --node saved an override"
+assert_contains "$show_out" "build: \"false\"" "provision --no-build saved an override"
+assert_cmd_fails "provision --no-build: no build step" grep -q $'^node\t' "$GENERATED_DIR/testsite.steps"
+./provision.sh provision testsite --build >/dev/null 2>&1
+show_out="$(./provision.sh override testsite --show 2>&1)"
+assert_not_contains "$show_out" "build:" "provision --build removed the build override"
+assert_cmd_fails "provision refuses a malformed --node" ./provision.sh provision testsite --node '22;rm -rf /'
+./provision.sh override testsite --clear
+./provision.sh deploy testsite
+sleep 1
+assert_contains "$(build_txt)" "NODE=v20." "overrides cleared again: .nvmrc's node 20"
+
+step "node-gc: removes versions nothing uses, keeps the rest"
+# A stand-in for a stale patch release left behind by an init refresh —
+# a copy of an installed version, aged past node-gc's 1h grace window.
+V22_DIR="$(ls -d "$NVM_ROOT"/versions/node/v22.* | tail -1)"
+STALE="$NVM_ROOT/versions/node/v18.0.0"
+cp -a "$V22_DIR" "$STALE"
+touch -d '2 hours ago' "$STALE"
+gc_out="$(./provision.sh node-gc 2>&1)"
+assert_contains "$gc_out" "remove  v18.0.0" "dry run lists the unused version"
+assert_contains "$gc_out" "testsite (20)" "dry run keeps testsite's node 20, and says why"
+assert_contains "$gc_out" "provisioner.conf (22)" "dry run keeps DEFAULT_NODE/BASELINE_NODE's 22"
+assert_file_exists "$STALE" "dry run removed nothing"
+./provision.sh node-gc --yes
+assert_file_absent "$STALE" "node-gc --yes removed the unused version"
+assert_file_exists "$V22_DIR/bin/node" "node-gc --yes kept the baseline version"
+assert_cmd_ok "node-gc --yes kept testsite's version" bash -c "ls -d $NVM_ROOT/versions/node/v20.*"
+assert_contains "$(./provision.sh node-gc 2>&1)" "nothing to remove" "a second run has nothing left to do"
+
 # --- probe row for backup/restore-database verification ---------------
 
 mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" testsite \
@@ -495,6 +660,11 @@ assert_contains "$out" "MARKER=v1" "wrong signature never actually triggered a d
 # envelope still can't get a job trusted without the real secret, which
 # that process never has. Root can write into the 2770 spool regardless
 # of group, same as ddeploy-hook itself could if compromised.
+# The path unit is paused so the explicit hook-worker below is the one
+# that processes (and reports on) the envelope — otherwise systemd's own
+# worker can win the race, reject it in the journal, and leave this
+# run's captured output empty.
+systemctl stop ddeploy-hook-worker.path
 python3 -c '
 import base64, json, sys
 body = json.dumps({"ref": "refs/heads/main", "after": "d"*40, "deleted": False,
@@ -508,6 +678,7 @@ chmod 640 /var/lib/ddeploy/queue/new/raw-plantedattack00000000000000000000000000
 chown root:ddeploy-hook /var/lib/ddeploy/queue/new/raw-plantedattack00000000000000000000000000.json
 
 worker_out="$(./provision.sh hook-worker 2>&1)"
+systemctl start ddeploy-hook-worker.path
 assert_contains "$worker_out" "HMAC verification failed" "a raw envelope planted directly in the spool (no HTTP request at all) was still rejected"
 assert_file_absent "/var/lib/ddeploy/queue/new/raw-plantedattack00000000000000000000000000.json" "planted envelope was claimed and dropped, not left sitting in new/"
 out="$(curl_site testsite.staging.ddeploy.test)"
@@ -776,6 +947,16 @@ out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "MARKER=v2" "webhook deploy pulled the new commit (GIT_DEPLOY_KEY end to end)"
 V2_RELEASE="$(readlink -f "$LIVE")"
 assert_cmd_ok "v2 is a distinct release directory" test -d "$V2_RELEASE"
+
+# The same push delivered again (a forge retry, or several pushes queued
+# behind one build): the tip is already live, so nothing is rebuilt.
+code="$(post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY")"
+[[ "$code" == "202" ]] && pass "redelivered push accepted" || fail "redelivered push returned $code"
+flush_hooks
+assert_cmd_ok "redelivered push did not build a new release" test "$V2_RELEASE" = "$(readlink -f "$LIVE")"
+assert_cmd_ok "worker logged the skip" grep -q 'deploy: skipped (--if-changed)' "$LOG_DIR/testsite.log"
+if_out="$(./provision.sh deploy testsite --if-changed 2>&1)"
+assert_contains "$if_out" "nothing to deploy" "deploy --if-changed is a no-op at the remote tip"
 rm -f "$BODY"
 
 step "deploy --rollback / --history"
@@ -788,6 +969,7 @@ out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "MARKER=v1" "deploy --rollback (implicit, no sha) moved the code back to v1"
 assert_cmd_ok "rollback retargeted current away from the v2 release" test "$V2_RELEASE" != "$(readlink -f "$LIVE")"
 assert_contains "$(grep MARKER= "$V2_RELEASE/web/index.php")" "MARKER=v2" "the previous release tree is left intact (not git-reset in place)"
+assert_file_exists "$(readlink -f "$LIVE")/web/dist/build.txt" "rolled-back release still has its own build output"
 
 n_releases="$(find "$SITES_ROOT/testsite/releases" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | wc -l)"
 [[ "$n_releases" -le 3 ]] && pass "RELEASES_KEEP=3 pruned extras (have $n_releases)" || fail "expected at most 3 releases, have $n_releases"
@@ -1008,6 +1190,8 @@ flush_hooks
 sleep 1
 out="$(curl -fsSk -u "preview:$AUTH_PASS" --resolve "$PREVIEW.staging.ddeploy.test:443:127.0.0.1" "https://$PREVIEW.staging.ddeploy.test/")"
 assert_contains "$out" "MARKER=preview-v2" "webhook deploy-preview fetch+reset picked up the new commit"
+assert_file_exists "$(site_dir "$PREVIEW")/web/dist/build.txt" "preview built its frontend too"
+[[ "$(stat -c %U "$(site_dir "$PREVIEW")/web/dist/build.txt")" == "www-testsite" ]] && pass "shared preview built as the parent's user" || fail "preview build output has the wrong owner"
 sink="$(cat /tmp/ddeploy-comment-sink.jsonl 2>/dev/null || true)"
 assert_contains "$sink" "POST /2.0/repositories/gitfixture/testsite/pullrequests/7/comments" "Bitbucket webhook posted a preview comment on PR 7"
 assert_contains "$sink" "PUT /2.0/repositories/gitfixture/testsite/pullrequests/7/comments/" "Bitbucket deploy-preview updated the existing PR comment (PUT, not a duplicate POST)"

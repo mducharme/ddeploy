@@ -257,6 +257,23 @@ prepare_forward_release() {
     finalize_staging "$staging"
 }
 
+# `deploy --if-changed` / `deploy-preview --if-changed` (what the webhook
+# worker runs): true when $2 (a checkout) is already at what origin's
+# $3 branch points to, so there's nothing to build. Several pushes to the
+# same branch queued behind one slow build collapse into one deploy
+# this way — the first one deploys the branch tip, the rest find it
+# already live — and a forge redelivering the same push is a no-op.
+# Any doubt (ls-remote failing, no branch) means "changed": deploy.
+checkout_matches_remote() {
+    local name="$1" dir="$2" branch="$3"
+    [[ -n "$branch" && "$branch" != "HEAD" ]] || return 1
+    local head remote
+    head="$(git -c safe.directory='*' -C "$dir" rev-parse HEAD 2>/dev/null)" || return 1
+    remote="$(GIT_SSH_COMMAND="$(git_ssh_command)" git -c safe.directory='*' -C "$dir" \
+        ls-remote origin "refs/heads/$branch" 2>/dev/null | cut -f1)" || return 1
+    [[ -n "$remote" && "$remote" == "$head" ]]
+}
+
 # Prints the on-disk release whose HEAD is $2, if any.
 find_release_for_sha() {
     local name="$1" want="$2"

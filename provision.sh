@@ -22,6 +22,8 @@ source "$LIB_DIR/git_access.sh"
 source "$LIB_DIR/cloudflare.sh"
 # shellcheck source=lib/php.sh
 source "$LIB_DIR/php.sh"
+# shellcheck source=lib/node.sh
+source "$LIB_DIR/node.sh"
 # shellcheck source=lib/db.sh
 source "$LIB_DIR/db.sh"
 # shellcheck source=lib/vhost.sh
@@ -78,6 +80,8 @@ source "$LIB_DIR/cmd_restore.sh"
 source "$LIB_DIR/cmd_doctor.sh"
 # shellcheck source=lib/cmd_hook.sh
 source "$LIB_DIR/cmd_hook.sh"
+# shellcheck source=lib/cmd_node_gc.sh
+source "$LIB_DIR/cmd_node_gc.sh"
 
 usage() {
     cat <<'EOF'
@@ -105,6 +109,7 @@ commands:
   preview-url <project> <branch>   print https://<slug>.$BASE_DOMAIN (see -h)
   logs <name> [-n N] [-f]       tail a site or fleet log (see -h)
   doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
+  node-gc [--yes]               remove Node versions nothing uses any more (see -h)
   hook-worker                   drain the git-push webhook queue (systemd; not an operator command)
 EOF
 }
@@ -136,6 +141,7 @@ main() {
         preview-url)    cmd_preview_url "$@" ;;
         logs)           cmd_logs "$@" ;;
         doctor)         cmd_doctor "$@" ;;
+        node-gc)        cmd_node_gc "$@" ;;
         hook-worker)    cmd_hook_worker "$@" ;;
         -h|--help|help|"") usage ;;
         *) usage; die "unknown command: $cmd" ;;

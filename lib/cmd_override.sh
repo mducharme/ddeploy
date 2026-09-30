@@ -10,7 +10,7 @@
 # Scalar keys: validated the same way parse_config validates the same
 # key when it comes from the repo (db_env_scheme is the one exception —
 # still no dedicated validator, matching parse_config).
-OVERRIDE_SCALAR_KEYS="basic_auth client_max_body_size fpm_max_children db_env_scheme security_headers static_cache deny_php_in_uploads db_backup_retention_days"
+OVERRIDE_SCALAR_KEYS="basic_auth client_max_body_size fpm_max_children db_env_scheme security_headers static_cache deny_php_in_uploads db_backup_retention_days nodejs_version build"
 # Array keys: space-separated on the CLI, same as --hostnames/--upload-dirs
 # elsewhere in this tool.
 OVERRIDE_ARRAY_KEYS="additional_hostnames additional_fqdns persistent_files auth_exempt_paths backup_exclude deny_php_paths"
@@ -56,7 +56,8 @@ override_validate_value() {
     local name="$1" key="$2" val="$3"
     [[ "$val" != *'"'* ]] || die "$key for '$name' cannot contain a double quote"
     case "$key" in
-        basic_auth|security_headers|deny_php_in_uploads) validate_bool "$val" "$key for '$name'" ;;
+        basic_auth|security_headers|deny_php_in_uploads|build) validate_bool "$val" "$key for '$name'" ;;
+        nodejs_version) validate_node_version_spec "$val" "$key for '$name'" ;;
         static_cache) validate_static_cache "$val" "$key for '$name'" ;;
         client_max_body_size) validate_body_size "$val" "$key for '$name'" ;;
         fpm_max_children) validate_max_children "$val" "$key for '$name'" ;;
@@ -67,6 +68,26 @@ override_validate_value() {
         backup_exclude) [[ "$val" != *$'\n'* ]] || die "$key entry for '$name' contains a newline — refusing to use it" ;;
         *) [[ "$val" != *$'\n'* ]] || die "$key for '$name' contains a newline — refusing to use it" ;;
     esac
+}
+
+# Sets/removes one scalar override key for $1 — shared with provision's
+# --node/--no-build/--build flags, which persist the same way.
+override_set_scalar() {
+    local name="$1" key="$2" val="$3"
+    local f; f="$(override_config_path "$name")"
+    override_validate_value "$name" "$key" "$val"
+    require_yq
+    mkdir -p "$GENERATED_DIR"
+    [[ -s "$f" ]] || echo "{}" > "$f"
+    yq eval -i ".${key} = \"${val}\"" "$f"
+}
+
+override_unset_key() {
+    local name="$1" key="$2"
+    local f; f="$(override_config_path "$name")"
+    [[ -f "$f" ]] || return 0
+    require_yq
+    yq eval -i "del(.${key})" "$f"
 }
 
 cmd_override() {
@@ -123,8 +144,7 @@ cmd_override() {
                     yq eval -i ".${key} += [\"${v}\"]" "$f"
                 done
             else
-                override_validate_value "$name" "$key" "$val"
-                yq eval -i ".${key} = \"${val}\"" "$f"
+                override_set_scalar "$name" "$key" "$val"
             fi
             log_info "'$name': set override $key"
         done
