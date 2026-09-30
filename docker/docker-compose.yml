@@ -40,17 +40,21 @@ services:
     command: ["/sbin/init"]
 
   objectstore:
-    # quay.io, not Docker Hub's minio/minio — that repository stopped
-    # allowing anonymous/unauthenticated pulls ("pull access denied...
-    # repository does not exist"), confirmed by reproducing it directly
-    # (docker pull minio/minio:latest) rather than assuming a local/CI
-    # config problem. quay.io/minio/minio:latest resolves to the exact
-    # same image (identical digest) and pulls fine.
-    image: quay.io/minio/minio:latest
+    # Chainguard's free MinIO build. MinIO itself no longer publishes
+    # pullable images: Docker Hub's minio/minio stopped allowing
+    # anonymous pulls first, then quay.io/minio/minio:latest disappeared
+    # too ("no such manifest") — which only surfaced in CI, since local
+    # runs kept using a cached copy. Same server, same env vars and
+    # health endpoint. /data is a tmpfs owned by the image's non-root
+    # user (65532): on the container's overlay filesystem MinIO's startup
+    # cleanup fails with "rename across devices not allowed".
+    image: cgr.dev/chainguard/minio:latest
     environment:
       MINIO_ROOT_USER: ddeployminio
       MINIO_ROOT_PASSWORD: ddeployminiosecret
     command: ["server", "/data"]
+    tmpfs:
+      - /data:uid=65532,gid=65532
     networks:
       - testnet
 
