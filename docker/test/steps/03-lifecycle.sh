@@ -1250,6 +1250,40 @@ assert_contains "$out" "MARKER=v2" "back on main, serving its content again"
 resolved_out="$(./provision.sh provision testsite 2>&1)"
 assert_not_contains "$resolved_out" "deploy_branch=" "--clear-branch removed the override"
 
+step "branch switch with files committed as executable (deployed as 640)"
+# A release's files are 640 on disk whatever their committed mode, so a
+# file committed as executable (common for vendored assets) differs from
+# git's index in every release. A branch switch or pull touching it must
+# still work.
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+chmod +x "$WORK/web/style.css"
+git -C "$WORK" commit -q -am 'style.css committed as executable'
+git -C "$WORK" push -q origin main
+./provision.sh deploy testsite
+git -C "$WORK" checkout -q -b exec-branch
+echo "/* exec-branch */" >> "$WORK/web/style.css"
+git -C "$WORK" commit -q -am 'exec-branch: change the executable file'
+git -C "$WORK" push -q origin exec-branch
+./provision.sh provision testsite --branch exec-branch
+assert_cmd_ok "switching branch works when it changes a file committed as executable" ./provision.sh deploy testsite
+assert_cmd_ok "...and the switch actually happened" grep -q "exec-branch" "$LIVE/web/style.css"
+[[ "$(git -c safe.directory='*' -C "$LIVE" diff --summary | grep -c 'mode change' || true)" == "0" ]] \
+    && pass "git doesn't report permission differences as changes in a release" \
+    || fail "git reports mode changes in the release: $(git -c safe.directory='*' -C "$LIVE" diff --summary | head -3)"
+./provision.sh provision testsite --branch main
+./provision.sh deploy testsite
+git -C "$WORK" checkout -q main
+chmod -x "$WORK/web/style.css"
+git -C "$WORK" commit -q -am 'style.css back to 644'
+git -C "$WORK" push -q origin main
+git -C "$BARE" branch -D exec-branch >/dev/null
+./provision.sh deploy testsite
+./provision.sh provision testsite --clear-branch
+rm -rf "$WORK"
+
 step "override: operator-side config override wins over .ddeploy/config.yaml"
 
 # testsite's repo-side .ddeploy/config.yaml has client_max_body_size:

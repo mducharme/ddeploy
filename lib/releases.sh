@@ -150,6 +150,15 @@ ensure_releases_layout() {
 }
 
 # Rename a staging clone to releases/<timestamp>-<sha>. Prints the final path.
+# Every release (and preview checkout) gets core.fileMode=false: ddeploy
+# owns the permissions of the tree (apply_permissions sets 640/2750), so
+# a file committed as executable would otherwise show as locally
+# modified in every release — and block any later checkout or pull that
+# touches it ("Your local changes ... would be overwritten").
+git_release_config() {
+    git -c safe.directory='*' -C "$1" config core.fileMode false
+}
+
 finalize_staging() {
     local staging="$1"
     local sha; sha="$(git -C "$staging" log -1 --format=%H)"
@@ -195,6 +204,7 @@ clone_into_release() {
     fi
     rm -f "$out"
     git_trust_repo "$staging"
+    git_release_config "$staging"
     finalize_staging "$staging"
 }
 
@@ -223,7 +233,11 @@ prepare_forward_release() {
     git_trust_repo "$staging"
     git -C "$staging" remote set-url origin "$origin" \
         || die "failed to restore origin on the new release of '$name'"
-    apply_permissions "$name" "$staging"
+    git_release_config "$staging"
+    # No apply_permissions here: the git work below runs on the clone as
+    # git left it, and the caller (cmd_deploy) applies permissions to the
+    # finished release afterwards. Doing it first would make git see
+    # every committed-as-executable file as modified (755 -> 640).
 
     # deploy_branch (README "Default branch") is operator state, not
     # anything read from the repo — available immediately, no pull
@@ -240,9 +254,8 @@ prepare_forward_release() {
     # bought no real isolation (root was still the one invoking sudo) and
     # was the whole reason a copy of the shared key used to live in every
     # site's own $HOME (see lib/git_access.sh, README "Git access").
-    # safe.directory=* is scoped to this one invocation: apply_permissions
-    # just chowned $staging to www-<name>, and root operating on a tree it
-    # doesn't own trips git's dubious-ownership check otherwise.
+    # safe.directory=* is scoped to this one invocation, for the same
+    # reason as the clone above.
     # Git's output goes to the site log only when it fails (git_failed);
     # a routine fetch/pull isn't worth a line there.
     local out; out="$(mktemp)"
@@ -335,14 +348,15 @@ prepare_rollback_release() {
         || die "failed to clone the live release of '$name' for rollback"
     git_trust_repo "$staging"
     [[ -n "$origin" ]] && git -C "$staging" remote set-url origin "$origin"
-    apply_permissions "$name" "$staging"
+    git_release_config "$staging"
     log_info "git reset --hard ${want:0:12} ($name)"
     # Root, not sudo -u "www-$name" — purely local (no network, no key
-    # needed), same reasoning as prepare_forward_release above.
-    if ! git -c safe.directory='*' -C "$staging" reset --hard "$want" 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
-        rm -rf "$staging"
-        die "git reset --hard failed for '$name' — live tree left unchanged"
-    fi
+    # needed), same reasoning as prepare_forward_release above. Like
+    # there, permissions come after (cmd_deploy).
+    local out; out="$(mktemp)"
+    run_captured "$out" git -c safe.directory='*' -C "$staging" reset --hard "$want" \
+        || git_failed "$name" "$out" "$staging" "git reset --hard to ${want:0:12} failed — live tree left unchanged"
+    rm -f "$out"
     finalize_staging "$staging"
 }
 

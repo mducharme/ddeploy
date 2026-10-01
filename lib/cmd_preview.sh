@@ -124,6 +124,7 @@ cmd_provision_preview() {
         GIT_SSH_COMMAND="$(git_ssh_command)" git clone --branch "$branch" --single-branch "$repo_url" "$dir"
     fi
     git_trust_repo "$dir"
+    git_release_config "$dir"
 
     seed_preview_override "$name" "$project"
     # Persisted, not just used for this run: deploy-preview re-renders the
@@ -252,6 +253,7 @@ cmd_deploy_preview() {
     # user. safe.directory=* since $dir is already www-<name>-owned.
     # reset needs no key (purely local); fetch does.
     log_info "git fetch + reset --hard origin/$PREVIEW_BRANCH ($name)"
+    git_release_config "$dir"
     local before; before="$(git -c safe.directory='*' -C "$dir" rev-parse --short HEAD 2>/dev/null || true)"
     local out; out="$(mktemp)"
     run_captured "$out" env GIT_SSH_COMMAND="$(git_ssh_command)" git -c safe.directory='*' -C "$dir" fetch origin "$PREVIEW_BRANCH" \
