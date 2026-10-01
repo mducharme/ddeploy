@@ -77,10 +77,11 @@ notify_cooldown_ok() {
 # one, so the formatting can be checked against a local endpoint.
 notify_post() {
     local url="$1" status="$2" title="$3" details="$4" event="$5" site="$6" links="${7:-}"
-    # Discord caps content at 2000 chars, Slack attachments are
-    # generous but a whole build log is still noise.
-    if [[ "${#details}" -gt 1500 ]]; then
-        details="${details:0:1500}..."
+    # Discord caps an embed's description at 4096 characters, Slack is
+    # more generous; a failure's output excerpt is the longest thing that
+    # goes in here (~1800, notify_failure_output).
+    if [[ "${#details}" -gt 3500 ]]; then
+        details="${details:0:3500}..."
     fi
     DDEPLOY_NOTIFY_URL="$url" \
     DDEPLOY_NOTIFY_STATUS="$status" \
@@ -192,6 +193,26 @@ notify_failure() {
     notify_post "$NOTIFY_WEBHOOK" fail "$title" "$detail" "$command" "$site" \
         || log_warn "notify: POST failed for '$command'${site:+ $site} — check NOTIFY_WEBHOOK (URL is not logged)"
     return 0
+}
+
+# The failed command's own last lines of output, for a failure message:
+# whatever this run indented into $1's site log under its FAILED line
+# (deploy_step_failed, build_failed, git_failed and the clone all write
+# them there), counting only lines after line $2 — so an older failure
+# already in the log never shows up. Kept to the last 20 lines / ~1800
+# characters, the end being what explains the failure. Empty when the
+# failure didn't come from a command's output (a config error, say:
+# the [error] line already says it all).
+notify_failure_output() {
+    local site="$1" from="${2:-0}" file="$LOG_DIR/$1.log" out
+    [[ -f "$file" ]] || return 0
+    out="$(tail -n +"$((from + 1))" "$file" | sed -n 's/^    | //p' | tail -n 20 || true)"
+    # A ``` in the output would close the message's code block early.
+    out="${out//\`\`\`/\'\'\'}"
+    if [[ "${#out}" -gt 1800 ]]; then
+        out="…${out: -1800}"
+    fi
+    printf '%s' "$out"
 }
 
 # Last lines of a log file, flattened, for a message's detail field.

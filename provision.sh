@@ -102,6 +102,12 @@ run_notifying() {
     fi
     local errlog; errlog="$(mktemp)"
     local started="$SECONDS" rc
+    # Where the site log ends now: on failure, only what this run wrote
+    # after this line goes into the notification (notify_failure_output).
+    local log_start=0
+    if [[ -f "$LOG_DIR/$site.log" ]]; then
+        log_start="$(wc -l < "$LOG_DIR/$site.log")"
+    fi
     # stderr is copied to $errlog through a pipeline (the pipeline waits
     # for tee, so the file is complete when we read it); stdout goes
     # straight through on fd 3. rc is the command's, not tee's.
@@ -126,8 +132,13 @@ run_notifying() {
             if [[ -d "$(site_root "$site")" || -f "$LOG_DIR/$site.log" ]]; then
                 site_log "$site" "$label: FAILED after $((SECONDS - started))s ($(notify_trigger)) — $(head -n1 <<< "$err" | sed 's/^\[error\] *//')"
             fi
-            notify_event deploy-failure "$site" "$site: $label FAILED" \
-                "${err}"$'\n'"Took $((SECONDS - started))s — $(notify_trigger)"$'\n'"Full log: ddeploy logs $site"
+            local details="$err" output
+            output="$(notify_failure_output "$site" "$log_start")"
+            if [[ -n "$output" ]]; then
+                details+=$'\n```\n'"$output"$'\n```'
+            fi
+            details+=$'\n'"Took $((SECONDS - started))s — $(notify_trigger)"$'\n'"Full log: ddeploy logs $site"
+            notify_event deploy-failure "$site" "$site: $label FAILED" "$details"
         ) || true
     fi
     rm -f "$errlog"
