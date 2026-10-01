@@ -43,6 +43,69 @@ install_pinned_yq() {
     log_info "installed yq $YQ_VERSION ($arch), checksum verified"
 }
 
+# One-off for the few servers set up when config, state, logs and ops
+# hooks lived in the checkout: moves them to where they live now. Runs
+# before load_conf, which only looks in /etc/ddeploy. Never overwrites.
+move_checkout_files() {
+    local pair old new
+    for pair in \
+        "provisioner.conf:$CONF_FILE" \
+        "manifest:$MANIFEST_FILE" \
+        "generated:$GENERATED_DIR" \
+        "logs:$LOG_DIR"; do
+        old="$PROVISIONER_DIR/${pair%%:*}"
+        new="${pair#*:}"
+        [[ -e "$old" && ! -L "$old" && ! -e "$new" ]] || continue
+        mkdir -p "$(dirname "$new")"
+        mv "$old" "$new"
+        log_info "moved $old -> $new"
+    done
+    local f
+    for f in "$PROVISIONER_DIR"/hooks/post-provision.d/*.sh "$PROVISIONER_DIR"/hooks/post-deploy.d/*.sh; do
+        [[ -f "$f" ]] || continue
+        new="$DDEPLOY_ETC/hooks/$(basename "$(dirname "$f")")/$(basename "$f")"
+        [[ -e "$new" ]] && continue
+        mkdir -p "$(dirname "$new")"
+        mv "$f" "$new"
+        log_info "moved $f -> $new"
+    done
+    rm -rf "$PROVISIONER_DIR/phpshim"
+}
+
+# /etc/ddeploy, /var/lib/ddeploy and /var/log/ddeploy (see lib/common.sh):
+# ownership, modes, and log rotation. Idempotent.
+setup_layout() {
+    install -d -m 755 -o root -g root "$DDEPLOY_ETC" "$DDEPLOY_ETC/hooks/post-provision.d" "$DDEPLOY_ETC/hooks/post-deploy.d"
+    # 751: site users traverse it to reach their own worker/schedule
+    # scripts and PHP shims; nobody else can list it. install_webhook
+    # later sets the group to ddeploy-hook, same mode.
+    mkdir -p "$DDEPLOY_STATE"
+    chmod 751 "$DDEPLOY_STATE"
+    # 711: worker/schedule scripts in here are run by site users by
+    # name; nobody but root can list it, and *.dbpass/*.notify-url are 600.
+    install -d -m 711 -o root -g root "$GENERATED_DIR"
+    chmod 711 "$GENERATED_DIR"
+    install -d -m 750 -o root -g adm "$LOG_DIR"
+    chown root:adm "$LOG_DIR"
+    chmod 750 "$LOG_DIR"
+
+    # Weekly, 12 weeks kept. copytruncate: writers append with >> and
+    # never hold the file open for long, but site cron jobs and the
+    # webhook worker may be mid-write at rotation time.
+    cat > /etc/logrotate.d/ddeploy <<EOF
+$LOG_DIR/*.log {
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+    chmod 644 /etc/logrotate.d/ddeploy
+}
+
 # The catch-all server for hostnames no site claims (see
 # templates/default-vhost.conf.tmpl). Without one, nginx's fallback for
 # an unknown name is simply the first vhost it loaded — some client's
@@ -74,6 +137,7 @@ install_default_vhost() {
 
 cmd_init() {
     require_root
+    move_checkout_files
     load_conf
 
     # Fully unattended from here on — no prompt in this function ever
@@ -90,7 +154,14 @@ cmd_init() {
     # it in testing; the env vars alone did not.
     exec < /dev/null
 
+    log_info "== /etc/ddeploy, /var/lib/ddeploy, /var/log/ddeploy =="
+    setup_layout
+
     log_info "== provisioner directory ownership =="
+    local unsafe_parent; unsafe_parent="$(checkout_unsafe_parent)"
+    if [[ -n "$unsafe_parent" ]]; then
+        log_warn "$unsafe_parent (above $PROVISIONER_DIR) is writable by a non-root user, who could replace this checkout — and root runs code from it. Move it somewhere like /opt/ddeploy, then re-run init (docs/security.md)"
+    fi
     # root cron (backup-uploads/backup-database/prune-previews below) and
     # the webhook worker's systemd unit both execute ddeploy's own code
     # straight out of $PROVISIONER_DIR, as root — see bootstrap.sh for
@@ -123,7 +194,7 @@ cmd_init() {
     apt-get update -y
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         nginx mariadb-server certbot python3-certbot-dns-cloudflare software-properties-common \
-        curl ufw apache2-utils python3 cron
+        curl ufw apache2-utils python3 cron logrotate
 
     log_info "== yq (must be the Go/mikefarah build, not the Python one) =="
     local yq_path

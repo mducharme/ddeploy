@@ -82,9 +82,8 @@ from then on it's `ddeploy <command>` from any directory, no `sudo`
 needed — it adds sudo itself (as `sudo <checkout>/provision.sh ...`, so
 a sudoers rule scoped to provision.sh still matches), and skips it for
 `-h`/`help`. Bash completion for commands and site names comes with it.
-`./provision.sh <command>` keeps working. On a server set up before
-this existed (or after moving the checkout): `sudo ./provision.sh
-install-cli`.
+`./provision.sh <command>` works too. After moving the checkout, run
+`sudo ./provision.sh install-cli` to point the command at its new path.
 
 `configure` + `init` are also just `./install.sh` (skips `configure` if
 `provisioner.conf` already exists).
@@ -138,11 +137,11 @@ permanent is this":
 
 | Where                                            | What goes here                                                                              | Lives in                               | Git-tracked                           |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------- |
-| `provisioner.conf`                               | Server-wide defaults — every site on this box starts from these                             | this repo, on the server               | no — gitignored, created by `./provision.sh configure` from the tracked `provisioner.example.conf` |
+| `provisioner.conf`                               | Server-wide defaults — every site on this box starts from these                             | `/etc/ddeploy/` on the server          | no — created by `./provision.sh configure` from the tracked `provisioner.example.conf` |
 | `.ddev/config.yaml`                              | Real DDEV fields: `php_version`, `nodejs_version`, `docroot`, `upload_dirs`, `hooks.post-start`, `database.*` | the client's repo                      | yes — it's DDEV's own file            |
 | `.ddeploy/config.yaml`                           | ddeploy-only per-site keys that aren't real DDEV fields (below)                             | the client's repo, sibling to `.ddev/` | yes                                   |
-| `generated/<name>.yaml`                          | Sidecar ddeploy writes itself for a repo with no `.ddev/config.yaml` yet                    | this repo, on the server               | no — `generated/` is gitignored       |
-| `generated/<name>.override.yaml`                 | Operator override (`ddeploy override`, see "Overriding a project's config" below), wins over both of the above | this repo, on the server               | no — `generated/` is gitignored       |
+| `<name>.yaml` (in `/var/lib/ddeploy/generated/`) | Sidecar ddeploy writes itself for a repo with no `.ddev/config.yaml` yet                    | the server                             | no                                    |
+| `<name>.override.yaml` (same place)              | Operator override (`ddeploy override`, see "Overriding a project's config" below), wins over both of the above | the server                             | no                                    |
 | CLI flags (`--db`, `--hostnames`, `--auth`, ...) | A one-off override for this run of `provision`, always wins                                 | the terminal                           | n/a                                   |
 
 **Precedence, per key:** CLI flag on `provision` > operator override
@@ -163,7 +162,7 @@ fallback fields.
 `provision` resolution order:
 
 1. `.ddev/config.yaml` in the repo, if present.
-2. `generated/<name>.yaml` sidecar from a previous run.
+2. `/var/lib/ddeploy/generated/<name>.yaml` sidecar from a previous run.
 3. `--non-interactive` with `--php`/`--docroot`/`--db`/`--hostnames`/
   `--custom-domains`/`--upload-dirs`/`--deploy-cmd` flags.
 4. Interactive prompts.
@@ -292,7 +291,7 @@ For a change without repo write access, or without waiting on a commit:
 ddeploy override <name> key=value [key=value ...]
 ```
 
-Writes `generated/<name>.override.yaml` (server-side only). Highest
+Writes `/var/lib/ddeploy/generated/<name>.override.yaml` (server-side only). Highest
 precedence of the three config sources. Takes effect on the site's next
 `deploy` (re-run it yourself to apply immediately).
 
@@ -368,7 +367,7 @@ touching the parent:
   preview's URL outright. Lives in the persistent store like any site's
   (`$PERSISTENT_ROOT/<preview>/.env`), so `deploy-preview`'s reset can't
   touch it. Edit with `ddeploy env <preview> ...`.
-- `generated/<preview>.override.yaml`: a copy of the parent's operator
+- `/var/lib/ddeploy/generated/<preview>.override.yaml`: a copy of the parent's operator
   overrides (`ddeploy override`), minus hostnames. Edit with
   `ddeploy override <preview> ...`.
 
@@ -456,7 +455,7 @@ as delivered. Check `ddeploy logs webhook` instead (and turn on the
 `webhook-rejected` notification, see "Notifications").
 
 **The webhook log** (`ddeploy logs webhook [-n N] [-f]`, file
-`logs/webhook.log`) has every delivery that concerns a site on this
+`/var/log/ddeploy/webhook.log`) has every delivery that concerns a site on this
 server, every rejected delivery, and one line per action each led to,
 tagged with the forge's delivery id (first 8 chars — the same id
 GitHub/Bitbucket show in their webhook UI):
@@ -473,7 +472,7 @@ GitHub/Bitbucket show in their webhook UI):
 The webhook is org-wide, so most deliveries are for repos with no site
 here; those, and events with nothing to do (pings, branch deletions, PR
 labels), get one line each in `ddeploy logs webhook-other`
-(`logs/webhook-other.log`, trimmed automatically past ~2 MB):
+(`/var/log/ddeploy/webhook-other.log`, trimmed automatically past ~2 MB):
 
 ```
 2026-09-30T14:03:20Z [9d1e44b0] github push repo=org/other-project branch=main -> accepted: push_head — no site on this server uses github.com/org/other-project
@@ -717,7 +716,9 @@ doctor [name]
 ```
 
 Read-only checks: nginx config/service, disk space, database server,
-certificate expiry; per site: vhost enabled, PHP-FPM pool running, last
+certificate expiry, and whether any directory above the checkout is
+writable by a non-root user (who could then replace the code root runs —
+docs/security.md); per site: vhost enabled, PHP-FPM pool running, last
 deploy, DB connection test using the **site's own** credentials (not
 admin). No name: every provisioned site, previews included.
 
@@ -765,7 +766,7 @@ ddeploy notify <name> --test
 ddeploy notify <name> --unset
 ```
 
-Stored root-only in `generated/<name>.notify-url` (read from stdin so it
+Stored root-only in `/var/lib/ddeploy/generated/<name>.notify-url` (read from stdin so it
 never lands in shell history or `ps`). Previews use their parent's
 channel unless given their own.
 
@@ -814,7 +815,7 @@ in `.ddeploy/config.yaml` or the sidecar):
 | `laravel`  | `.env`                         | `DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`               |
 | `craft`    | `.env`                         | `CRAFT_DB_*`                                                         |
 | `charcoal` | `config/config.local.json`     | `databases.<default_database>.{hostname,database,username,password}` |
-| `none`     | nowhere (e.g. plain WordPress) | saved root-only to `generated/<name>.dbpass`, never logged           |
+| `none`     | nowhere (e.g. plain WordPress) | saved root-only to `/var/lib/ddeploy/generated/<name>.dbpass`, never logged           |
 
 `charcoal` creates `config/config.local.json` if it doesn't exist,
 reuses its own `default_database` key if already set.
@@ -851,8 +852,8 @@ Two more extension points:
 the client repo — run as `www-<name>`, same as any hook step.
 `post-provision.sh` runs once after the first deploy; `post-deploy.sh`
 runs every deploy.
-- `hooks/post-provision.d/*.sh` / `hooks/post-deploy.d/*.sh` in this
-repo — run as root, for every site. See `hooks/README.md`.
+- `/etc/ddeploy/hooks/post-provision.d/*.sh` / `/etc/ddeploy/hooks/post-deploy.d/*.sh` on the
+server — run as root, for every site. See `hooks/README.md`.
 
 ### Frontend builds
 
@@ -997,7 +998,7 @@ ddeploy-worker-<name>-0 -f`.
 
 `schedule` — each `{cron, cmd}` becomes one line in
 `/etc/cron.d/ddeploy-site-<name>`, running as `www-<name>`. Output
-appends to `logs/<name>.log`. See
+appends to `/var/log/ddeploy/<name>.log`. See
 [docs/security.md](docs/security.md) for how these run a
 project-declared command safely.
 
@@ -1053,20 +1054,32 @@ Set the domain's SSL/TLS mode to "Full (strict)" in Cloudflare once
 bootstrap.sh               deploy user + packages + clone, for a droplet with nothing on it yet
 install.sh                 configure (if needed) + init, chained for a fresh server
 provision.sh               entrypoint (`ddeploy` in /usr/local/bin runs this — see "Quickstart")
-provisioner.example.conf   tracked template; `configure` copies it to provisioner.conf
-provisioner.conf           per-server config, gitignored — created by `configure`
-manifest.example           tracked template; copy to manifest yourself if you want it
-manifest                   name -> repo-url -> optional branch, used by provision-all, gitignored
+provisioner.example.conf   tracked template; `configure` copies it to /etc/ddeploy/provisioner.conf
+manifest.example           tracked template; copy to /etc/ddeploy/manifest yourself if you want it
 templates/                 nginx vhost + FPM pool + webhook vhost templates
 lib/                       implementation
 docs/                      task-oriented guides + security.md (design rationale, not how-to)
 hook/                      unprivileged git-forge webhook listener (Python)
-hooks/                     ops scripts run for every site (see hooks/README.md)
-generated/                 sidecar configs + DB credentials (created at runtime)
-logs/                      per-site provision/deploy logs (created at runtime)
+hooks/                     README + examples for ops hooks (the hooks themselves: /etc/ddeploy/hooks/)
 ```
 
-Lives at `/opt/ddeploy`, root-owned (see "Quickstart"). Sites are
+Lives at `/opt/ddeploy`, root-owned (see "Quickstart"), and holds code
+only — everything specific to this server lives in the standard places,
+so the checkout can be moved, re-cloned or `git clean`ed without losing
+anything:
+
+```
+/etc/ddeploy/provisioner.conf     server config (`configure` writes it)
+/etc/ddeploy/manifest             name -> repo-url -> optional branch, for provision-all (optional)
+/etc/ddeploy/hooks/<stage>.d/     ops hooks run for every site (hooks/README.md)
+/etc/ddeploy/*                    secrets: webhook secret, backup/comment credentials...
+/var/lib/ddeploy/generated/       per-site state: sidecars, overrides, preview metadata, deploy
+                                  history, worker/schedule scripts, *.dbpass, *.notify-url
+/var/lib/ddeploy/                 also: webhook queue, locks, notification cooldowns, PHP shims
+/var/log/ddeploy/                 site, fleet and webhook logs (`ddeploy logs`), rotated weekly
+```
+
+Sites are
 checked out under `$SITES_ROOT` (`provisioner.conf`, default
 `/home/deploy/sites`) — a separate tree, owned per-site by each
 `www-<name>` user.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # `override <name> key=value ...` — an operator-side override for
 # .ddeploy/config.yaml-style settings, without touching the client repo.
-# Written to generated/<name>.override.yaml and always wins over both
+# Written to /var/lib/ddeploy/generated/<name>.override.yaml and always wins over both
 # .ddeploy/config.yaml and .ddev/config.yaml (see read_ext_scalar/
 # read_ext_array in lib/config.sh). Takes effect on the site's next
 # `deploy` — re-run it yourself if you need it applied right away. See

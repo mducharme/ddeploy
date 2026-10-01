@@ -8,7 +8,7 @@
 #   - NOTIFY_WEBHOOK (provisioner.conf) — the server-wide channel, gets
 #     everything.
 #   - a per-site URL (`ddeploy notify <name> --set-url`), stored
-#     root-only in generated/<name>.notify-url — that site's own events
+#     root-only in /var/lib/ddeploy/generated/<name>.notify-url — that site's own events
 #     also go there (a client channel, say). A preview uses its parent's.
 # Which events are sent at all: NOTIFY_EVENTS (provisioner.conf).
 #

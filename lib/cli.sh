@@ -24,8 +24,7 @@ usage: ./provision.sh install-cli
 
 Installs /usr/local/bin/ddeploy (runs this checkout from anywhere, adds
 sudo itself when needed) and bash completion for it. `init` does this
-too; run it on its own on a server set up before ddeploy had the
-command, or after moving the checkout.
+too; run it on its own after moving the checkout.
 EOF
 }
 

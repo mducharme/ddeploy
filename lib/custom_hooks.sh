@@ -32,11 +32,12 @@ run_repo_hook() {
 }
 
 # $1 stage ("post-provision" or "post-deploy"), $2 name, $3 site dir, $4 php.
-# Runs every executable *.sh under hooks/<stage>.d/, in sorted order, as
-# root, with NAME/SITE_DIR/PHP_VERSION/BASE_DOMAIN in the environment.
+# Runs every executable *.sh under /etc/ddeploy/hooks/<stage>.d/, in
+# sorted order, as root, with NAME/SITE_DIR/PHP_VERSION/BASE_DOMAIN in
+# the environment.
 run_ops_hooks() {
     local stage="$1" name="$2" dir="$3" php="$4"
-    local hooks_dir="$PROVISIONER_DIR/hooks/${stage}.d"
+    local hooks_dir="$DDEPLOY_ETC/hooks/${stage}.d"
     [[ -d "$hooks_dir" ]] || return 0
 
     local f

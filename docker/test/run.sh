@@ -123,8 +123,13 @@ EOF
 "${COMPOSE[@]}" exec -T dbhost mkdir -p /etc/ddeploy
 "${COMPOSE[@]}" exec -T web mkdir -p /etc/ddeploy
 
-"${COMPOSE[@]}" cp "$GEN_DIR/provisioner.db.conf" dbhost:/opt/ddeploy/provisioner.conf
-"${COMPOSE[@]}" cp "$GEN_DIR/provisioner.web.conf" web:/opt/ddeploy/provisioner.conf
+"${COMPOSE[@]}" cp "$GEN_DIR/provisioner.db.conf" dbhost:/etc/ddeploy/provisioner.conf
+"${COMPOSE[@]}" cp "$GEN_DIR/provisioner.web.conf" web:/etc/ddeploy/provisioner.conf
+# An ops hook (README "Deploy hooks"), asserted to run in 03-lifecycle.sh.
+"${COMPOSE[@]}" exec -T web sh -c '
+    mkdir -p /etc/ddeploy/hooks/post-deploy.d
+    printf "#!/bin/sh\necho \"\$NAME\" >> /tmp/ddeploy-ops-hook-ran\n" > /etc/ddeploy/hooks/post-deploy.d/50-marker.sh
+    chmod +x /etc/ddeploy/hooks/post-deploy.d/50-marker.sh'
 "${COMPOSE[@]}" cp "$GEN_DIR/backup-credentials.env" web:/etc/ddeploy/backup-credentials.env
 "${COMPOSE[@]}" cp "$GEN_DIR/cf-credentials.ini" web:/etc/ddeploy/cf-credentials.ini
 log "provisioner.conf + credential files written into both containers"

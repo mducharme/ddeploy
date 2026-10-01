@@ -9,15 +9,16 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
-if [[ ! -f provisioner.conf ]]; then
+conf=/etc/ddeploy/provisioner.conf
+if ! sudo test -f "$conf"; then
     sudo ./provision.sh configure
 else
-    echo "provisioner.conf already exists — skipping configure (run 'sudo ./provision.sh configure' yourself to change settings)"
+    echo "$conf already exists — skipping configure (run 'sudo ./provision.sh configure' yourself to change settings)"
 fi
 
 echo
-cf_path="$(sed -nE 's/^CF_CREDENTIALS="([^"]*)".*/\1/p' provisioner.conf | head -1)"
-key_path="$(sed -nE 's/^GIT_DEPLOY_KEY="([^"]*)".*/\1/p' provisioner.conf | head -1)"
+cf_path="$(sudo sed -nE 's/^CF_CREDENTIALS="([^"]*)".*/\1/p' "$conf" | head -1)"
+key_path="$(sudo sed -nE 's/^GIT_DEPLOY_KEY="([^"]*)".*/\1/p' "$conf" | head -1)"
 missing=0
 if [[ -n "$cf_path" && ! -f "$cf_path" ]]; then
     echo "Missing: $cf_path (Cloudflare API token — place it there, chmod 600, before continuing)"

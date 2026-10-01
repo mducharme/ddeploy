@@ -73,7 +73,10 @@ install_webhook() {
 
     mkdir -p "$spool" "$WEBHOOK_QUEUE_ROOT/failed" /var/lib/ddeploy/locks /etc/ddeploy
     chown root:"$WEBHOOK_USER" /var/lib/ddeploy "$WEBHOOK_QUEUE_ROOT" "$spool"
-    chmod 750 /var/lib/ddeploy
+    # 751, not 750: site users have to traverse it to reach their own
+    # worker/schedule scripts and PHP shims (GENERATED_DIR, SHIM_ROOT) —
+    # it still can't be listed, and everything secret in it is 600/700.
+    chmod 751 /var/lib/ddeploy
     chmod 2770 "$WEBHOOK_QUEUE_ROOT" "$spool"
     chmod 700 "$WEBHOOK_QUEUE_ROOT/failed" /var/lib/ddeploy/locks
 

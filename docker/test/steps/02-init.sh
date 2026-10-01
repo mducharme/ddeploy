@@ -66,6 +66,16 @@ rm -f /etc/sudoers.d/ddeploy-test
 completions="$(bash -c 'source /etc/bash_completion.d/ddeploy; COMP_WORDS=(ddeploy dep); COMP_CWORD=1; _ddeploy; echo "${COMPREPLY[*]}"')"
 assert_contains "$completions" "deploy-preview" "completion offers commands from the live usage text"
 
+step "init: /etc/ddeploy, /var/lib/ddeploy, /var/log/ddeploy"
+[[ "$(stat -c '%a' /var/lib/ddeploy)" == "751" ]] && pass "/var/lib/ddeploy is 751 (traversable, not listable)" || fail "/var/lib/ddeploy is $(stat -c '%a' /var/lib/ddeploy)"
+[[ "$(stat -c '%U:%G %a' /var/lib/ddeploy/generated)" == "root:root 711" ]] && pass "generated/ is root 711" || fail "generated/ is $(stat -c '%U:%G %a' /var/lib/ddeploy/generated)"
+[[ "$(stat -c '%U:%G %a' /var/log/ddeploy)" == "root:adm 750" ]] && pass "/var/log/ddeploy is root:adm 750" || fail "/var/log/ddeploy is $(stat -c '%U:%G %a' /var/log/ddeploy)"
+assert_file_exists /etc/logrotate.d/ddeploy "logrotate config installed"
+if command -v logrotate >/dev/null 2>&1; then
+    assert_cmd_ok "logrotate accepts it" logrotate -d /etc/logrotate.d/ddeploy
+fi
+assert_cmd_fails "a non-root user can't list the state directory" sudo -u nobody ls /var/lib/ddeploy/generated
+
 step "init: idempotent re-run"
 before="$(md5sum /etc/nginx/htpasswd/default | cut -d' ' -f1)"
 ./provision.sh init

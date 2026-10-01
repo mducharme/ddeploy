@@ -10,10 +10,10 @@ step "init-db"
 
 step "init-db: checks"
 assert_cmd_ok "mariadb is active" systemctl is-active --quiet mariadb
-assert_file_exists "$(grep -oP '(?<=^DB_ADMIN_CREDENTIALS=").*(?=")' provisioner.conf)" "admin credentials file written"
+assert_file_exists "$(grep -oP '(?<=^DB_ADMIN_CREDENTIALS=").*(?=")' /etc/ddeploy/provisioner.conf)" "admin credentials file written"
 
 step "init-db: idempotent re-run reuses credentials"
-admin_cnf="$(grep -oP '(?<=^DB_ADMIN_CREDENTIALS=").*(?=")' provisioner.conf)"
+admin_cnf="$(grep -oP '(?<=^DB_ADMIN_CREDENTIALS=").*(?=")' /etc/ddeploy/provisioner.conf)"
 before="$(md5sum "$admin_cnf" | cut -d' ' -f1)"
 ./provision.sh init-db
 after="$(md5sum "$admin_cnf" | cut -d' ' -f1)"

@@ -65,6 +65,17 @@ doctor_check_infra() {
         doctor_result fail "nginx service" "not running"
     fi
 
+    # Root runs code from the checkout (cron, the webhook worker). Whoever
+    # can write to any directory above it can rename it away and put their
+    # own in its place, root ownership of the checkout itself
+    # notwithstanding (docs/security.md).
+    local unsafe; unsafe="$(checkout_unsafe_parent)"
+    if [[ -n "$unsafe" ]]; then
+        doctor_result warn "checkout location" "$unsafe (above $PROVISIONER_DIR) is writable by a non-root user, who could replace the checkout root runs — move it, e.g. to /opt/ddeploy, then re-run init"
+    else
+        doctor_result ok "checkout location" "$PROVISIONER_DIR, every parent root-owned"
+    fi
+
     local pct; pct="$(df -P / 2>/dev/null | awk 'NR==2 { gsub("%","",$5); print $5 }')"
     if [[ "$pct" =~ ^[0-9]+$ ]]; then
         if [[ "$pct" -ge "$DISK_WARN_PERCENT" ]]; then

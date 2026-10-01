@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# `provision-all` / `deploy-all` — iterate ./manifest (name -> repo-url
+# `provision-all` / `deploy-all` — iterate the manifest (MANIFEST_FILE,
+# /etc/ddeploy/manifest: name -> repo-url
 # -> optional branch) so onboarding a server's whole site list is one
 # command. Always non-interactive: a failing site is logged and skipped,
 # not a blocker for the rest of the run.
 
 read_manifest() {
-    grep -vE '^\s*(#|$)' "$PROVISIONER_DIR/manifest" || true
+    [[ -f "$MANIFEST_FILE" ]] || return 0
+    grep -vE '^\s*(#|$)' "$MANIFEST_FILE" || true
 }
 
 cmd_provision_all() {
     load_conf
-    [[ -f "$PROVISIONER_DIR/manifest" ]] || die "no ./manifest — copy manifest.example to manifest and fill it in first"
+    [[ -f "$MANIFEST_FILE" ]] || die "no $MANIFEST_FILE — copy manifest.example there and fill it in first"
     local failures=0
     local line name repo_url branch
     local -a extra

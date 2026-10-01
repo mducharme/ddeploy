@@ -150,8 +150,8 @@ class H(BaseHTTPRequestHandler):
 HTTPServer(("127.0.0.1", 8802), H).serve_forever()
 PY
 NOTIFY_SINK_PID=$!
-sed -i '/^NOTIFY_WEBHOOK=/d' /opt/ddeploy/provisioner.conf
-echo 'NOTIFY_WEBHOOK="http://127.0.0.1:8802/global"' >> /opt/ddeploy/provisioner.conf
+sed -i '/^NOTIFY_WEBHOOK=/d' /etc/ddeploy/provisioner.conf
+echo 'NOTIFY_WEBHOOK="http://127.0.0.1:8802/global"' >> /etc/ddeploy/provisioner.conf
 for _ in 1 2 3 4 5 6 7 8 9 10; do
     curl -fsS -o /dev/null -X POST -d '{}' http://127.0.0.1:8802/ready && break
     sleep 0.2
@@ -348,7 +348,9 @@ env_mode="$(stat -L -c %a "$LIVE/.env")"
 # (which runs on every deploy, not just provision) re-tightens it even
 # when write_db_credentials itself isn't called this time.
 chmod 640 "$PERSISTENT_ROOT/testsite/.env"
+rm -f /tmp/ddeploy-ops-hook-ran
 ./provision.sh deploy testsite
+assert_contains "$(cat /tmp/ddeploy-ops-hook-ran 2>/dev/null)" "testsite" "an ops hook in /etc/ddeploy/hooks runs on deploy"
 env_mode_after="$(stat -L -c %a "$LIVE/.env")"
 [[ "$env_mode_after" == "600" ]] \
     && pass "a plain deploy re-tightens a stale 640 .env back to 600" \
@@ -370,8 +372,8 @@ assert_contains "$(./provision.sh env testsite --path)" "$PERSISTENT_ROOT/testsi
 ./provision.sh env testsite --unset THROWAWAY
 assert_cmd_fails "env --unset removed the key" grep -q '^THROWAWAY=' "$PERSISTENT_ROOT/testsite/.env"
 assert_cmd_fails "env refuses an invalid key" ./provision.sh env testsite 'BAD-KEY=x'
-# What db_ensure does to an existing key on every re-provision — this
-# used to mv a temp file over the symlink.
+# What db_ensure does to an existing key on every re-provision; it must
+# write through the symlink, not replace it.
 write_env_var "$LIVE/.env" DB_HOST "$(read_env_var "$LIVE/.env" DB_HOST)"
 assert_cmd_ok "updating an existing .env key keeps it a symlink" test -L "$LIVE/.env"
 out="$(curl_site testsite.staging.ddeploy.test)"
@@ -993,8 +995,8 @@ BITBUCKET_APP_PASSWORD="bbpass"
 BITBUCKET_API="http://127.0.0.1:8801"
 EOF
 chmod 600 /etc/ddeploy/preview-comment.env
-grep -q '^PREVIEW_COMMENT_CREDENTIALS=' /opt/ddeploy/provisioner.conf \
-    || echo 'PREVIEW_COMMENT_CREDENTIALS="/etc/ddeploy/preview-comment.env"' >> /opt/ddeploy/provisioner.conf
+grep -q '^PREVIEW_COMMENT_CREDENTIALS=' /etc/ddeploy/provisioner.conf \
+    || echo 'PREVIEW_COMMENT_CREDENTIALS="/etc/ddeploy/preview-comment.env"' >> /etc/ddeploy/provisioner.conf
 
 # Direct helper: first call POSTs, second call PATCHes the same marker.
 export PREVIEW_COMMENT_CREDENTIALS="/etc/ddeploy/preview-comment.env"
@@ -1429,8 +1431,8 @@ flush_hooks
 assert_contains "$(./provision.sh logs webhook-other -n 5)" "no preview of testsite for deleted branch 'misc-x'" "deleting a branch that never had a preview is a quiet line in webhook-other"
 # Server-wide default (provisioner.conf), and a site opting out of it.
 ./provision.sh override testsite --unset preview_branches
-sed -i '/^PREVIEW_BRANCHES=/d' /opt/ddeploy/provisioner.conf
-echo 'PREVIEW_BRANCHES="glob/*"' >> /opt/ddeploy/provisioner.conf
+sed -i '/^PREVIEW_BRANCHES=/d' /etc/ddeploy/provisioner.conf
+echo 'PREVIEW_BRANCHES="glob/*"' >> /etc/ddeploy/provisioner.conf
 git -C "$WORK" checkout -q -b glob/one
 git -C "$WORK" push -q origin glob/one
 write_github_push glob/one "$BODY"
@@ -1445,7 +1447,7 @@ post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY" >/dev/null
 flush_hooks
 assert_file_absent "/etc/nginx/sites-enabled/testsite-glob-two.conf" "a site's empty preview_branches opts it out of the server-wide default"
 ./provision.sh remove-preview testsite glob/one --purge-files
-sed -i '/^PREVIEW_BRANCHES=/d' /opt/ddeploy/provisioner.conf
+sed -i '/^PREVIEW_BRANCHES=/d' /etc/ddeploy/provisioner.conf
 ./provision.sh override testsite --unset preview_branches
 git -C "$BARE" branch -D auto/one misc-x glob/one glob/two >/dev/null
 rm -rf "$WORK" "$BODY"
@@ -1640,6 +1642,7 @@ if [[ "$doctor_exit" -eq 0 ]]; then
 else
     fail "doctor exited $doctor_exit for a healthy site"
 fi
+assert_contains "$doctor_out" "every parent root-owned" "doctor: /opt/ddeploy's parents are root-owned"
 assert_contains "$doctor_out" "nginx config" "doctor: checks nginx config"
 assert_contains "$doctor_out" "database server" "doctor: checks the database server itself (admin connection)"
 assert_contains "$doctor_out" "testsite: vhost" "doctor: checks testsite's vhost"

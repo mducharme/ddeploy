@@ -174,7 +174,7 @@ cmd_deploy() {
 
     prune_old_releases "$name"
 
-    # Root-run ops hooks (hooks/post-deploy.d/*.sh — operator concerns
+    # Root-run ops hooks (/etc/ddeploy/hooks/post-deploy.d/*.sh — operator concerns
     # like a reverse-proxy list or a success ping, per hooks/README.md)
     # fire here, after the swap, not alongside the repo's own build-time
     # hooks above — an ops hook wants to know the release is actually

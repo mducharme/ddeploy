@@ -4,7 +4,10 @@
 # steps run under the site's pinned PHP version rather than whatever
 # `php` on PATH happens to default to.
 
-SHIM_ROOT="$PROVISIONER_DIR/phpshim"
+# Regenerated on demand (ensure_php_shim), so nothing to migrate. Site
+# users run composer through it, hence world-traversable (755) under the
+# otherwise-closed /var/lib/ddeploy (751, lib/cmd_init.sh).
+SHIM_ROOT="$DDEPLOY_STATE/phpshim"
 
 # Installs php<ver>-fpm plus every currently-configured PHP_EXTENSIONS
 # package. Checks each package individually rather than just "is
@@ -74,6 +77,7 @@ ensure_php_shim() {
     local ver="$1"
     local dir="$SHIM_ROOT/$ver"
     mkdir -p "$dir"
+    chmod 755 "$SHIM_ROOT" "$dir"
     [[ -L "$dir/php" ]] || ln -sf "/usr/bin/php${ver}" "$dir/php"
     if command -v composer >/dev/null 2>&1 && [[ ! -e "$dir/composer" ]]; then
         ln -sf "$(command -v composer)" "$dir/composer"

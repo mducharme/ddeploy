@@ -18,10 +18,19 @@ but the worker that actually runs `ddeploy deploy` on a queued job
 is root).
 
 If this tree were writable by `deploy` or by whatever SSHes in to
-trigger a CI deploy, either one could rewrite `lib/*.sh` — or
-`provisioner.conf`, which is `source`d, not parsed — and get root on the
-next cron tick or webhook delivery, with no deploy of their own
-required. `deploy` being in the `sudo` group already makes it
+trigger a CI deploy, either one could rewrite `lib/*.sh` and get root on
+the next cron tick or webhook delivery, with no deploy of their own
+required. The same goes for `/etc/ddeploy/provisioner.conf`, which is
+`source`d, not parsed, and for the ops hooks in `/etc/ddeploy/hooks/`:
+`/etc/ddeploy` is root-owned for the same reason, and so are
+`/var/lib/ddeploy` (per-site state, including the worker/schedule
+scripts systemd and cron run) and `/var/log/ddeploy`.
+
+The checkout's **parent** directories matter too: whoever can write to
+the directory containing the checkout can rename it away and put their
+own in its place, ownership of the checkout itself notwithstanding. A
+checkout at `/home/deploy/provisioner` is replaceable by `deploy`; keep
+it somewhere like `/opt/ddeploy`, whose parents are root-owned. `deploy` being in the `sudo` group already makes it
 root-equivalent for itself, but the same checkout is also where a
 webhook/CI path runs, and that's a meaningfully lower-trust actor that
 should be able to trigger a deploy without being able to rewrite what
@@ -131,7 +140,7 @@ tasks") is a full shell command declared in the client's own
 `.ddeploy/config.yaml` — trusted the same way a `hooks.post-start` step
 already is, but still never handed to systemd or cron directly. Each one
 is spliced into a small generated wrapper script
-(`generated/<name>.worker-<i>.sh` / `.schedule-<i>.sh`) that `cd`s into
+(`/var/lib/ddeploy/generated/<name>.worker-<i>.sh` / `.schedule-<i>.sh`) that `cd`s into
 the site and sets up its PATH/PHP-version pinning, and *that script* is
 what's actually referenced — sidestepping systemd's own unit-file
 quoting and `%`-specifier-expansion rules entirely (a literal `%` or `$`

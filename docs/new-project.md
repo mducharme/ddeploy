@@ -19,9 +19,7 @@ person sets it up for the whole server, then every project has it).
 **Server access.** SSH to the server as the `deploy` user, who has sudo.
 Every command below is `ddeploy <command>` and works from any directory.
 It asks for sudo by itself, so don't prefix it. `ddeploy -h` lists the
-commands, and `ddeploy <command> -h` explains one. (No `ddeploy` command
-on the server? It was set up before the command existed: run
-`sudo ./provision.sh install-cli` once from the ddeploy checkout.)
+commands, and `ddeploy <command> -h` explains one.
 
 **Repo access.** The server clones over SSH with one shared machine-user
 key (README "Git access"). That bot account needs **read access to the
@@ -141,7 +139,7 @@ rm -rf /tmp/<name>-uploads
 ```
 
 (`/home/deploy/sites` is the default `SITES_ROOT`; check
-`provisioner.conf` if yours differs.)
+`/etc/ddeploy/provisioner.conf` if yours differs.)
 
 ## 4. Check it works
 
@@ -243,7 +241,7 @@ ddeploy override <name> basic_auth=true "additional_hostnames=alt1 alt2"
 ddeploy deploy <name>
 ```
 
-It's stored on the server only (`generated/<name>.override.yaml`) and
+It's stored on the server only (`/var/lib/ddeploy/generated/<name>.override.yaml`) and
 wins over both `.ddeploy/config.yaml` and `.ddev/config.yaml`. `--show`
 prints what's set, `--unset <key>` removes one key, and `--clear`
 removes everything. It covers most of step 6's keys, but not
@@ -417,7 +415,7 @@ notifications on (step 14), a failure is also posted to chat.
 3. Copy the `https://hooks.slack.com/services/...` URL. Anyone with it
    can post to the channel, so treat it like a password.
 
-Put it in `provisioner.conf` (`sudoedit /path/to/checkout/provisioner.conf`):
+Put it in `provisioner.conf` (`sudoedit /etc/ddeploy/provisioner.conf`):
 
 ```
 NOTIFY_WEBHOOK="https://hooks.slack.com/services/..."

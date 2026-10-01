@@ -9,7 +9,7 @@ usage_logs() {
     cat <<'EOF'
 usage: ddeploy logs <name> [-n lines] [-f]
 
-Print the last lines of logs/<name>.log (provision/deploy/preview for a
+Print the last lines of /var/log/ddeploy/<name>.log (provision/deploy/preview for a
 site, or backup-uploads / backup-database / prune-previews for fleet
 cron). -n is how many (default 50). -f follows, like tail -f.
 

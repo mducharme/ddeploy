@@ -5,7 +5,7 @@
 # parsed internal job, never from forge JSON directly.
 #
 # Every delivery and every action it leads to gets a line in
-# logs/webhook.log (`ddeploy logs webhook`), tagged with a short
+# /var/log/ddeploy/webhook.log (`ddeploy logs webhook`), tagged with a short
 # delivery id so one push's lines can be followed through: received ->
 # verified/rejected/ignored -> per-site skip/deploy OK/FAILED.
 

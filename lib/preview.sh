@@ -102,7 +102,7 @@ assert_preview_of() {
 # provision-preview, deploy-preview, and remove-preview, so none of them
 # can drift from what the others would resolve.
 #
-# Either way the preview's own generated/<name>.override.yaml (seeded
+# Either way the preview's own /var/lib/ddeploy/generated/<name>.override.yaml (seeded
 # from the parent's by seed_preview_override) is what parse_config
 # applies on top, since it's parsed under the preview's own name.
 #
@@ -160,7 +160,7 @@ resolve_preview_config() {
     fi
 }
 
-# Gives a new preview its own generated/<name>.override.yaml, starting as
+# Gives a new preview its own /var/lib/ddeploy/generated/<name>.override.yaml, starting as
 # a copy of the parent's operator overrides — so a preview behaves like
 # its parent by default (same basic_auth, php_ini-free knobs, build
 # settings...) but can then be tuned on its own with

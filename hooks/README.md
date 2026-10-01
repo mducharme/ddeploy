@@ -1,6 +1,10 @@
 # Fleet-wide ops hooks
 
-Scripts here run for **every** site on this server, as **root**, at the
+Put them in `/etc/ddeploy/hooks/post-provision.d/` and
+`/etc/ddeploy/hooks/post-deploy.d/` on the server (`init` creates both).
+This directory only holds this README and the `.example` files.
+
+Scripts there run for **every** site on this server, as **root**, at the
 end of `provision` / `deploy` respectively — for operator concerns
 (reverse-proxy lists, optional success pings), not site-specific
 setup. **Failure** paging is `NOTIFY_WEBHOOK` in `provisioner.conf`, not

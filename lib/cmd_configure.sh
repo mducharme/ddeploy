@@ -14,7 +14,7 @@ usage_configure() {
     cat <<'EOF'
 usage: ddeploy configure [backups|webhook]
 
-(no argument) Creates ./provisioner.conf from provisioner.example.conf
+(no argument) Creates /etc/ddeploy/provisioner.conf from provisioner.example.conf
 (if it doesn't exist yet) and interactively sets the fields provision.sh
 cannot start without: BASE_DOMAIN, SITES_ROOT, CF_CREDENTIALS,
 CERT_EMAIL, BASELINE_PHP, DEFAULT_PHP, GIT_DEPLOY_KEY. Press enter to
@@ -49,28 +49,28 @@ cmd_configure() {
 }
 
 require_provisioner_conf() {
-    [[ -f "$PROVISIONER_DIR/provisioner.conf" ]] \
-        || die "no provisioner.conf yet — run 'provision.sh configure' first"
+    [[ -f "$CONF_FILE" ]] \
+        || die "no $CONF_FILE yet — run 'provision.sh configure' first"
 }
 
 cmd_configure_core() {
     # provisioner.conf is `source`d, not parsed (lib/common.sh) — whoever
     # can write it gets arbitrary code exec on the next command that
-    # reads it. It lives inside $PROVISIONER_DIR, which is root-owned
-    # (see bootstrap.sh) precisely so a lower-trust actor (CI SSH, a
-    # webhook) can't rewrite what root-triggered cron/systemd units
-    # execute — configure has to run as root too, or it simply couldn't
-    # write here anymore.
+    # reads it. It lives in /etc/ddeploy (CONF_FILE, lib/common.sh),
+    # root-owned, so a lower-trust actor (CI SSH, a webhook) can't
+    # rewrite what root-triggered cron/systemd units execute — configure
+    # has to run as root too, or it simply couldn't write there.
     require_root
-    local target="$PROVISIONER_DIR/provisioner.conf"
+    local target="$CONF_FILE"
+    mkdir -p "$(dirname "$target")"
     local example="$PROVISIONER_DIR/provisioner.example.conf"
     [[ -f "$example" ]] || die "missing $example — is this a full ddeploy checkout?"
 
     if [[ -f "$target" ]]; then
         log_info "provisioner.conf already exists — updating the fields below in place; everything else is left alone"
     else
-        cp "$example" "$target"
-        log_info "created provisioner.conf from provisioner.example.conf"
+        install -m 644 -o root -g root "$example" "$target"
+        log_info "created $target from provisioner.example.conf"
     fi
 
     echo "Setting up provisioner.conf for this server. Press enter to keep the value in [brackets]."
@@ -88,15 +88,15 @@ cmd_configure_core() {
     log_info "wrote $target"
     log_info "next: place a Cloudflare token at CF_CREDENTIALS and the shared git key at GIT_DEPLOY_KEY (chmod 600 each), review the rest of provisioner.conf, then 'sudo ./provision.sh init'"
 
-    if [[ ! -f "$PROVISIONER_DIR/manifest" ]]; then
-        log_info "./manifest doesn't exist yet — copy manifest.example to manifest if you'll use provision-all/deploy-all"
+    if [[ ! -f "$MANIFEST_FILE" ]]; then
+        log_info "$MANIFEST_FILE doesn't exist yet — copy manifest.example there if you'll use provision-all/deploy-all"
     fi
 }
 
 cmd_configure_backups() {
     require_root
     require_provisioner_conf
-    local target="$PROVISIONER_DIR/provisioner.conf"
+    local target="$CONF_FILE"
 
     echo "Setting up object storage backups (uploads + database)."
     echo "Both share one set of credentials and one bucket, at <bucket>/<site>/... and <bucket>/<site>/db/..."
@@ -193,7 +193,7 @@ EOF
 cmd_configure_webhook() {
     require_root
     require_provisioner_conf
-    local target="$PROVISIONER_DIR/provisioner.conf"
+    local target="$CONF_FILE"
 
     set_conf_value "$target" WEBHOOK_ENABLED "true"
     local hostname; hostname="$(get_conf_value "$target" WEBHOOK_HOSTNAME)"

@@ -10,7 +10,7 @@ usage: ddeploy provision-preview <project> <branch> [repo-url] [options]
 
 repo-url is only needed when it can't be inferred: it's read from the
 parent project's own git remote if already provisioned, else looked up
-by project name in ./manifest.
+by project name in /etc/ddeploy/manifest.
 
 <name> is derived deterministically from <project>+<branch> (see
 preview_slug in lib/preview.sh) — deploy-preview/remove-preview take the
@@ -118,7 +118,7 @@ cmd_provision_preview() {
                 # CLI as long as the project is listed there.
                 repo_url="$(read_manifest | awk -v p="$project" '$1 == p { print $2; exit }')"
             fi
-            [[ -n "$repo_url" ]] || die "no repo at $dir, no repo-url given, '$project' isn't cloned to infer one from, and no entry for '$project' in ./manifest"
+            [[ -n "$repo_url" ]] || die "no repo at $dir, no repo-url given, '$project' isn't cloned to infer one from, and no entry for '$project' in $MANIFEST_FILE"
         fi
         log_info "cloning $repo_url (branch $branch) -> $dir"
         GIT_SSH_COMMAND="$(git_ssh_command)" git clone --branch "$branch" --single-branch "$repo_url" "$dir"
@@ -271,9 +271,8 @@ cmd_deploy_preview() {
     # into the parent's files are left alone.
     apply_permissions "$name" "$dir" "$exec_user"
     # Re-assert the persistent link after the reset: a no-op normally,
-    # but migrates a preview created before previews had one (its .env
-    # was a plain file in the checkout), and repairs a repo that tracks
-    # its own .env, which the reset just restored over the link.
+    # but it repairs a repo that tracks its own .env, which the reset
+    # just restored over the link.
     local cred; cred="$(persistent_db_credential_path "$DB_ENV_SCHEME")"
     if [[ -n "$cred" ]]; then
         ensure_persistent_link "$name" "$dir" "$cred" "file" "$exec_user"

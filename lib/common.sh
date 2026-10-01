@@ -8,8 +8,21 @@
 NAME_RE='^[a-z0-9][a-z0-9-]{0,27}$'
 
 PROVISIONER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG_DIR="$PROVISIONER_DIR/logs"
-GENERATED_DIR="$PROVISIONER_DIR/generated"
+
+# The checkout is code only; everything per-server lives in the
+# standard places, so it can be moved or re-cloned without losing
+# anything:
+#   CONF_FILE, MANIFEST_FILE  /etc/ddeploy/                configuration
+#   GENERATED_DIR             /var/lib/ddeploy/generated   per-site state
+#                             (sidecars, overrides, preview metadata, deploy
+#                             SHAs, worker scripts, *.dbpass, *.notify-url)
+#   LOG_DIR                   /var/log/ddeploy/            site/fleet/webhook logs
+DDEPLOY_ETC="/etc/ddeploy"
+DDEPLOY_STATE="/var/lib/ddeploy"
+CONF_FILE="$DDEPLOY_ETC/provisioner.conf"
+MANIFEST_FILE="$DDEPLOY_ETC/manifest"
+GENERATED_DIR="$DDEPLOY_STATE/generated"
+LOG_DIR="/var/log/ddeploy"
 
 # Ubuntu 24.04 ships needrestart, which hooks apt/dpkg and, left in its
 # default interactive mode, can ask "which services should be
@@ -78,7 +91,7 @@ site_log_output() {
 }
 
 load_conf() {
-    local conf="$PROVISIONER_DIR/provisioner.conf"
+    local conf="$CONF_FILE"
     [[ -f "$conf" ]] || die "missing $conf — run './provision.sh configure' first (or './install.sh')"
     # shellcheck source=/dev/null
     source "$conf"
@@ -143,7 +156,7 @@ load_conf() {
 # Lighter loader for `init-db`, run on a dedicated database server that
 # doesn't need any of the web-server config load_conf requires.
 load_db_conf() {
-    local conf="$PROVISIONER_DIR/provisioner.conf"
+    local conf="$CONF_FILE"
     [[ -f "$conf" ]] || die "missing $conf — run './provision.sh configure' first (or './install.sh')"
     # shellcheck source=/dev/null
     source "$conf"
@@ -211,6 +224,21 @@ config_checkout_dir() {
     else
         site_dir "$name"
     fi
+}
+
+# Prints the first directory above the checkout that a non-root user
+# owns or can write to, or nothing. Root runs code from the checkout
+# (cron, the webhook worker); whoever can write to a parent can rename
+# the checkout away and put their own in its place (docs/security.md).
+checkout_unsafe_parent() {
+    local p="$PROVISIONER_DIR"
+    while [[ "$p" != "/" ]]; do
+        p="$(dirname "$p")"
+        if [[ "$(stat -c %u "$p" 2>/dev/null)" != "0" ]] || [[ -n "$(find "$p" -maxdepth 0 -perm /022 2>/dev/null)" ]]; then
+            printf '%s' "$p"
+            return 0
+        fi
+    done
 }
 
 is_releases_layout() { [[ -L "$(site_root "$1")/current" ]]; }

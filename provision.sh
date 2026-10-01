@@ -111,8 +111,8 @@ run_notifying() {
     set -e
     if [[ "$rc" -ne 0 ]]; then
         # `|| true`: no [error] line is a normal case (grep exits 1), and
-        # under pipefail + set -e that alone used to kill the script right
-        # here, before the notification was ever sent.
+        # under pipefail + set -e that alone would kill the script here,
+        # before the notification is sent.
         local err
         err="$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | grep -E '^\[error\]' | tail -n 2 | cut -c1-300 || true)"
         [[ -n "$err" ]] || err="$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | tail -n 3 | cut -c1-300 || true)"
@@ -169,7 +169,7 @@ commands:
   deploy <name> [opts]          new release + re-apply vhost/FPM config + replay hooks (see -h)
   remove <name> [opts]          disable a site (see: ddeploy remove -h)
   list                          table of provisioned sites
-  provision-all                 provision every site in ./manifest
+  provision-all                 provision every site in /etc/ddeploy/manifest
   deploy-all                    deploy every provisioned site
   backup-uploads [name]         sync upload_dirs to object storage (needs BACKUP_ENABLED=true)
   backup-database [name]        dump + upload each site's DB (needs DB_BACKUP_ENABLED=true)
