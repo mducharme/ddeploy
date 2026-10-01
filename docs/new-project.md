@@ -167,7 +167,7 @@ rm -rf /tmp/<name>-uploads
 | Craft says "An internal server error occurred" | Craft's own log: `sudo tail -n 100 /home/deploy/sites/<name>/current/storage/logs/web-$(date +%F).log`. For the full error in the browser, briefly run `ddeploy env <name> CRAFT_DEV_MODE=true`, reload, then `ddeploy env <name> --unset CRAFT_DEV_MODE`. |
 | `provision` or `deploy` failed | `ddeploy logs <name> -n 200` (composer, build and deploy-step output). A failed deploy never goes live; the previous release keeps serving. |
 | 502, blank page, "Permission denied" | `sudo tail -n 50 /var/log/nginx/error.log` and `sudo tail -n 50 /var/log/php*-fpm.log`. |
-| Pushed, but the site didn't update | `ddeploy logs webhook` shows every delivery and what happened to it (deployed, skipped because it's not the tracked branch, rejected for a wrong secret...). |
+| Pushed, but the site didn't update | `ddeploy logs webhook` shows every delivery for a site on this server and what happened to it (deployed, skipped because it's not the tracked branch, rejected for a wrong secret...). Not there at all? `ddeploy logs webhook-other` — a "no site on this server uses <repo>" line there means the site's git remote doesn't match the repo that was pushed. |
 | Database connection errors | `ddeploy env <name>` to see what the app is using. Lost or broken credentials: re-run `ddeploy provision <name>` (no repo URL needed), which re-syncs the DB password. |
 | Not sure | `ddeploy doctor <name>` checks nginx, PHP-FPM, the database, disk and certificates. |
 

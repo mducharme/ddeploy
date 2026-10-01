@@ -120,7 +120,7 @@ deploy-preview <project> <branch>       pull + redeploy a preview
 remove-preview <project> <branch> [opts]   remove a preview (see -h)
 prune-previews [project]      remove previews whose branch no longer exists
 preview-url <project> <branch>   print the preview URL (site need not exist)
-logs <name> [-n N] [-f]       tail a site or fleet log; `logs webhook` for git-push deliveries (see -h)
+logs <name> [-n N] [-f]       tail a site or fleet log; `logs webhook` / `logs webhook-other` for git-push deliveries (see -h)
 env <name> [KEY=value] [opts] show/edit a site's persistent .env (see -h)
 notify <name> [opts]          per-site Slack/Discord channel for deploy notifications (see -h)
 doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
@@ -436,8 +436,9 @@ as delivered. Check `ddeploy logs webhook` instead (and turn on the
 `webhook-rejected` notification, see "Notifications").
 
 **The webhook log** (`ddeploy logs webhook [-n N] [-f]`, file
-`logs/webhook.log`) has one line per delivery and one per action it led
-to, tagged with the forge's delivery id (first 8 chars — the same id
+`logs/webhook.log`) has every delivery that concerns a site on this
+server, every rejected delivery, and one line per action each led to,
+tagged with the forge's delivery id (first 8 chars — the same id
 GitHub/Bitbucket show in their webhook UI):
 
 ```
@@ -447,6 +448,15 @@ GitHub/Bitbucket show in their webhook UI):
 2026-09-30T14:05:40Z [77e0b5d1] github push repo=org/site branch=feature-x -> accepted: push_head
 2026-09-30T14:05:40Z [77e0b5d1] skip site: it deploys 'main', push was to feature-x
 2026-09-30T14:09:03Z [c41d9e8a] github push from=203.0.113.9 -> REJECTED: HMAC verification failed (...) — dropped
+```
+
+The webhook is org-wide, so most deliveries are for repos with no site
+here; those, and events with nothing to do (pings, branch deletions, PR
+labels), get one line each in `ddeploy logs webhook-other`
+(`logs/webhook-other.log`, trimmed automatically past ~2 MB):
+
+```
+2026-09-30T14:03:20Z [9d1e44b0] github push repo=org/other-project branch=main -> accepted: push_head — no site on this server uses github.com/org/other-project
 2026-09-30T14:10:00Z [0b6f2a7e] github ping repo=org/site -> ignored: nothing to do for event 'ping'
 ```
 

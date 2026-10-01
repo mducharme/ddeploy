@@ -839,9 +839,13 @@ assert_contains "$wlog" "[0badc0de]" "a delivery with no forge id is tagged with
 assert_contains "$wlog" "REJECTED: malformed envelope — dropped" "webhook log records an unparseable envelope"
 assert_contains "$wlog" "github push" "webhook log names provider and forge event"
 assert_contains "$wlog" "REJECTED: HMAC verification failed" "webhook log records a wrong signature"
-assert_contains "$wlog" "github ping" "webhook log records the ping"
-assert_contains "$wlog" "-> ignored" "webhook log says a ping was ignored, not silently dropped"
-assert_contains "$wlog" "no provisioned site uses github.com/other/nope" "webhook log records a push for a repo nobody uses"
+olog="$(./provision.sh logs webhook-other -n 500)"
+assert_contains "$olog" "github ping" "webhook-other log records the ping"
+assert_contains "$olog" "-> ignored" "...as ignored, not silently dropped"
+assert_contains "$olog" "-> accepted: push_head — no site on this server uses github.com/other/nope" "webhook-other log: a push for a repo nobody here uses, on one line"
+assert_not_contains "$wlog" "github.com/other/nope" "the main webhook log stays free of other projects' pushes"
+assert_not_contains "$wlog" "github ping" "...and of pings"
+assert_not_contains "$olog" "REJECTED" "rejected deliveries stay in the main log, never the other one"
 assert_contains "$(notify_sink)" '"event": "webhook-rejected"' "a rejected webhook sent a notification"
 
 # --- PR preview comments (mock GitHub/Bitbucket API) -------------------

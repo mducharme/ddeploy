@@ -14,8 +14,26 @@
 # webhook UI), else the spool file's random id.
 WEBHOOK_LOG_ID=""
 
-# $1 info|warn|error, rest message. To the journal (as before) and to
-# logs/webhook.log.
+# Two files, because the webhook is org-wide and most deliveries are for
+# repos with no site on this server:
+#   webhook.log        deliveries that concern a site here (deployed,
+#                      skipped, failed...), and every rejected delivery
+#   webhook-other.log  one line per delivery that needed nothing from
+#                      this server: no site uses the repo, or an event
+#                      with nothing to do (ping, branch deletion, PR label)
+# A delivery's "accepted" line is held in WEBHOOK_PENDING until it's
+# known which file it belongs in: the first hook_log line flushes it to
+# webhook.log ahead of itself; hook_log_other folds it into its own line.
+WEBHOOK_PENDING=""
+WEBHOOK_OTHER_MAX_BYTES=2000000
+
+hook_log_write() {
+    local file="$1"; shift
+    mkdir -p "$LOG_DIR"
+    printf '%s [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${WEBHOOK_LOG_ID:--}" "$*" >> "$LOG_DIR/$file"
+}
+
+# $1 info|warn|error, rest message. To the journal and to webhook.log.
 hook_log() {
     local level="$1"; shift
     case "$level" in
@@ -23,8 +41,29 @@ hook_log() {
         error) log_error "webhook: $*" ;;
         *) log_info "webhook: $*" ;;
     esac
-    mkdir -p "$LOG_DIR"
-    printf '%s [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${WEBHOOK_LOG_ID:--}" "$*" >> "$LOG_DIR/webhook.log"
+    if [[ -n "$WEBHOOK_PENDING" ]]; then
+        hook_log_write webhook.log "$WEBHOOK_PENDING"
+        WEBHOOK_PENDING=""
+    fi
+    hook_log_write webhook.log "$*"
+}
+
+# A delivery that needed nothing from this server: one line in
+# webhook-other.log (the pending "accepted" line, if any, prefixed to
+# it). Trimmed to its newest half once it passes ~2 MB — it's the
+# high-volume one, and nothing in it is worth keeping for long.
+hook_log_other() {
+    log_info "webhook: ${WEBHOOK_PENDING:+$WEBHOOK_PENDING — }$*"
+    hook_log_write webhook-other.log "${WEBHOOK_PENDING:+$WEBHOOK_PENDING — }$*"
+    WEBHOOK_PENDING=""
+    local f="$LOG_DIR/webhook-other.log" size
+    size="$(stat -c %s "$f" 2>/dev/null || echo 0)"
+    if [[ "$size" -gt "$WEBHOOK_OTHER_MAX_BYTES" ]]; then
+        local tmp; tmp="$(mktemp)"
+        tail -c "$((WEBHOOK_OTHER_MAX_BYTES / 2))" "$f" | tail -n +2 > "$tmp"
+        cat "$tmp" > "$f"
+        rm -f "$tmp"
+    fi
 }
 
 # $1 verify_and_spool.py JSON report, $2 yq path. Empty if absent.
@@ -83,6 +122,7 @@ hook_verify_and_process() {
         extra=(--secret-bitbucket "$secret_bb")
     fi
 
+    WEBHOOK_PENDING=""
     local report rc=0
     report="$(python3 "$PROVISIONER_DIR/hook/verify_and_spool.py" "$claimed" --secret "$secret_path" "${extra[@]}")" || rc=$?
 
@@ -137,11 +177,11 @@ hook_verify_and_process() {
     if [[ "$result" != "job" ]]; then
         # Verified, but nothing actionable (ping, a deleted branch, a
         # closed-and-uninteresting PR, ...) — success, not a failure.
-        hook_log info "$summary -> ignored: ${reason:-nothing to do}"
+        hook_log_other "$summary -> ignored: ${reason:-nothing to do}"
         rm -f "$claimed"
         return
     fi
-    hook_log info "$summary -> accepted: $reason"
+    WEBHOOK_PENDING="$summary -> accepted: $reason"
 
     local job_file="$claimed.job"
     printf '%s' "$report" | yq -p=json -o=json -I=0 eval '.job' - > "$job_file"
@@ -155,6 +195,12 @@ hook_verify_and_process() {
         rm -f "$job_file"
     fi
     unset DDEPLOY_TRIGGER
+    # Every path above logs something, which flushes the held "accepted"
+    # line; this only catches one that somehow didn't.
+    if [[ -n "$WEBHOOK_PENDING" ]]; then
+        hook_log_write webhook.log "$WEBHOOK_PENDING"
+        WEBHOOK_PENDING=""
+    fi
     rm -f "$claimed"
 }
 
@@ -226,7 +272,7 @@ hook_process_job() {
     done < <(matching_sites_for_urls "${urls[@]}")
 
     if [[ "${#matches[@]}" -eq 0 ]]; then
-        hook_log info "no provisioned site uses ${urls[0]} — nothing to do"
+        hook_log_other "no site on this server uses ${urls[0]}"
         return 0
     fi
 

@@ -13,10 +13,13 @@ Print the last lines of logs/<name>.log (provision/deploy/preview for a
 site, or backup-uploads / backup-database / prune-previews for fleet
 cron). -n is how many (default 50). -f follows, like tail -f.
 
-`logs webhook` is the git-push webhook log: one line per delivery
-(accepted, ignored, or rejected — e.g. a wrong HMAC secret) and per
-action it led to (skip / deploy OK @ sha / FAILED), each tagged with a
-short delivery id. Requests nginx or the listener refused outright
+`logs webhook` is the git-push webhook log: every delivery that concerns
+a site on this server, and every rejected one (e.g. a wrong HMAC
+secret), with what it led to (skip / deploy OK @ sha / FAILED), each
+tagged with a short delivery id. `logs webhook-other` has one line per
+delivery that needed nothing from this server — repos with no site
+here, pings, branch deletions — kept apart since an org-wide webhook
+sends a lot of those. Requests nginx or the listener refused outright
 (missing signature, oversized body) never get that far: see
 `journalctl -u ddeploy-hook`.
 

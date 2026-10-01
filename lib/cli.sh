@@ -67,7 +67,7 @@ _ddeploy() {
     elif [[ "\$COMP_CWORD" -eq 2 && "\${COMP_WORDS[1]}" != install-cli ]]; then
         local sites
         sites="\$(ls -1 $(printf '%q' "$SITES_ROOT") 2>/dev/null)"
-        [[ "\${COMP_WORDS[1]}" == logs ]] && sites+=" webhook backup-uploads backup-database prune-previews"
+        [[ "\${COMP_WORDS[1]}" == logs ]] && sites+=" webhook webhook-other backup-uploads backup-database prune-previews"
         mapfile -t COMPREPLY < <(compgen -W "\$sites" -- "\$cur")
     fi
 }
