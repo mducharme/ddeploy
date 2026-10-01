@@ -212,6 +212,7 @@ php_ini:
 security_headers: true            # X-Content-Type-Options / Referrer-Policy / X-Frame-Options
 static_cache: 30d                 # expires header on css/js/images/fonts (1-9999 + s/m/h/d)
 deny_php_in_uploads: true         # 404 for any PHP file under an upload directory
+composer_dev: true                # keep dev packages (default: composer install --no-dev --optimize-autoloader)
 redirects:
   - from: /old-page
     to: /new-page

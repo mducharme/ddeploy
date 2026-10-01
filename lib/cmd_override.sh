@@ -10,7 +10,7 @@
 # Scalar keys: validated the same way parse_config validates the same
 # key when it comes from the repo (db_env_scheme is the one exception —
 # still no dedicated validator, matching parse_config).
-OVERRIDE_SCALAR_KEYS="basic_auth client_max_body_size fpm_max_children db_env_scheme security_headers static_cache deny_php_in_uploads db_backup_retention_days nodejs_version build"
+OVERRIDE_SCALAR_KEYS="basic_auth client_max_body_size fpm_max_children db_env_scheme security_headers static_cache deny_php_in_uploads db_backup_retention_days nodejs_version build composer_dev"
 # Array keys: space-separated on the CLI, same as --hostnames/--upload-dirs
 # elsewhere in this tool.
 OVERRIDE_ARRAY_KEYS="additional_hostnames additional_fqdns persistent_files auth_exempt_paths backup_exclude deny_php_paths preview_branches"
@@ -56,7 +56,7 @@ override_validate_value() {
     local name="$1" key="$2" val="$3"
     [[ "$val" != *'"'* ]] || die "$key for '$name' cannot contain a double quote"
     case "$key" in
-        basic_auth|security_headers|deny_php_in_uploads|build) validate_bool "$val" "$key for '$name'" ;;
+        basic_auth|security_headers|deny_php_in_uploads|build|composer_dev) validate_bool "$val" "$key for '$name'" ;;
         nodejs_version) validate_node_version_spec "$val" "$key for '$name'" ;;
         static_cache) validate_static_cache "$val" "$key for '$name'" ;;
         client_max_body_size) validate_body_size "$val" "$key for '$name'" ;;

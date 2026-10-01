@@ -286,6 +286,21 @@ ext_config_path() { echo "$(config_checkout_dir "$1")/.ddeploy/config.yaml"; }
 # lost the next time someone edits .ddeploy/config.yaml either.
 override_config_path() { echo "$GENERATED_DIR/$1.override.yaml"; }
 
+# The composer step ddeploy uses whenever it picks one itself (no
+# hooks.post-start declared, a detected CMS, the --deploy-cmd and
+# interactive fallbacks): production-style — no dev packages, an
+# optimized autoloader. A project that needs its dev packages on the
+# server sets composer_dev: true (default_composer_args drops --no-dev).
+# Steps a project declares itself in hooks.post-start run as declared.
+DEFAULT_COMPOSER_INSTALL="install --no-dev --optimize-autoloader"
+default_composer_args() {
+    if [[ "${COMPOSER_DEV:-}" == "true" ]]; then
+        echo "install --optimize-autoloader"
+    else
+        echo "$DEFAULT_COMPOSER_INSTALL"
+    fi
+}
+
 # Reads array expression $4 from $1 (operator override, highest
 # precedence), else $2 (extension config), else $3 (the site's primary
 # config) — first of the three that exists AND actually declares a
@@ -655,6 +670,10 @@ parse_config() {
     FPM_MAX_CHILDREN_CONFIG="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.fpm_max_children // ""')"
     [[ "$FPM_MAX_CHILDREN_CONFIG" == "null" ]] && FPM_MAX_CHILDREN_CONFIG=""
     validate_max_children "$FPM_MAX_CHILDREN_CONFIG" "fpm_max_children for '$name'"
+    # composer_dev: keep dev packages in ddeploy's own composer step (see
+    # default_composer_args).
+    COMPOSER_DEV="$(read_ext_scalar "$override_cfg" "$ext_cfg" "$cfg" '.composer_dev // ""')"
+    validate_bool "$COMPOSER_DEV" "composer_dev for '$name'"
 
     local v
     for v in "${ADDITIONAL_HOSTNAMES[@]}"; do validate_hostname "$v" "additional_hostnames entry for '$name'"; done
@@ -937,7 +956,7 @@ parse_config() {
     # (composer install, then one exec step per --deploy-cmd value).
     if [[ -n "${DEPLOY_CMDS_OVERRIDE:-}" ]]; then
         {
-            printf 'composer\tinstall\n'
+            printf 'composer\t%s\n' "$(default_composer_args)"
             local cmd
             while IFS= read -r cmd; do
                 [[ -n "$cmd" ]] && printf 'exec\t%s\n' "$cmd"
@@ -947,6 +966,13 @@ parse_config() {
         unset DEPLOY_CMDS_OVERRIDE
     else
         extract_hooks "$cfg" "$GENERATED_DIR/$name.steps"
+        # The sidecar is ddeploy's own file, and its composer step is
+        # ddeploy's default (written at provision time): composer_dev
+        # applies to it like to the implicit step below. Never to a
+        # repo's own .ddev/config.yaml — those steps run as declared.
+        if [[ "$COMPOSER_DEV" == "true" && "$cfg" == "$GENERATED_DIR/$name.yaml" ]]; then
+            sed -i -E $'/^composer\t/ s/ --no-dev( |$)/\\1/' "$GENERATED_DIR/$name.steps"
+        fi
     fi
 
     # A real .ddev/config.yaml frequently declares no hooks.post-start at
@@ -962,13 +988,13 @@ parse_config() {
     # fallbacks), just extended to also cover "config exists but declares
     # nothing".
     if [[ ! -s "$GENERATED_DIR/$name.steps" && -f "$(config_checkout_dir "$name")/composer.json" ]]; then
-        printf 'composer\tinstall\n' > "$GENERATED_DIR/$name.steps"
+        printf 'composer\t%s\n' "$(default_composer_args)" > "$GENERATED_DIR/$name.steps"
         # The steps file itself is always kept accurate (above), but the
         # explanation is only worth printing when this parse_config call
         # is actually about to act on it (a deploy) — every read-only
         # caller (backup-uploads/backup-database/doctor/list/restore)
         # would otherwise repeat this same line every single run.
-        [[ "$is_deploy" == "1" ]] && log_info "'$name': no hooks.post-start declared but composer.json exists — defaulting to 'composer install' as the deploy step (add hooks.post-start to .ddev/config.yaml to override)"
+        [[ "$is_deploy" == "1" ]] && log_info "'$name': no hooks.post-start declared but composer.json exists — defaulting to 'composer $(default_composer_args)' as the deploy step (composer_dev: true keeps dev packages; hooks.post-start in .ddev/config.yaml replaces it)"
     fi
 
     # After the steps file is final — the build step is placed relative
@@ -1085,7 +1111,7 @@ interactive_fallback() {
         [[ -n "$CMS_CACHE_CMD" ]] && deploy_steps+=("exec:$CMS_CACHE_CMD")
     else
         local composer_args migrate_cmd cache_cmd
-        read -rp "composer install args [install]: " composer_args; composer_args="${composer_args:-install}"
+        read -rp "composer install args [$DEFAULT_COMPOSER_INSTALL]: " composer_args; composer_args="${composer_args:-$DEFAULT_COMPOSER_INSTALL}"
         deploy_steps+=("composer:$composer_args")
         read -rp "migrate command (blank to skip): " migrate_cmd
         [[ -n "$migrate_cmd" ]] && deploy_steps+=("exec:$migrate_cmd")
@@ -1146,7 +1172,7 @@ non_interactive_config() {
 
     local deploy_steps=()
     if [[ -n "$deploy_cmds" ]]; then
-        deploy_steps=("composer:install")
+        deploy_steps=("composer:$DEFAULT_COMPOSER_INSTALL")
         local cmd
         while IFS= read -r cmd; do
             [[ -n "$cmd" ]] && deploy_steps+=("exec:$cmd")
@@ -1156,7 +1182,7 @@ non_interactive_config() {
         [[ -n "$CMS_MIGRATE_CMD" ]] && deploy_steps+=("exec:$CMS_MIGRATE_CMD")
         [[ -n "$CMS_CACHE_CMD" ]] && deploy_steps+=("exec:$CMS_CACHE_CMD")
     else
-        deploy_steps=("composer:install")
+        deploy_steps=("composer:$DEFAULT_COMPOSER_INSTALL")
     fi
 
     write_sidecar "$name" "$php" "$docroot" "$db_name" "$db_user" "$hostnames" "$db_env_scheme" "$cms" "$custom_domains" "${deploy_steps[@]}"

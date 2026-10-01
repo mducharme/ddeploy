@@ -610,6 +610,43 @@ rm -rf "$WORK"
 sleep 1
 assert_contains "$(build_txt)" "BUILD=fe-v1" "fixed build deploys again"
 
+step "composer: production-style default step, composer_dev opt-out"
+# parse_config against throwaway configs: what the steps file says is
+# exactly what replay_hooks runs.
+CT="$(mktemp -d)"
+mkdir -p "$CT/.ddev"
+printf 'name: composertest\nphp_version: "8.3"\n' > "$CT/.ddev/config.yaml"
+echo '{}' > "$CT/composer.json"
+composer_step() { grep $'^composer\t' "$GENERATED_DIR/$1.steps" | cut -f2-; }
+# parse_config needs the same libraries provision.sh loads; a subshell
+# keeps them (and their globals) out of this script.
+parse_ct() {
+    (
+        for f in lib/*.sh; do source "$f"; done
+        load_conf
+        CONFIG_CHECKOUT_DIR="$CT"
+        parse_config composertest "$1" 0
+    )
+}
+parse_ct "$CT/.ddev/config.yaml"
+[[ "$(composer_step composertest)" == "install --no-dev --optimize-autoloader" ]] && pass "no hooks.post-start: composer install --no-dev --optimize-autoloader" || fail "implicit composer step is '$(composer_step composertest)'"
+./provision.sh override composertest composer_dev=true
+parse_ct "$CT/.ddev/config.yaml"
+[[ "$(composer_step composertest)" == "install --optimize-autoloader" ]] && pass "composer_dev=true keeps dev packages" || fail "with composer_dev, composer step is '$(composer_step composertest)'"
+# A sidecar (ddeploy's own config for a repo without .ddev/config.yaml)
+# carries the default it was provisioned with; composer_dev applies too.
+printf 'name: composertest\nphp_version: "8.3"\nhooks:\n  post-start:\n    - composer: install --no-dev --optimize-autoloader\n' > "$GENERATED_DIR/composertest.yaml"
+rm -rf "$CT/.ddev"
+parse_ct "$GENERATED_DIR/composertest.yaml"
+[[ "$(composer_step composertest)" == "install --optimize-autoloader" ]] && pass "composer_dev applies to a sidecar's default step" || fail "sidecar composer step with composer_dev is '$(composer_step composertest)'"
+# A step the project declares itself runs exactly as declared.
+mkdir -p "$CT/.ddev"
+printf 'name: composertest\nphp_version: "8.3"\nhooks:\n  post-start:\n    - composer: install --no-dev\n' > "$CT/.ddev/config.yaml"
+parse_ct "$CT/.ddev/config.yaml"
+[[ "$(composer_step composertest)" == "install --no-dev" ]] && pass "a composer step declared in .ddev/config.yaml runs as declared" || fail "declared composer step became '$(composer_step composertest)'"
+assert_cmd_fails "override refuses a non-boolean composer_dev" ./provision.sh override composertest composer_dev=maybe
+rm -rf "$CT" "$GENERATED_DIR"/composertest.*
+
 step "deploy steps: stdin isolation, and a failing step stops the deploy and notifies"
 GOOD_SHA="$(git -C "$BARE" rev-parse main)"
 WORK="$(mktemp -d)"
@@ -622,13 +659,14 @@ cat >> "$WORK/.ddev/config.yaml" <<'YAML'
 hooks:
   post-start:
     - exec: "cat > /dev/null"
-    - exec: "touch /tmp/ddeploy-step2-ran"
+    - exec: "printenv COMPOSER_NO_INTERACTION > /tmp/ddeploy-step2-ran"
 YAML
 git -C "$WORK" commit -q -am 'deploy steps: stdin reader + marker'
 git -C "$WORK" push -q origin main
 rm -f /tmp/ddeploy-step2-ran
 ./provision.sh deploy testsite
 assert_file_exists /tmp/ddeploy-step2-ran "a step that reads stdin doesn't swallow the steps after it"
+assert_contains "$(cat /tmp/ddeploy-step2-ran)" "1" "deploy steps run with COMPOSER_NO_INTERACTION=1"
 sed -i 's|    - exec: "cat > /dev/null"|    - exec: "echo step-output; exit 7"|' "$WORK/.ddev/config.yaml"
 git -C "$WORK" commit -q -am 'deploy steps: failing step'
 git -C "$WORK" push -q origin main

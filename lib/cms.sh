@@ -41,10 +41,12 @@ detect_cms() {
 
 # Sets CMS_DOCROOT CMS_COMPOSER_ARGS CMS_MIGRATE_CMD CMS_CACHE_CMD
 # CMS_DB_ENV_SCHEME for a detected CMS id (empty id -> generic defaults).
+# Every CMS gets the same composer default (DEFAULT_COMPOSER_INSTALL,
+# lib/config.sh).
 cms_defaults() {
     local cms="$1"
     CMS_DOCROOT=""
-    CMS_COMPOSER_ARGS="install"
+    CMS_COMPOSER_ARGS="$DEFAULT_COMPOSER_INSTALL"
     CMS_MIGRATE_CMD=""
     CMS_CACHE_CMD=""
     CMS_DB_ENV_SCHEME="laravel"
@@ -52,24 +54,20 @@ cms_defaults() {
     case "$cms" in
         craftcms)
             CMS_DOCROOT="web"
-            CMS_COMPOSER_ARGS="install --no-dev --optimize-autoloader"
             CMS_MIGRATE_CMD="php craft migrate/all --interactive=0 && php craft project-config/apply --force"
             CMS_CACHE_CMD="php craft clear-caches/all"
             CMS_DB_ENV_SCHEME="craft"
             ;;
         wordpress-bedrock)
             CMS_DOCROOT="web"
-            CMS_COMPOSER_ARGS="install --no-dev --optimize-autoloader"
             CMS_DB_ENV_SCHEME="laravel"
             ;;
         wordpress)
             CMS_DOCROOT=""
-            CMS_COMPOSER_ARGS="install --no-dev"
             CMS_DB_ENV_SCHEME="none"
             ;;
         charcoal)
             CMS_DOCROOT="www"
-            CMS_COMPOSER_ARGS="install --no-dev --optimize-autoloader"
             CMS_DB_ENV_SCHEME="charcoal"
             ;;
     esac

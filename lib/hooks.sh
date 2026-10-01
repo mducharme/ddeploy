@@ -62,7 +62,9 @@ replay_hooks() {
     local type cmd out
     # Each step's command runs with </dev/null: this loop reads the steps
     # file on stdin, and a step that reads stdin would otherwise swallow
-    # the remaining steps, which then silently never run.
+    # the remaining steps, which then silently never run. And with
+    # COMPOSER_NO_INTERACTION=1, so composer (in a composer step, or an
+    # exec step calling it) fails clearly instead of waiting on a prompt.
     while IFS=$'\t' read -r type cmd; do
         [[ -z "$type" ]] && continue
         if guardrail_match "$cmd"; then
@@ -75,7 +77,7 @@ replay_hooks() {
                 log_info "exec ($name, php$php${NODE_VERSION:+, node $NODE_VERSION}): $cmd"
                 site_log "$name" "deploy: exec: $cmd"
                 out="$(mktemp)"
-                run_captured "$out" sudo -u "$exec_user" env HOME="$exec_home" PATH="$path" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" bash -lc "cd '$dir' && $cmd" </dev/null \
+                run_captured "$out" sudo -u "$exec_user" env HOME="$exec_home" PATH="$path" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" COMPOSER_NO_INTERACTION=1 bash -lc "cd '$dir' && $cmd" </dev/null \
                     || deploy_step_failed "$name" "$?" "$cmd" "$out"
                 rm -f "$out"
                 ;;
@@ -83,7 +85,7 @@ replay_hooks() {
                 log_info "composer ($name, php$php): $cmd"
                 site_log "$name" "deploy: composer: $cmd"
                 out="$(mktemp)"
-                run_captured "$out" sudo -u "$exec_user" env HOME="$exec_home" PATH="$path" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" bash -lc "cd '$dir' && composer $cmd" </dev/null \
+                run_captured "$out" sudo -u "$exec_user" env HOME="$exec_home" PATH="$path" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" COMPOSER_NO_INTERACTION=1 bash -lc "cd '$dir' && composer $cmd" </dev/null \
                     || deploy_step_failed "$name" "$?" "composer $cmd" "$out"
                 rm -f "$out"
                 ;;

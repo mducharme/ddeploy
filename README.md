@@ -195,6 +195,7 @@ sitting next to `.ddev/config.yaml`:
 ```yaml
 db_env_scheme: charcoal
 nodejs_version: "22"        # also read from .ddev/config.yaml, .nvmrc — see "Frontend builds"
+composer_dev: true          # keep dev packages in the default composer step — see "Deploy hooks"
 build:
   script: build
   outputs:
@@ -299,7 +300,8 @@ Scalar keys: `basic_auth`, `client_max_body_size`, `fpm_max_children`,
 `db_env_scheme`, `security_headers`, `static_cache`,
 `deny_php_in_uploads`, `db_backup_retention_days`, `nodejs_version`,
 `build` (`false` turns a site's frontend build off; `true` just
-doesn't). List keys,
+doesn't), `composer_dev` (`true` keeps dev packages in ddeploy's default
+composer step). List keys,
 space-separated (quote the value): `additional_hostnames`,
 `additional_fqdns`, `persistent_files`, `auth_exempt_paths`,
 `backup_exclude`, `deny_php_paths`, `preview_branches`. Not supported here (need
@@ -841,10 +843,17 @@ steps run; `exec-host` steps are logged and skipped. A step referencing
 `ddev` or `/var/www/html` is skipped with a warning.
 
 No `hooks.post-start` declared, but the repo has `composer.json`:
-`composer install` is assumed by default (DDEV often installs implicitly
-on `ddev start`, which this tool never sees). Only fills a completely
-absent `hooks.post-start` — declaring steps without `composer` is
-treated as deliberate.
+`composer install --no-dev --optimize-autoloader` runs by default (DDEV
+often installs implicitly on `ddev start`, which this tool never sees).
+The same production-style install is what ddeploy uses whenever it picks
+the composer step itself (a detected CMS, `--deploy-cmd`). A project that
+needs its dev packages on the server sets `composer_dev: true` in
+`.ddeploy/config.yaml` (or `ddeploy override <name> composer_dev=true`).
+This only fills a completely absent `hooks.post-start` — declared steps,
+`composer` ones included, run exactly as written, and declaring steps
+without `composer` is treated as deliberate. Every step runs with
+`COMPOSER_NO_INTERACTION=1`, so a composer prompt fails the deploy
+instead of hanging it.
 
 Two more extension points:
 
