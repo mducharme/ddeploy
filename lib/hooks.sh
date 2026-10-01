@@ -29,6 +29,15 @@ scan_hooks() {
     done < "$steps"
 }
 
+# A failed exec/composer step: one clear line saying the deploy stopped
+# and why (the step's own output is above it), in the site log too. The
+# [error] line is also what the failure notification quotes.
+deploy_step_failed() {
+    local name="$1" rc="$2" what="$3"
+    site_log "$name" "deploy: step FAILED (exit $rc): $what"
+    die "'$name': deploy step failed (exit $rc): $what — the deploy stopped here (see the output above, or 'ddeploy logs $name')"
+}
+
 # $4/$5 (optional) exec user/home — default to the site's own www-<name>.
 # A shared-mode preview passes its parent's user/dir instead, since its
 # deploy steps (a migration, notably) run as whoever actually owns the
@@ -48,6 +57,9 @@ replay_hooks() {
     prepare_site_node "$name"
     local path; path="$(toolchain_path "$php")"
     local type cmd
+    # Each step's command runs with </dev/null: this loop reads the steps
+    # file on stdin, and a step that reads stdin would otherwise swallow
+    # the remaining steps, which then silently never run.
     while IFS=$'\t' read -r type cmd; do
         [[ -z "$type" ]] && continue
         if guardrail_match "$cmd"; then
@@ -59,12 +71,14 @@ replay_hooks() {
             exec)
                 log_info "exec ($name, php$php${NODE_VERSION:+, node $NODE_VERSION}): $cmd"
                 site_log "$name" "deploy: exec: $cmd"
-                sudo -u "$exec_user" env HOME="$exec_home" PATH="$path" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" bash -lc "cd '$dir' && $cmd"
+                sudo -u "$exec_user" env HOME="$exec_home" PATH="$path" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" bash -lc "cd '$dir' && $cmd" </dev/null \
+                    || deploy_step_failed "$name" "$?" "$cmd"
                 ;;
             composer)
                 log_info "composer ($name, php$php): $cmd"
                 site_log "$name" "deploy: composer: $cmd"
-                sudo -u "$exec_user" env HOME="$exec_home" PATH="$path" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" bash -lc "cd '$dir' && composer $cmd"
+                sudo -u "$exec_user" env HOME="$exec_home" PATH="$path" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" bash -lc "cd '$dir' && composer $cmd" </dev/null \
+                    || deploy_step_failed "$name" "$?" "composer $cmd"
                 ;;
             node)
                 run_node_build "$name" "$dir" "$exec_user" "$exec_home" "$path"

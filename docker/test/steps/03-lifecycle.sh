@@ -589,6 +589,42 @@ rm -rf "$WORK"
 sleep 1
 assert_contains "$(build_txt)" "BUILD=fe-v1" "fixed build deploys again"
 
+step "deploy steps: stdin isolation, and a failing step stops the deploy and notifies"
+GOOD_SHA="$(git -C "$BARE" rev-parse main)"
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+# Step 1 reads stdin: before steps got </dev/null it swallowed the rest
+# of the steps file, and step 2 silently never ran.
+cat >> "$WORK/.ddev/config.yaml" <<'YAML'
+hooks:
+  post-start:
+    - exec: "cat > /dev/null"
+    - exec: "touch /tmp/ddeploy-step2-ran"
+YAML
+git -C "$WORK" commit -q -am 'deploy steps: stdin reader + marker'
+git -C "$WORK" push -q origin main
+rm -f /tmp/ddeploy-step2-ran
+./provision.sh deploy testsite
+assert_file_exists /tmp/ddeploy-step2-ran "a step that reads stdin doesn't swallow the steps after it"
+sed -i 's|    - exec: "cat > /dev/null"|    - exec: "echo step-output; exit 7"|' "$WORK/.ddev/config.yaml"
+git -C "$WORK" commit -q -am 'deploy steps: failing step'
+git -C "$WORK" push -q origin main
+: > "$NOTIFY_SINK"
+step_out="$(./provision.sh deploy testsite 2>&1 || true)"
+assert_contains "$step_out" "deploy step failed (exit 7): echo step-output; exit 7" "a failing exec step ends the deploy with a clear [error] line"
+assert_contains "$(notify_sink)" '"event": "deploy-failure", "site": "testsite"' "a failing deploy step (not just a failing build) sends deploy-failure"
+assert_contains "$(notify_sink)" "deploy step failed (exit 7)" "the failure notification quotes the failed step"
+# Restore with a new commit (not a force-push): the live checkout is at
+# the stdin-test commit, and later deploys pull --ff-only.
+git -C "$WORK" checkout -q "$GOOD_SHA" -- .ddev/config.yaml
+git -C "$WORK" commit -q -am 'deploy steps: back to none'
+git -C "$WORK" push -q origin main
+rm -rf "$WORK" /tmp/ddeploy-step2-ran
+./provision.sh deploy testsite
+sleep 1
+
 step "frontend build: 'exec-host: ddev npm run build' becomes a native step"
 WORK="$(mktemp -d)"
 git clone -q "$BARE" "$WORK"

@@ -334,8 +334,10 @@ run_build_cmd() {
     if [[ -n "$NODE_BUILD_MEMORY_MAX" && -d /run/systemd/system ]] && command -v systemd-run >/dev/null 2>&1; then
         wrap=(systemd-run --scope --quiet --collect -p "MemoryMax=$NODE_BUILD_MEMORY_MAX" -p MemorySwapMax=0 --)
     fi
+    # </dev/null: runs inside replay_hooks' `while read ... < steps` loop,
+    # whose remaining steps would otherwise be this command's stdin.
     "${wrap[@]}" timeout --kill-after=30 "$NODE_BUILD_TIMEOUT" \
-        sudo -u "$exec_user" env "${envs[@]}" bash -lc "$cmd"
+        sudo -u "$exec_user" env "${envs[@]}" bash -lc "$cmd" </dev/null
 }
 
 # The `node` deploy step (lib/hooks.sh). Reads the BUILD_* globals

@@ -110,9 +110,12 @@ run_notifying() {
     rc="${PIPESTATUS[0]}"
     set -e
     if [[ "$rc" -ne 0 ]]; then
+        # `|| true`: no [error] line is a normal case (grep exits 1), and
+        # under pipefail + set -e that alone used to kill the script right
+        # here, before the notification was ever sent.
         local err
-        err="$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | grep -E '^\[error\]' | tail -n 2 | cut -c1-300)"
-        [[ -n "$err" ]] || err="$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | tail -n 3 | cut -c1-300)"
+        err="$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | grep -E '^\[error\]' | tail -n 2 | cut -c1-300 || true)"
+        [[ -n "$err" ]] || err="$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | tail -n 3 | cut -c1-300 || true)"
         (
             load_conf
             notify_event deploy-failure "$site" "$site: $label FAILED" \
