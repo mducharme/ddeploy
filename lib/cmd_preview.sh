@@ -188,7 +188,7 @@ cmd_provision_preview() {
     seed_cms_env "$name" "$dir" "$DB_ENV_SCHEME" "https://$name.$BASE_DOMAIN"
 
     write_preview_meta "$name" "$project" "$branch" "$mode"
-    site_log "$name" "provision-preview: project=$project branch=$branch mode=$mode"
+    site_log "$name" "provision-preview: started ($(notify_trigger)) — $project / $branch, mode=$mode, php=$PHP_VERSION, at $(git -c safe.directory='*' -C "$dir" log -1 --format='%h "%s"' | cut -c1-120)"
 
     log_info "running first deploy for $name"
     start_deploy_ssh_agent "$exec_user"
@@ -200,6 +200,7 @@ cmd_provision_preview() {
     run_ops_hooks "post-provision" "$name" "$dir" "$PHP_VERSION"
 
     record_preview_deployed "$name" "$dir"
+    site_log "$name" "provision-preview: done in $((SECONDS - started))s — https://$name.$BASE_DOMAIN"
     log_info "provisioned preview ($mode): https://$name.$BASE_DOMAIN"
     notify_deploy_success preview-created "$name" "$dir" "$((SECONDS - started))" "preview created ($project / $branch)"
 }
@@ -251,8 +252,14 @@ cmd_deploy_preview() {
     # user. safe.directory=* since $dir is already www-<name>-owned.
     # reset needs no key (purely local); fetch does.
     log_info "git fetch + reset --hard origin/$PREVIEW_BRANCH ($name)"
-    GIT_SSH_COMMAND="$(git_ssh_command)" git -c safe.directory='*' -C "$dir" fetch origin "$PREVIEW_BRANCH" 2>&1 | tee -a "$LOG_DIR/$name.log"
-    git -c safe.directory='*' -C "$dir" reset --hard "origin/$PREVIEW_BRANCH" 2>&1 | tee -a "$LOG_DIR/$name.log"
+    local before; before="$(git -c safe.directory='*' -C "$dir" rev-parse --short HEAD 2>/dev/null || true)"
+    local out; out="$(mktemp)"
+    run_captured "$out" env GIT_SSH_COMMAND="$(git_ssh_command)" git -c safe.directory='*' -C "$dir" fetch origin "$PREVIEW_BRANCH" \
+        || git_failed "$name" "$out" "" "git fetch of origin/$PREVIEW_BRANCH failed (branch deleted? see 'ddeploy logs $name')"
+    run_captured "$out" git -c safe.directory='*' -C "$dir" reset --hard "origin/$PREVIEW_BRANCH" \
+        || git_failed "$name" "$out" "" "git reset to origin/$PREVIEW_BRANCH failed"
+    rm -f "$out"
+    site_log "$name" "deploy-preview: started ($(notify_trigger)) — ${before:-?} -> $(git -c safe.directory='*' -C "$dir" log -1 --format='%h "%s"' | cut -c1-120)"
 
     resolve_preview_config "$name" "$PREVIEW_PROJECT" "$PREVIEW_MODE"
     ensure_php_installed "$PHP_VERSION"
@@ -294,7 +301,7 @@ cmd_deploy_preview() {
 
     local sha; sha="$(git -C "$dir" log -1 --format=%h)"
     record_preview_deployed "$name" "$dir"
-    site_log "$name" "deploy-preview: done at $sha ($(notify_trigger))"
+    site_log "$name" "deploy-preview: done at $sha in $((SECONDS - started))s"
     log_info "deployed preview $name @ $sha"
     notify_deploy_success deploy-success "$name" "$dir" "$((SECONDS - started))" "deployed (preview of $PREVIEW_PROJECT / $PREVIEW_BRANCH)"
 }

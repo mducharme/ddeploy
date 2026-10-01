@@ -53,6 +53,30 @@ site_log() {
     printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$msg" >> "$LOG_DIR/$name.log"
 }
 
+# Runs "$@" with its output (stdout and stderr together) shown live on
+# stderr and copied to file $1; returns the command's own exit code, not
+# tee's. Always call it as `run_captured "$f" cmd ... || handle_failure`:
+# the || is what stops set -e from exiting before the return. stderr,
+# not stdout, so it's safe inside a function whose stdout is captured
+# (prepare_forward_release prints the new release path).
+run_captured() {
+    local out="$1"; shift
+    "$@" 2>&1 | tee "$out" >&2
+    return "${PIPESTATUS[0]}"
+}
+
+# The site log only gets a command's output when it failed: the last
+# lines of captured output $2, indented under the line saying what
+# failed, so `ddeploy logs <name>` shows why and not just that. Progress
+# bars (carriage returns), color codes and blank lines are dropped.
+site_log_output() {
+    local name="$1" file="$2" lines="${3:-25}"
+    [[ -s "$file" ]] || return 0
+    mkdir -p "$LOG_DIR"
+    tr '\r' '\n' < "$file" | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | grep -v '^[[:space:]]*$' \
+        | tail -n "$lines" | cut -c1-300 | sed 's/^/    | /' >> "$LOG_DIR/$name.log" || true
+}
+
 load_conf() {
     local conf="$PROVISIONER_DIR/provisioner.conf"
     [[ -f "$conf" ]] || die "missing $conf — run './provision.sh configure' first (or './install.sh')"

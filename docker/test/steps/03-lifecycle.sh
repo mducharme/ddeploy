@@ -169,9 +169,15 @@ step "provision: a failed first provision leaves nothing behind"
 assert_cmd_fails "provision with no repo URL for a new name fails" ./provision.sh provision ghostsite
 assert_file_absent "$SITES_ROOT/ghostsite" "...without creating its directory"
 assert_cmd_fails "...or its Linux user" id -u www-ghostsite
+assert_file_absent "$LOG_DIR/ghostsite.log" "...or an empty log file"
 assert_cmd_fails "provision of a repo that doesn't exist fails" ./provision.sh provision ghostsite ssh://gitfixture@127.0.0.1/srv/git/no-such-repo.git
 assert_file_absent "$SITES_ROOT/ghostsite" "the failed clone's directory was cleaned up"
 assert_cmd_fails "the failed clone's Linux user was cleaned up" id -u www-ghostsite
+ghost_log="$(cat "$LOG_DIR/ghostsite.log" 2>/dev/null || true)"
+assert_contains "$ghost_log" "git clone of ssh://gitfixture@127.0.0.1/srv/git/no-such-repo.git FAILED" "the site log says the clone failed"
+assert_contains "$ghost_log" "    | " "...with git's own error under it"
+assert_contains "$ghost_log" "provision: FAILED after" "...and a closing FAILED line"
+rm -f "$LOG_DIR/ghostsite.log"
 
 step "provision: checks"
 assert_cmd_ok "www-testsite Linux user created" id -u www-testsite
@@ -201,7 +207,8 @@ assert_contains "$list_out" "testsite" "list shows testsite"
 
 step "logs and preview-url"
 logs_out="$(./provision.sh logs testsite -n 20)"
-assert_contains "$logs_out" "provision:" "logs shows the site's provision line"
+assert_contains "$logs_out" "provision: started (manual" "logs shows the provision's start, with who triggered it"
+assert_contains "$logs_out" "provision: done in" "...and its end, with how long it took"
 assert_cmd_fails "logs rejects a name that would walk out of LOG_DIR" ./provision.sh logs '../etc/passwd'
 assert_cmd_fails "logs errors on a name with no log file" ./provision.sh logs nosuchsite
 purl="$(./provision.sh preview-url testsite feature-a)"
@@ -577,6 +584,10 @@ git -C "$WORK" push -q origin main
 assert_cmd_fails "deploy fails when the build fails" ./provision.sh deploy testsite
 assert_contains "$(notify_sink)" '"event": "deploy-failure", "site": "testsite"' "a failed manual deploy sends deploy-failure"
 assert_contains "$(notify_sink)" "logs testsite" "failure message points at the full log"
+site_log_now="$(tail -n 40 "$LOG_DIR/testsite.log")"
+assert_contains "$site_log_now" "deploy: node build FAILED (exit 3)" "site log: the failed build"
+assert_contains "$site_log_now" "    | " "site log: ...with the build's last lines of output under it"
+assert_contains "$site_log_now" "deploy: FAILED after" "site log: ...and a closing FAILED line"
 assert_not_contains "$(notify_sink)" "deploy-success" "a failed deploy sends no success message"
 assert_cmd_ok "current still points at the previous release" test "$BEFORE_REL" = "$(readlink -f "$LIVE")"
 assert_contains "$(build_txt)" "BUILD=fe-v1" "previous build output still served"
@@ -616,6 +627,12 @@ step_out="$(./provision.sh deploy testsite 2>&1 || true)"
 assert_contains "$step_out" "deploy step failed (exit 7): echo step-output; exit 7" "a failing exec step ends the deploy with a clear [error] line"
 assert_contains "$(notify_sink)" '"event": "deploy-failure", "site": "testsite"' "a failing deploy step (not just a failing build) sends deploy-failure"
 assert_contains "$(notify_sink)" "deploy step failed (exit 7)" "the failure notification quotes the failed step"
+site_log_now="$(tail -n 40 "$LOG_DIR/testsite.log")"
+assert_contains "$site_log_now" "deploy: step FAILED (exit 7): echo step-output; exit 7" "site log: the failed step"
+assert_contains "$site_log_now" "    | step-output" "site log: ...with the step's own output under it"
+assert_contains "$site_log_now" "deploy: started (manual" "site log: deploys log who started them"
+assert_contains "$site_log_now" "deploy: done at" "site log: ...and finish with the sha"
+assert_not_contains "$(cat "$LOG_DIR/testsite.log")" "Already up to date" "site log: a routine git pull's output isn't logged"
 # Restore with a new commit (not a force-push): the live checkout is at
 # the stdin-test commit, and later deploys pull --ff-only.
 git -C "$WORK" checkout -q "$GOOD_SHA" -- .ddev/config.yaml

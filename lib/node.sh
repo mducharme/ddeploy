@@ -336,7 +336,9 @@ run_build_cmd() {
     fi
     # </dev/null: runs inside replay_hooks' `while read ... < steps` loop,
     # whose remaining steps would otherwise be this command's stdin.
-    "${wrap[@]}" timeout --kill-after=30 "$NODE_BUILD_TIMEOUT" \
+    # Output goes to BUILD_OUT too (set by run_node_build), so a failure
+    # can put its last lines in the site log (build_failed).
+    run_captured "${BUILD_OUT:-/dev/null}" "${wrap[@]}" timeout --kill-after=30 "$NODE_BUILD_TIMEOUT" \
         sudo -u "$exec_user" env "${envs[@]}" bash -lc "$cmd" </dev/null
 }
 
@@ -364,6 +366,7 @@ run_node_build() {
     [[ -n "$mib" && "$mib" -gt 512 ]] && base_env+=(NODE_OPTIONS="--max-old-space-size=$((mib * 3 / 4))")
 
     local started=$SECONDS
+    BUILD_OUT="$(mktemp)"
     log_info "node build ($name, node $NODE_VERSION, $pm, path '${BUILD_PATH:-.}')"
     site_log "$name" "deploy: node build: node=$NODE_VERSION pm=$pm path=${BUILD_PATH:-.}"
 
@@ -424,6 +427,7 @@ run_node_build() {
         fi
         rm -rf "$bdir/node_modules"
     fi
+    rm -f "$BUILD_OUT"
     local took=$((SECONDS - started))
     log_info "node build done in ${took}s"
     site_log "$name" "deploy: node build ok in ${took}s"
@@ -435,7 +439,9 @@ build_failed() {
     case "$rc" in
         124|137) hint=" — killed: hit NODE_BUILD_TIMEOUT (${NODE_BUILD_TIMEOUT}s) or NODE_BUILD_MEMORY_MAX ($NODE_BUILD_MEMORY_MAX)" ;;
     esac
-    site_log "$name" "deploy: node $what FAILED (exit $rc)"
+    site_log "$name" "deploy: node $what FAILED (exit $rc)$hint"
+    site_log_output "$name" "${BUILD_OUT:-}"
+    rm -f "${BUILD_OUT:-}"
     record_build_state "$name" failed "$what exit $rc"
     die "'$name': node $what failed (exit $rc)$hint"
 }

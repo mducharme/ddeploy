@@ -118,6 +118,14 @@ run_notifying() {
         [[ -n "$err" ]] || err="$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | tail -n 3 | cut -c1-300 || true)"
         (
             load_conf
+            # The closing line of every failed run in the site's own log,
+            # whatever failed (a step, git, config...) — the step-level
+            # line and output above it, if any, say more. Skipped when the
+            # site doesn't exist at all (a typo'd name), so that doesn't
+            # leave an empty log file behind.
+            if [[ -d "$(site_root "$site")" || -f "$LOG_DIR/$site.log" ]]; then
+                site_log "$site" "$label: FAILED after $((SECONDS - started))s ($(notify_trigger)) — $(head -n1 <<< "$err" | sed 's/^\[error\] *//')"
+            fi
             notify_event deploy-failure "$site" "$site: $label FAILED" \
                 "${err}"$'\n'"Took $((SECONDS - started))s — $(notify_trigger)"$'\n'"Full log: ddeploy logs $site"
         ) || true

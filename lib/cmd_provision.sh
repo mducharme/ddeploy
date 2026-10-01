@@ -244,7 +244,7 @@ cmd_provision() {
     db_ensure "$name" "$dest"   # each scheme re-owns the file it writes itself
     seed_cms_env "$name" "$dest" "$DB_ENV_SCHEME" "https://$name.$BASE_DOMAIN"
 
-    site_log "$name" "provision: php=$PHP_VERSION docroot=$DOCROOT"
+    site_log "$name" "provision: started ($(notify_trigger)) — php=$PHP_VERSION docroot=${DOCROOT:-.} db=$DB_NAME ($DB_ENV_SCHEME), at $(git -C "$dest" log -1 --format='%h "%s"' | cut -c1-120)"
 
     log_info "running first deploy for $name"
     # Bracket just the hook-replay window with a live ssh-agent (see
@@ -271,6 +271,7 @@ cmd_provision() {
     # single ordinary `deploy` has ever run against this site.
     record_deploy "$name" "$(git -C "$dest" log -1 --format=%H)"
 
+    site_log "$name" "provision: done in $((SECONDS - started))s — https://$name.$BASE_DOMAIN"
     log_info "provisioned: https://$name.$BASE_DOMAIN"
     local fqdn
     for fqdn in "${ADDITIONAL_FQDNS[@]}"; do

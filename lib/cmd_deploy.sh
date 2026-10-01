@@ -110,6 +110,9 @@ cmd_deploy() {
     else
         dest="$(prepare_forward_release "$name")"
     fi
+    local verb=deploy
+    [[ "$rollback" -eq 1 ]] && verb=rollback
+    site_log "$name" "$verb: started ($(notify_trigger)) — ${current_sha:0:7} -> $(git -C "$dest" log -1 --format='%h "%s"' | cut -c1-120)"
 
     # Discard this release on any failure before switch_current, so a
     # broken hook cannot take the site down. Same trap also tears down
@@ -187,11 +190,11 @@ cmd_deploy() {
     local sha; sha="$(git -C "$dir" log -1 --format=%h)"
     record_deploy "$name" "$full_sha"
     if [[ "$rollback" -eq 1 ]]; then
-        site_log "$name" "rollback: done at $sha ($(notify_trigger))"
+        site_log "$name" "rollback: done at $sha in $((SECONDS - started))s"
         log_info "rolled back $name @ $sha"
         notify_deploy_success deploy-success "$name" "$dir" "$((SECONDS - started))" "rolled back"
     else
-        site_log "$name" "deploy: done at $sha ($(notify_trigger))"
+        site_log "$name" "deploy: done at $sha in $((SECONDS - started))s"
         log_info "deployed $name @ $sha"
         notify_deploy_success deploy-success "$name" "$dir" "$((SECONDS - started))" "deployed"
     fi

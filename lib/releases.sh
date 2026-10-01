@@ -186,8 +186,14 @@ clone_into_release() {
     else
         log_info "cloning $repo_url -> $root"
     fi
-    GIT_SSH_COMMAND="$(git_ssh_command)" git clone "${branch_args[@]}" "$repo_url" "$staging" \
-        || die "git clone failed for '$name'"
+    local out; out="$(mktemp)"
+    if ! run_captured "$out" env GIT_SSH_COMMAND="$(git_ssh_command)" git clone "${branch_args[@]}" "$repo_url" "$staging"; then
+        site_log "$name" "provision: git clone of $repo_url FAILED"
+        site_log_output "$name" "$out" 10
+        rm -f "$out"
+        die "git clone failed for '$name' — check the URL, and that the server's git key can read that repo (README \"Git access\")"
+    fi
+    rm -f "$out"
     git_trust_repo "$staging"
     finalize_staging "$staging"
 }
@@ -237,24 +243,33 @@ prepare_forward_release() {
     # safe.directory=* is scoped to this one invocation: apply_permissions
     # just chowned $staging to www-<name>, and root operating on a tree it
     # doesn't own trips git's dubious-ownership check otherwise.
+    # Git's output goes to the site log only when it fails (git_failed);
+    # a routine fetch/pull isn't worth a line there.
+    local out; out="$(mktemp)"
     if [[ -n "$target_branch" && "$target_branch" != "$current_branch" ]]; then
         log_info "'$name': switching to configured deploy_branch '$target_branch' (was '$current_branch')"
-        if ! GIT_SSH_COMMAND="$(git_ssh_command)" git -c safe.directory='*' -C "$staging" fetch --quiet origin "$target_branch" 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
-            rm -rf "$staging"
-            die "'$name': failed to fetch deploy_branch '$target_branch' from origin — check the branch exists"
-        fi
-        if ! git -c safe.directory='*' -C "$staging" checkout -B "$target_branch" "origin/$target_branch" 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
-            rm -rf "$staging"
-            die "'$name': failed to switch to deploy_branch '$target_branch'"
-        fi
+        run_captured "$out" env GIT_SSH_COMMAND="$(git_ssh_command)" git -c safe.directory='*' -C "$staging" fetch --quiet origin "$target_branch" \
+            || git_failed "$name" "$out" "$staging" "failed to fetch deploy_branch '$target_branch' from origin — check the branch exists"
+        run_captured "$out" git -c safe.directory='*' -C "$staging" checkout -B "$target_branch" "origin/$target_branch" \
+            || git_failed "$name" "$out" "$staging" "failed to switch to deploy_branch '$target_branch'"
     else
         log_info "git pull --ff-only ($name)"
-        if ! GIT_SSH_COMMAND="$(git_ssh_command)" git -c safe.directory='*' -C "$staging" pull --ff-only 2>&1 | tee -a "$LOG_DIR/$name.log" >&2; then
-            rm -rf "$staging"
-            die "git pull --ff-only failed for '$name' — live tree left unchanged"
-        fi
+        run_captured "$out" env GIT_SSH_COMMAND="$(git_ssh_command)" git -c safe.directory='*' -C "$staging" pull --ff-only \
+            || git_failed "$name" "$out" "$staging" "git pull --ff-only failed — live tree left unchanged (a force-push on the branch? see 'ddeploy logs $name')"
     fi
+    rm -f "$out"
     finalize_staging "$staging"
+}
+
+# A failed git step of a deploy: discards the staging release ($3, may be
+# empty), puts git's own output in the site log, and dies with $4.
+git_failed() {
+    local name="$1" out="$2" staging="$3" msg="$4"
+    [[ -n "$staging" ]] && rm -rf "$staging"
+    site_log "$name" "deploy: git FAILED — $msg"
+    site_log_output "$name" "$out" 10
+    rm -f "$out"
+    die "'$name': $msg"
 }
 
 # `deploy --if-changed` / `deploy-preview --if-changed` (what the webhook
