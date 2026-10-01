@@ -67,10 +67,16 @@ notify_cooldown_ok() {
 }
 
 # POSTs one message to one URL. $1 url $2 status (ok|fail|info) $3 title
-# $4 details (may be multi-line) $5 event $6 site. Returns nonzero on
+# $4 details (may be multi-line) $5 event $6 site $7 links (optional, a
+# JSON object {"text in details": "url"} — each text's first occurrence
+# becomes a link, in the target's own syntax). Returns nonzero on
 # failure; callers decide what that means (always: nothing fatal).
+#
+# The style follows the URL (hooks.slack.com, discord.com, anything
+# else = generic JSON); DDEPLOY_NOTIFY_STYLE=slack|discord|generic forces
+# one, so the formatting can be checked against a local endpoint.
 notify_post() {
-    local url="$1" status="$2" title="$3" details="$4" event="$5" site="$6"
+    local url="$1" status="$2" title="$3" details="$4" event="$5" site="$6" links="${7:-}"
     # Discord caps content at 2000 chars, Slack attachments are
     # generous but a whole build log is still noise.
     if [[ "${#details}" -gt 1500 ]]; then
@@ -82,6 +88,7 @@ notify_post() {
     DDEPLOY_NOTIFY_DETAILS="$details" \
     DDEPLOY_NOTIFY_EVENT="$event" \
     DDEPLOY_NOTIFY_SITE="$site" \
+    DDEPLOY_NOTIFY_LINKS="$links" \
     DDEPLOY_NOTIFY_HOST="${BASE_DOMAIN:-unknown}" \
     python3 -c '
 import json, os, sys, urllib.error, urllib.parse, urllib.request
@@ -90,21 +97,43 @@ url = e("DDEPLOY_NOTIFY_URL", "")
 if not url:
     sys.exit(1)
 status, title, details = e("DDEPLOY_NOTIFY_STATUS", "info"), e("DDEPLOY_NOTIFY_TITLE", ""), e("DDEPLOY_NOTIFY_DETAILS", "")
+try:
+    links = json.loads(e("DDEPLOY_NOTIFY_LINKS") or "{}")
+    if not isinstance(links, dict):
+        links = {}
+except ValueError:
+    links = {}
 host = e("DDEPLOY_NOTIFY_HOST", "")
 color = {"ok": "#2eb67d", "fail": "#e01e5a"}.get(status, "#6b7280")
 footer = "ddeploy on " + host
 netloc = urllib.parse.urlparse(url).netloc.lower()
-flat = title + (": " + details.replace("\n", " — ") if details else "")
-if netloc == "hooks.slack.com":
-    payload = {"text": title, "attachments": [
-        {"color": color, "text": details, "footer": footer, "mrkdwn_in": ["text"]}]}
-elif netloc.endswith("discord.com") or netloc.endswith("discordapp.com"):
+style = e("DDEPLOY_NOTIFY_STYLE") or (
+    "slack" if netloc == "hooks.slack.com"
+    else "discord" if netloc.endswith("discord.com") or netloc.endswith("discordapp.com")
+    else "generic")
+
+def slack_escape(t):
+    # Slack mrkdwn: these three are control characters, everything else
+    # (a commit subject with <angle brackets>, say) is shown as-is.
+    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+if style == "slack":
+    text = slack_escape(details)
+    for label, link in links.items():
+        text = text.replace(slack_escape(label), "<%s|%s>" % (link, slack_escape(label)), 1)
+    payload = {"text": slack_escape(title), "attachments": [
+        {"color": color, "text": text, "footer": footer, "mrkdwn_in": ["text"]}]}
+elif style == "discord":
+    text = details
+    for label, link in links.items():
+        text = text.replace(label, "[%s](%s)" % (label, link), 1)
     payload = {"content": "", "embeds": [
-        {"title": title, "description": details, "color": int(color[1:], 16), "footer": {"text": footer}}]}
+        {"title": title, "description": text, "color": int(color[1:], 16), "footer": {"text": footer}}]}
 else:
+    flat = title + (": " + details.replace("\n", " — ") if details else "")
     payload = {"text": flat, "content": flat, "host": host, "event": e("DDEPLOY_NOTIFY_EVENT", ""),
                "site": e("DDEPLOY_NOTIFY_SITE", ""), "status": status, "title": title, "detail": details,
-               "command": e("DDEPLOY_NOTIFY_EVENT", "")}
+               "links": links, "command": e("DDEPLOY_NOTIFY_EVENT", "")}
 req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
                              headers={"Content-Type": "application/json", "User-Agent": "ddeploy-notify"},
                              method="POST")
@@ -120,9 +149,10 @@ except (urllib.error.URLError, TimeoutError, ValueError, OSError):
 # Sends one event. $1 event (see NOTIFY_EVENTS_DEFAULT) $2 site (may be
 # empty) $3 title $4 details $5 "cooldown" to rate-limit this
 # event+site by NOTIFY_COOLDOWN (for things that can repeat on a loop,
-# like a misconfigured webhook secret). Always returns 0.
+# like a misconfigured webhook secret), else empty $6 links (see
+# notify_post). Always returns 0.
 notify_event() {
-    local event="$1" site="${2:-}" title="$3" details="${4:-}" limit="${5:-}"
+    local event="$1" site="${2:-}" title="$3" details="${4:-}" limit="${5:-}" links="${6:-}"
     local enabled="${NOTIFY_EVENTS:-$NOTIFY_EVENTS_DEFAULT}"
     [[ " $enabled " == *" $event "* ]] || return 0
 
@@ -142,7 +172,7 @@ notify_event() {
 
     local url
     for url in "${urls[@]}"; do
-        notify_post "$url" "$status" "$title" "$details" "$event" "$site" \
+        notify_post "$url" "$status" "$title" "$details" "$event" "$site" "$links" \
             || log_warn "notify: POST failed for '$event'${site:+ $site} — check the webhook URL (not logged)"
     done
     return 0
@@ -183,17 +213,40 @@ notify_trigger() {
     fi
 }
 
+# The web page for commit $2 of the repo at git remote URL $1, on the
+# forges whose URL scheme is known; empty for anything else (a
+# self-hosted forge, a bare IP) rather than a guess that 404s.
+commit_web_url() {
+    local remote="$1" sha="$2" canon
+    canon="$(canonicalize_git_url "$remote" 2>/dev/null || true)"
+    [[ -n "$canon" && -n "$sha" ]] || return 0
+    case "${canon%%/*}" in
+        github.com) printf 'https://%s/commit/%s' "$canon" "$sha" ;;
+        bitbucket.org) printf 'https://%s/commits/%s' "$canon" "$sha" ;;
+        gitlab.com) printf 'https://%s/-/commit/%s' "$canon" "$sha" ;;
+    esac
+}
+
 # Success message for a deploy / deploy-preview / provision-preview.
 # $1 event $2 site $3 checkout dir $4 seconds taken $5 verb ("deployed",
-# "rolled back", "preview created")
+# "rolled back", "preview created"). The commit's short hash links to it
+# on GitHub/Bitbucket/GitLab when the remote is one of those.
 notify_deploy_success() {
     local event="$1" site="$2" dir="$3" took="$4" verb="$5"
-    local commit
-    commit="$(git -c safe.directory='*' -C "$dir" log -1 --format='%h %s (%an)' 2>/dev/null | cut -c1-200 || true)"
+    local g=(git -c safe.directory='*' -C "$dir")
+    local commit short full remote link links=""
+    commit="$("${g[@]}" log -1 --format='%h %s (%an)' 2>/dev/null | cut -c1-200 || true)"
+    short="$("${g[@]}" log -1 --format='%h' 2>/dev/null || true)"
+    full="$("${g[@]}" log -1 --format='%H' 2>/dev/null || true)"
+    remote="$("${g[@]}" remote get-url origin 2>/dev/null || true)"
+    link="$(commit_web_url "$remote" "$full")"
+    if [[ -n "$link" && -n "$short" ]]; then
+        links="$(SHORT="$short" LINK="$link" python3 -c 'import json, os; print(json.dumps({os.environ["SHORT"]: os.environ["LINK"]}))')"
+    fi
     local details="https://$site.$BASE_DOMAIN"
     [[ -n "$commit" ]] && details+=$'\n'"Commit: $commit"
     details+=$'\n'"Took ${took}s — $(notify_trigger)"
-    notify_event "$event" "$site" "$site $verb" "$details"
+    notify_event "$event" "$site" "$site $verb" "$details" "" "$links"
 }
 
 # `notify <name> ...` — per-site notification URL (a client's own Slack

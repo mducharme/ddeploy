@@ -1762,6 +1762,23 @@ sleep 0.2
 lines="$(grep -c . /tmp/ddeploy-notify-sink.jsonl 2>/dev/null || echo 0)"
 [[ "$lines" == "2" ]] && pass "NOTIFY_COOLDOWN=0 sends again" || fail "expected 2 sink lines, got $lines"
 
+# Commit links: the short hash links to the commit on the forge, in each
+# target's own syntax; subjects are escaped for Slack's markup.
+source lib/hook.sh
+[[ "$(commit_web_url git@github.com:Org/Repo.git abc123)" == "https://github.com/org/repo/commit/abc123" ]] && pass "commit link: GitHub" || fail "GitHub commit link is '$(commit_web_url git@github.com:Org/Repo.git abc123)'"
+[[ "$(commit_web_url https://bitbucket.org/org/repo.git abc123)" == "https://bitbucket.org/org/repo/commits/abc123" ]] && pass "commit link: Bitbucket" || fail "Bitbucket commit link is '$(commit_web_url https://bitbucket.org/org/repo.git abc123)'"
+[[ -z "$(commit_web_url ssh://gitfixture@127.0.0.1/srv/git/testsite.git abc123)" ]] && pass "commit link: none for an unknown host" || fail "unexpected link for an unknown host"
+cp /tmp/ddeploy-notify-sink.jsonl /tmp/ddeploy-notify-sink.saved
+: >/tmp/ddeploy-notify-sink.jsonl
+NOTIFY_LINKS='{"abc1234": "https://github.com/org/repo/commit/abc1234"}'
+DDEPLOY_NOTIFY_STYLE=slack notify_post "$NOTIFY_WEBHOOK" ok "testsite deployed" $'Commit: abc1234 Fix <header> & footer' deploy-success testsite "$NOTIFY_LINKS"
+DDEPLOY_NOTIFY_STYLE=discord notify_post "$NOTIFY_WEBHOOK" ok "testsite deployed" $'Commit: abc1234 Fix <header> & footer' deploy-success testsite "$NOTIFY_LINKS"
+sink="$(cat /tmp/ddeploy-notify-sink.jsonl)"
+assert_contains "$sink" "<https://github.com/org/repo/commit/abc1234|abc1234>" "Slack: the commit hash is a link"
+assert_contains "$sink" "Fix &lt;header&gt; &amp; footer" "Slack: <, > and & in the subject are escaped"
+assert_contains "$sink" "[abc1234](https://github.com/org/repo/commit/abc1234)" "Discord: the commit hash is a link"
+mv /tmp/ddeploy-notify-sink.saved /tmp/ddeploy-notify-sink.jsonl
+
 NOTIFY_WEBHOOK=""
 notify_failure backup-uploads testsite "should be silent"
 sleep 0.2
