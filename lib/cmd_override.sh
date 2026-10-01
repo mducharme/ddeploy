@@ -13,7 +13,7 @@
 OVERRIDE_SCALAR_KEYS="basic_auth client_max_body_size fpm_max_children db_env_scheme security_headers static_cache deny_php_in_uploads db_backup_retention_days nodejs_version build"
 # Array keys: space-separated on the CLI, same as --hostnames/--upload-dirs
 # elsewhere in this tool.
-OVERRIDE_ARRAY_KEYS="additional_hostnames additional_fqdns persistent_files auth_exempt_paths backup_exclude deny_php_paths"
+OVERRIDE_ARRAY_KEYS="additional_hostnames additional_fqdns persistent_files auth_exempt_paths backup_exclude deny_php_paths preview_branches"
 
 usage_override() {
     cat <<EOF
@@ -66,6 +66,7 @@ override_validate_value() {
         persistent_files) validate_relative_path "${val%/}" "$key entry for '$name'" ;;
         auth_exempt_paths|deny_php_paths) validate_url_path "$val" "$key entry for '$name'" ;;
         backup_exclude) [[ "$val" != *$'\n'* ]] || die "$key entry for '$name' contains a newline — refusing to use it" ;;
+        preview_branches) validate_branch_pattern "$val" "$key entry for '$name'" ;;
         *) [[ "$val" != *$'\n'* ]] || die "$key for '$name' contains a newline — refusing to use it" ;;
     esac
 }

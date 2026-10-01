@@ -1362,6 +1362,87 @@ kill "$COMMENT_PID" 2>/dev/null || true
 wait "$COMMENT_PID" 2>/dev/null || true
 rm -f "$BODY"
 
+step "preview_branches: previews from a plain push, no PR"
+write_github_branch_delete() {
+    python3 -c '
+import json, sys
+print(json.dumps({"ref": "refs/heads/" + sys.argv[1], "deleted": True, "after": "0" * 40,
+                  "repository": {"clone_url": sys.argv[2],
+                                 "ssh_url": "ssh://gitfixture@127.0.0.1/srv/git/testsite.git"}}))
+' "$1" "$HOOK_CLONE" > "$2"
+}
+./provision.sh override testsite "preview_branches=auto/*"
+WORK="$(mktemp -d)"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'
+git -C "$WORK" config user.name 'ddeploy test'
+git -C "$WORK" checkout -q -b auto/one
+sed -i 's/MARKER=v[0-9]*/MARKER=auto-one-v1/' "$WORK/web/index.php"
+git -C "$WORK" commit -q -am 'auto/one v1'
+git -C "$WORK" push -q origin auto/one
+git -C "$WORK" checkout -q -b misc-x
+git -C "$WORK" push -q origin misc-x
+BODY="$(mktemp)"
+write_github_push auto/one "$BODY"
+post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY" >/dev/null
+flush_hooks
+sleep 1
+AUTO=testsite-auto-one
+assert_file_exists "/etc/nginx/sites-enabled/$AUTO.conf" "a push to a branch matching preview_branches created a preview"
+out="$(curl -fsSk -u "preview:$AUTH_PASS" --resolve "$AUTO.staging.ddeploy.test:443:127.0.0.1" "https://$AUTO.staging.ddeploy.test/" || true)"
+assert_contains "$out" "MARKER=auto-one-v1" "...serving that branch"
+git -C "$WORK" checkout -q auto/one
+sed -i 's/MARKER=auto-one-v1/MARKER=auto-one-v2/' "$WORK/web/index.php"
+git -C "$WORK" commit -q -am 'auto/one v2'
+git -C "$WORK" push -q origin auto/one
+post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY" >/dev/null
+flush_hooks
+sleep 1
+out="$(curl -fsSk -u "preview:$AUTH_PASS" --resolve "$AUTO.staging.ddeploy.test:443:127.0.0.1" "https://$AUTO.staging.ddeploy.test/" || true)"
+assert_contains "$out" "MARKER=auto-one-v2" "the next push to that branch updated its preview"
+write_github_push misc-x "$BODY"
+post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY" >/dev/null
+flush_hooks
+assert_file_absent "/etc/nginx/sites-enabled/testsite-misc-x.conf" "a branch not matching preview_branches gets no preview"
+./provision.sh override testsite "preview_branches=*"
+write_github_push main "$BODY"
+post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY" >/dev/null
+flush_hooks
+assert_file_absent "/etc/nginx/sites-enabled/testsite-main.conf" "even with '*', the branch the site deploys never gets a preview"
+: > "$NOTIFY_SINK"
+write_github_branch_delete auto/one "$BODY"
+post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY" >/dev/null
+flush_hooks
+assert_file_absent "/etc/nginx/sites-enabled/$AUTO.conf" "deleting the branch removed its preview"
+assert_contains "$(notify_sink)" "\"event\": \"preview-removed\", \"site\": \"$AUTO\"" "...and sent preview-removed"
+write_github_branch_delete misc-x "$BODY"
+post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY" >/dev/null
+flush_hooks
+assert_contains "$(./provision.sh logs webhook-other -n 5)" "no preview of testsite for deleted branch 'misc-x'" "deleting a branch that never had a preview is a quiet line in webhook-other"
+# Server-wide default (provisioner.conf), and a site opting out of it.
+./provision.sh override testsite --unset preview_branches
+sed -i '/^PREVIEW_BRANCHES=/d' /opt/ddeploy/provisioner.conf
+echo 'PREVIEW_BRANCHES="glob/*"' >> /opt/ddeploy/provisioner.conf
+git -C "$WORK" checkout -q -b glob/one
+git -C "$WORK" push -q origin glob/one
+write_github_push glob/one "$BODY"
+post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY" >/dev/null
+flush_hooks
+assert_file_exists "/etc/nginx/sites-enabled/testsite-glob-one.conf" "server-wide PREVIEW_BRANCHES applies to a site that sets none"
+./provision.sh override testsite "preview_branches="
+git -C "$WORK" checkout -q -b glob/two
+git -C "$WORK" push -q origin glob/two
+write_github_push glob/two "$BODY"
+post_hook /github X-Hub-Signature-256 X-GitHub-Event push "$BODY" >/dev/null
+flush_hooks
+assert_file_absent "/etc/nginx/sites-enabled/testsite-glob-two.conf" "a site's empty preview_branches opts it out of the server-wide default"
+./provision.sh remove-preview testsite glob/one --purge-files
+sed -i '/^PREVIEW_BRANCHES=/d' /opt/ddeploy/provisioner.conf
+./provision.sh override testsite --unset preview_branches
+git -C "$BARE" branch -D auto/one misc-x glob/one glob/two >/dev/null
+rm -rf "$WORK" "$BODY"
+assert_cmd_fails "override refuses a preview_branches entry that isn't a branch pattern" ./provision.sh override testsite 'preview_branches=a;b'
+
 step "preview name collisions never touch a regular site"
 # testsite + branch "collide" -> "testsite-collide". Stand in a regular
 # site there (releases layout + persistent uploads), then try everything

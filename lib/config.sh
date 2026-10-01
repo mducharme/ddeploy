@@ -99,6 +99,13 @@ validate_branch_name() {
     esac
 }
 
+# A preview_branches glob: a branch name, plus * ? [ ] wildcards.
+validate_branch_pattern() {
+    local val="$1" label="$2"
+    [[ "$val" =~ ^[A-Za-z0-9._/*?@+-]+$ ]] \
+        || die "$label ('$val') isn't a branch pattern — letters, digits, . _ / - @ + and the wildcards * ?"
+}
+
 validate_hostname() {
     local val="$1" label="$2"
     local re='^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$'

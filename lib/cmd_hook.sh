@@ -230,18 +230,114 @@ hook_run_site() {
     return "$rc"
 }
 
+# $1 site — its preview_branches patterns, one per line: from the first
+# of the operator override, .ddeploy/config.yaml, .ddev/config.yaml (or
+# sidecar) that has the key at all — an explicit empty list there means
+# "off for this site" — else the server-wide PREVIEW_BRANCHES. Read
+# straight from the files, not via parse_config, which writes the site's
+# steps file as a side effect.
+read_preview_branch_patterns() {
+    local name="$1" p f src=""
+    for f in "$(override_config_path "$name")" "$(ext_config_path "$name")" "$(resolve_config_path "$name")"; do
+        [[ -n "$f" && -f "$f" ]] || continue
+        if [[ "$(yq eval 'has("preview_branches")' "$f" 2>/dev/null)" == "true" ]]; then
+            src="$f"
+            break
+        fi
+    done
+    while IFS= read -r p; do
+        [[ -n "$p" ]] || continue
+        if [[ "$p" =~ ^[A-Za-z0-9._/*?@+-]+$ ]]; then
+            printf '%s\n' "$p"
+        else
+            log_warn "webhook: $name: ignoring preview_branches entry '$p' — not a branch pattern"
+        fi
+    done < <(
+        if [[ -n "$src" ]]; then
+            yq eval '.preview_branches[]' "$src" 2>/dev/null | grep -vx 'null' || true
+        else
+            # Word-split on purpose: a space-separated list in provisioner.conf.
+            # set -f: the patterns are globs, not for the filesystem.
+            ( set -f; for p in ${PREVIEW_BRANCHES:-}; do printf '%s\n' "$p"; done )
+        fi
+    )
+}
+
+# $1 branch, rest glob patterns. `*` matches across '/', so `*` is every
+# branch and `feature/*` is feature/a and feature/a/b alike.
+branch_matches_any() {
+    local branch="$1" p; shift
+    for p in "$@"; do
+        # shellcheck disable=SC2053  # unquoted on purpose: a glob
+        [[ "$branch" == $p ]] && return 0
+    done
+    return 1
+}
+
+# Creates or updates $1's preview of branch $2. $3 provider, $4 PR
+# number (empty for a branch-pattern preview: no PR to comment on), rest
+# the job's repo URLs. Returns nonzero if the deploy failed.
+hook_upsert_preview() {
+    local parent="$1" branch="$2" provider="$3" pr="$4"; shift 4
+    local preview; preview="$(preview_slug "$parent" "$branch")"
+    # A name taken by something else (see assert_preview_of): say so
+    # plainly instead of failing inside provision.sh.
+    if ! (assert_preview_of "$preview" "$parent" "preview") 2>/dev/null; then
+        hook_log warn "skip $preview: that name is already a regular site or another project's preview — branch '$branch' can't get a preview of $parent (rename the branch)"
+        return 0
+    fi
+    local cmd=provision-preview
+    local -a extra=()
+    if is_preview "$preview" || is_provisioned "$preview"; then
+        cmd=deploy-preview
+        extra=(--if-changed)
+    fi
+    hook_run_site "$cmd" "$preview" "$PROVISIONER_DIR/provision.sh" "$cmd" "$parent" "$branch" "${extra[@]}" || return 1
+    if [[ -n "$pr" ]]; then
+        comment_preview_pr "$provider" "$preview" "$pr" "$@"
+    fi
+}
+
+# Removes $1's preview of branch $2, if it has one. $3 why (for the log).
+hook_remove_preview() {
+    local parent="$1" branch="$2" why="$3"
+    local preview; preview="$(preview_slug "$parent" "$branch")"
+    # Only ever this project's own preview — never a regular site (or
+    # another project's preview) that happens to have the same name, and
+    # nothing to do when there never was one.
+    if ! is_preview "$preview"; then
+        # A deleted branch usually never had a preview: not worth a line
+        # in the main log. A closed PR without one is worth noting there.
+        if [[ "$why" == "branch deleted" ]]; then
+            hook_log_other "no preview of $parent for deleted branch '$branch' — nothing to remove"
+        else
+            hook_log info "skip $preview: no preview of $parent for branch '$branch' to remove ($why)"
+        fi
+        return 0
+    fi
+    if ! (assert_preview_of "$preview" "$parent" "remove") 2>/dev/null; then
+        hook_log warn "skip $preview: it's another project's preview, not $parent's — not removing it"
+        return 0
+    fi
+    local -a extra=()
+    read_preview_meta "$preview"
+    [[ "$PREVIEW_MODE" == "isolated" ]] && extra+=(--purge-db)
+    hook_run_site remove-preview "$preview" "$PROVISIONER_DIR/provision.sh" remove-preview "$parent" "$branch" --purge-files "${extra[@]}"
+}
+
 # Reads one job file, maps event → existing CLI. Returns nonzero if any
 # invoked command failed; unknown remotes are success (org hooks).
 hook_process_job() {
     local f="$1"
     [[ -f "$f" ]] || return 0
     require_yq
-    local event branches_raw urls_raw provider pr
+    local event branches_raw deleted_raw urls_raw provider pr
     event="$(yq eval '.event // ""' "$f")"
     provider="$(yq eval '.provider // ""' "$f")"
     pr="$(yq eval '.pr // ""' "$f")"
     [[ "$pr" == "null" ]] && pr=""
     branches_raw="$(yq eval '.branches[]' "$f" 2>/dev/null | grep -vx 'null' || true)"
+    deleted_raw="$(yq eval '.deleted_branches[]' "$f" 2>/dev/null | grep -vx 'null' || true)"
     urls_raw="$(yq eval '.repo_urls[]' "$f" 2>/dev/null | grep -vx 'null' || true)"
 
     case "$event" in
@@ -252,11 +348,14 @@ hook_process_job() {
             ;;
     esac
 
-    local -a branches=() urls=()
+    local -a branches=() deleted=() urls=()
     local line
     while IFS= read -r line; do
         [[ -n "$line" ]] && branches+=("$line")
     done <<< "$branches_raw"
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && deleted+=("$line")
+    done <<< "$deleted_raw"
     while IFS= read -r line; do
         [[ -n "$line" ]] && urls+=("$line")
     done <<< "$urls_raw"
@@ -276,11 +375,24 @@ hook_process_job() {
         return 0
     fi
 
-    local name branch parent preview head target hit extra failures=0
+    local name branch parent head target hit failures=0
     case "$event" in
         push_head)
+            # Every branch a site from this repo deploys: those never get
+            # a branch preview, whatever preview_branches says (`*` would
+            # otherwise give `develop` a preview of the site tracking
+            # `main`, duplicating the site that tracks `develop`).
+            local -a tracked=()
             for name in "${matches[@]}"; do
                 is_preview "$name" && continue
+                tracked+=("$(site_head_branch "$name")")
+                target="$(read_deploy_branch "$name")"
+                [[ -n "$target" ]] && tracked+=("$target")
+            done
+
+            for name in "${matches[@]}"; do
+                is_preview "$name" && continue
+                [[ "${#branches[@]}" -gt 0 ]] || continue
                 head="$(site_head_branch "$name")"
                 # Also match the site's deploy_branch override (README
                 # "Default branch"), not just its current HEAD — otherwise
@@ -303,32 +415,37 @@ hook_process_job() {
                     failures=$((failures + 1))
                 fi
             done
+
+            # Branch previews without a PR, for sites that opt in with
+            # preview_branches (README "Branch previews").
+            local -a patterns=()
+            for parent in "${matches[@]}"; do
+                is_preview "$parent" && continue
+                mapfile -t patterns < <(read_preview_branch_patterns "$parent")
+                [[ "${#patterns[@]}" -gt 0 ]] || continue
+                for branch in "${branches[@]}"; do
+                    branch_matches_any "$branch" "${tracked[@]}" && continue
+                    branch_matches_any "$branch" "${patterns[@]}" || continue
+                    hook_upsert_preview "$parent" "$branch" "$provider" "" "${urls[@]}" || failures=$((failures + 1))
+                done
+            done
+
+            # A deleted branch takes its preview with it, however the
+            # preview was made (PR, branch pattern, by hand) — it can't
+            # be deployed any more. Same as prune-previews, just sooner.
+            for branch in "${deleted[@]}"; do
+                for parent in "${matches[@]}"; do
+                    is_preview "$parent" && continue
+                    hook_remove_preview "$parent" "$branch" "branch deleted" || failures=$((failures + 1))
+                done
+            done
             ;;
         preview_upsert)
             branch="${branches[0]:-}"
             [[ -n "$branch" ]] || { hook_log warn "preview_upsert missing branch — dropping"; return 0; }
             for parent in "${matches[@]}"; do
                 is_preview "$parent" && continue
-                preview="$(preview_slug "$parent" "$branch")"
-                # A name taken by something else (see assert_preview_of):
-                # say so plainly instead of failing inside provision.sh.
-                if ! (assert_preview_of "$preview" "$parent" "preview") 2>/dev/null; then
-                    hook_log warn "skip $preview: that name is already a regular site or another project's preview — branch '$branch' can't get a preview of $parent (rename the branch)"
-                    continue
-                fi
-                if is_preview "$preview" || is_provisioned "$preview"; then
-                    if ! hook_run_site deploy-preview "$preview" "$PROVISIONER_DIR/provision.sh" deploy-preview "$parent" "$branch" --if-changed; then
-                        failures=$((failures + 1))
-                    else
-                        comment_preview_pr "$provider" "$preview" "$pr" "${urls[@]}"
-                    fi
-                else
-                    if ! hook_run_site provision-preview "$preview" "$PROVISIONER_DIR/provision.sh" provision-preview "$parent" "$branch"; then
-                        failures=$((failures + 1))
-                    else
-                        comment_preview_pr "$provider" "$preview" "$pr" "${urls[@]}"
-                    fi
-                fi
+                hook_upsert_preview "$parent" "$branch" "$provider" "$pr" "${urls[@]}" || failures=$((failures + 1))
             done
             ;;
         preview_remove)
@@ -336,25 +453,7 @@ hook_process_job() {
             [[ -n "$branch" ]] || { hook_log warn "preview_remove missing branch — dropping"; return 0; }
             for parent in "${matches[@]}"; do
                 is_preview "$parent" && continue
-                preview="$(preview_slug "$parent" "$branch")"
-                # Only ever this project's own preview — never a regular
-                # site (or another project's preview) that happens to
-                # have the same name, and nothing to do when the PR never
-                # had a preview (opened before the webhook, say).
-                if ! is_preview "$preview"; then
-                    hook_log info "skip $preview: no preview of $parent for branch '$branch' to remove"
-                    continue
-                fi
-                if ! (assert_preview_of "$preview" "$parent" "remove") 2>/dev/null; then
-                    hook_log warn "skip $preview: it's another project's preview, not $parent's — not removing it"
-                    continue
-                fi
-                extra=()
-                read_preview_meta "$preview"
-                [[ "$PREVIEW_MODE" == "isolated" ]] && extra+=(--purge-db)
-                if ! hook_run_site remove-preview "$preview" "$PROVISIONER_DIR/provision.sh" remove-preview "$parent" "$branch" --purge-files "${extra[@]}"; then
-                    failures=$((failures + 1))
-                fi
+                hook_remove_preview "$parent" "$branch" "PR closed" || failures=$((failures + 1))
             done
             ;;
     esac

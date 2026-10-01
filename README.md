@@ -189,7 +189,7 @@ itself.
 ### `.ddeploy/config.yaml`
 
 `additional_hostnames`, `additional_fqdns`, `persistent_files`,
-`db_env_scheme`, `queue_workers`, `schedule`, and `build` aren't real
+`db_env_scheme`, `queue_workers`, `schedule`, `preview_branches`, and `build` aren't real
 DDEV fields. Declare them in `.ddeploy/config.yaml` instead, git-tracked,
 sitting next to `.ddev/config.yaml`:
 
@@ -212,6 +212,8 @@ client_max_body_size: 256m
 fpm_max_children: 20
 auth_exempt_paths:
   - /webhook
+preview_branches:            # previews from a plain push, no PR needed — see "Branch previews"
+  - feature/*
 backup_exclude:
   - cache/**
 db_backup_retention_days: 30
@@ -301,7 +303,7 @@ Scalar keys: `basic_auth`, `client_max_body_size`, `fpm_max_children`,
 doesn't). List keys,
 space-separated (quote the value): `additional_hostnames`,
 `additional_fqdns`, `persistent_files`, `auth_exempt_paths`,
-`backup_exclude`, `deny_php_paths`. Not supported here (need
+`backup_exclude`, `deny_php_paths`, `preview_branches`. Not supported here (need
 `.ddeploy/config.yaml` in the repo): `redirects`, `php_ini`,
 `queue_workers`, `schedule`, a `build:` map — structured data, or (for `queue_workers`)
 a command likely to contain its own spaces.
@@ -374,6 +376,24 @@ A preview never inherits the parent's `additional_hostnames` /
 `additional_fqdns` (those belong to the parent's vhost); give it one
 with `override <preview> additional_hostnames=...` if needed.
 `remove-preview --purge-files` deletes both files with the preview.
+
+**Previews without a PR (opt-in).** List branch patterns under
+`preview_branches:` in `.ddeploy/config.yaml` (or `ddeploy override
+<name> "preview_branches=feature/* fix/*"`), and a push to a matching
+branch creates or updates its preview, no PR needed; deleting the branch
+removes it. `*` matches across `/`, so `feature/*` covers
+`feature/a/b`, and `*` alone is every branch. The branches a site from
+that repo deploys (`main`, `develop`...) never get a preview, `*` or not.
+These previews get no PR comment (`ddeploy preview-url <project>
+<branch>` prints the URL), and every matching push runs a build and,
+with the default shared database, the branch's migrations against the
+parent's data — prefer narrow patterns over `*`.
+
+For every site at once, set `PREVIEW_BRANCHES="feature/* fix/*"` in
+`provisioner.conf`. A site's own `preview_branches` replaces it, and an
+empty one turns it off for that site: `preview_branches: []` in the
+repo, or `ddeploy override <name> "preview_branches="`
+(`--unset preview_branches` goes back to the server default).
 
 `deploy-preview` does `git fetch && reset --hard`, not `--ff-only pull`
 — previews stay in-place, not atomic releases. Like `deploy`, it then
@@ -503,6 +523,10 @@ What runs:
 "Default branch") → `deploy <name> --if-changed`. Other branches ignored.
 - PR opened/synced (same-repo only) → `provision-preview` or
 `deploy-preview --if-changed`.
+- Push to a branch matching the site's `preview_branches` (and not a
+branch any site from that repo deploys) → the same, no PR needed.
+- Branch deleted → `remove-preview` of that branch's preview, if it has
+one (however it was created).
 - `--if-changed` skips the deploy when the live code is already at the
 branch's remote tip. Several pushes queued behind one slow build
 collapse into one deploy of the latest commit, and a forge redelivering

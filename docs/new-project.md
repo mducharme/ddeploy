@@ -203,6 +203,8 @@ client_max_body_size: 256m        # nginx upload ceiling (default 64m)
 fpm_max_children: 20              # PHP-FPM pool concurrency (default 5)
 auth_exempt_paths:
   - /health                       # reachable without basic auth — see step 13
+preview_branches:
+  - feature/*                     # previews from a plain push, no PR needed — see step 11
 backup_exclude:
   - cache/**                      # rclone --exclude glob, uploads backup only
 db_backup_retention_days: 30      # overrides the server's DB_BACKUP_RETENTION_DAYS
@@ -313,6 +315,17 @@ SSH from that pipeline instead:
 Opening a pull request (from a branch in the same repo, never a fork)
 creates a preview at `https://<project>-<branch>.$BASE_DOMAIN`. New pushes
 to the PR update it, and closing or merging the PR removes it.
+
+**No PR? Opt in by branch pattern** (*per project*): with
+`preview_branches:` in `.ddeploy/config.yaml` (step 6) — or
+`ddeploy override <name> "preview_branches=feature/*"` — any push to a
+matching branch gets a preview, and deleting the branch removes it. `*`
+is every branch, but the branches the project's sites deploy
+(`main`, `develop`...) never get one. Each matching push builds, and
+with a shared database runs that branch's migrations against the
+parent's data, so prefer `feature/*` over `*`. A server-wide default
+can also be set once in `provisioner.conf` (`PREVIEW_BRANCHES`); a
+project then opts out with `ddeploy override <name> "preview_branches="`.
 
 What a new developer needs to know:
 

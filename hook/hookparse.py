@@ -107,16 +107,28 @@ def parse_github(event: str, data: dict[str, Any]) -> dict[str, Any] | None:
     urls = _github_urls(data)
     if event == "push":
         ref = data.get("ref") or ""
-        if data.get("deleted") or not ref.startswith("refs/heads/"):
+        if not ref.startswith("refs/heads/"):
             return None
         branch = ref[len("refs/heads/") :]
         if not branch:
             return None
+        # A deleted branch is still a push_head job: the worker removes
+        # that branch's preview, if any (deleted_branches).
+        if data.get("deleted"):
+            return {
+                "provider": "github",
+                "event": "push_head",
+                "repo_urls": urls,
+                "branches": [],
+                "deleted_branches": [branch],
+                "sha": "",
+            }
         return {
             "provider": "github",
             "event": "push_head",
             "repo_urls": urls,
             "branches": [branch],
+            "deleted_branches": [],
             "sha": data.get("after") or "",
         }
     if event == "pull_request":
@@ -152,23 +164,33 @@ def parse_bitbucket(event_key: str, data: dict[str, Any]) -> dict[str, Any] | No
     repo = data.get("repository") or {}
     if event_key == "repo:push":
         branches: list[str] = []
+        deleted: list[str] = []
         sha = ""
         for change in (data.get("push") or {}).get("changes") or []:
             new = change.get("new")
-            if not new or new.get("type") != "branch":
+            old = change.get("old")
+            if not new:
+                # Branch deleted: new is null, old names it.
+                if old and old.get("type") == "branch":
+                    name = old.get("name") or ""
+                    if name and name not in deleted:
+                        deleted.append(name)
+                continue
+            if new.get("type") != "branch":
                 continue
             name = new.get("name") or ""
             if name and name not in branches:
                 branches.append(name)
             if not sha:
                 sha = ((new.get("target") or {}).get("hash")) or ""
-        if not branches:
+        if not branches and not deleted:
             return None
         return {
             "provider": "bitbucket",
             "event": "push_head",
             "repo_urls": _bitbucket_urls(repo),
             "branches": branches,
+            "deleted_branches": deleted,
             "sha": sha,
         }
     if event_key in (
