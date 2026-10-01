@@ -70,6 +70,29 @@ read_preview_meta() {
 
 is_preview() { [[ -f "$(preview_meta_file "$1")" ]]; }
 
+# A preview's name is <project>-<branch>, so it can collide with something
+# that isn't this project's preview: a regular site (project "client",
+# site "client-shop", branch "shop"), or another project's preview
+# ("client" + "dev-x" and "client-dev" + "x" are both "client-dev-x").
+# Every preview command checks this before touching anything — without
+# it, closing a PR could remove an unrelated site's vhost, user and
+# persistent files. Dies on a collision; returns 0 when $1 is this
+# project's preview or doesn't exist as anything yet. Never a regular
+# site: those have a releases layout (`current` symlink), previews never
+# do. $1 name, $2 project, $3 what the caller was about to do.
+assert_preview_of() {
+    local name="$1" project="$2" action="$3"
+    if is_preview "$name"; then
+        local owner; owner="$(awk -F= '/^PROJECT=/{print $2}' "$(preview_meta_file "$name")")"
+        [[ "$owner" == "$project" ]] \
+            || die "'$name' is a preview of '$owner', not '$project' — refusing to $action it (the two projects' preview names collide; use a different branch name)"
+        return 0
+    fi
+    if is_releases_layout "$name"; then
+        die "'$name' is a regular site, not a preview of '$project' — refusing to $action it (this branch's preview name collides with it; use a different branch name)"
+    fi
+}
+
 # Resolves a preview's config exactly like parse_config, but: falls back
 # to the parent project's config file when the branch has none of its own
 # (rather than requiring a persisted sidecar per preview), and in shared

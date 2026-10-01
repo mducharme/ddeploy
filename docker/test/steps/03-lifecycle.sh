@@ -165,6 +165,14 @@ step "provision testsite"
 sleep 1  # nginx's graceful reload briefly straddles old/new config; give it a beat before curling
 LIVE="$(site_dir testsite)"
 
+step "provision: a failed first provision leaves nothing behind"
+assert_cmd_fails "provision with no repo URL for a new name fails" ./provision.sh provision ghostsite
+assert_file_absent "$SITES_ROOT/ghostsite" "...without creating its directory"
+assert_cmd_fails "...or its Linux user" id -u www-ghostsite
+assert_cmd_fails "provision of a repo that doesn't exist fails" ./provision.sh provision ghostsite ssh://gitfixture@127.0.0.1/srv/git/no-such-repo.git
+assert_file_absent "$SITES_ROOT/ghostsite" "the failed clone's directory was cleaned up"
+assert_cmd_fails "the failed clone's Linux user was cleaned up" id -u www-ghostsite
+
 step "provision: checks"
 assert_cmd_ok "www-testsite Linux user created" id -u www-testsite
 assert_contains "$(notify_sink)" '"event": "deploy-success", "site": "testsite"' "provision sent a deploy-success notification"
@@ -1279,6 +1287,14 @@ out="$(curl -fsSk -u "preview:$AUTH_PASS" --resolve "$PREVIEW.staging.ddeploy.te
 assert_contains "$out" "MARKER=preview-v2" "webhook deploy-preview fetch+reset picked up the new commit"
 assert_cmd_ok "preview .env still a symlink after fetch+reset" test -L "$(site_dir "$PREVIEW")/.env"
 assert_cmd_ok "preview's own env edit survived its redeploy" grep -qx 'PREVIEW_ONLY=yes' "$PERSISTENT_ROOT/$PREVIEW/.env"
+# The commit just deployed changed web/index.php, so root's git reset
+# rewrote it: it must be handed back to the user PHP runs as.
+pidx_owner="$(stat -c '%U %a' "$(site_dir "$PREVIEW")/web/index.php")"
+[[ "$pidx_owner" == "www-testsite 640" ]] && pass "files the preview's git reset rewrote are re-owned (www-testsite, 640), not left root-owned" || fail "preview's web/index.php is '$pidx_owner' after deploy-preview, expected 'www-testsite 640'"
+./provision.sh override "$PREVIEW" client_max_body_size=99m
+./provision.sh deploy-preview testsite feature-a
+assert_cmd_ok "deploy-preview applies the preview's own override to its vhost" grep -q "client_max_body_size 99m;" "/etc/nginx/sites-available/$PREVIEW.conf"
+./provision.sh override "$PREVIEW" --unset client_max_body_size
 assert_file_exists "$(site_dir "$PREVIEW")/web/dist/build.txt" "preview built its frontend too"
 [[ "$(stat -c %U "$(site_dir "$PREVIEW")/web/dist/build.txt")" == "www-testsite" ]] && pass "shared preview built as the parent's user" || fail "preview build output has the wrong owner"
 sink="$(cat /tmp/ddeploy-comment-sink.jsonl 2>/dev/null || true)"
@@ -1288,6 +1304,40 @@ assert_contains "$sink" "https://testsite-feature-a.staging.ddeploy.test" "Bitbu
 kill "$COMMENT_PID" 2>/dev/null || true
 wait "$COMMENT_PID" 2>/dev/null || true
 rm -f "$BODY"
+
+step "preview name collisions never touch a regular site"
+# testsite + branch "collide" -> "testsite-collide". Stand in a regular
+# site there (releases layout + persistent uploads), then try everything
+# that would act on that preview name.
+COLLIDE=testsite-collide
+mkdir -p "$SITES_ROOT/$COLLIDE/releases/r1" "$PERSISTENT_ROOT/$COLLIDE/uploads"
+ln -sfn "$SITES_ROOT/$COLLIDE/releases/r1" "$SITES_ROOT/$COLLIDE/current"
+echo precious > "$PERSISTENT_ROOT/$COLLIDE/uploads/precious.txt"
+assert_cmd_fails "remove-preview refuses a name that belongs to a regular site" ./provision.sh remove-preview testsite collide --purge-files
+assert_cmd_fails "provision-preview refuses it too" ./provision.sh provision-preview testsite collide
+assert_contains "$(notify_sink)" "refusing to provision a preview over it" "a refused manual provision-preview reports the collision as a failure"
+# The webhook path, by contrast, skips the name with a log line — no
+# failure, no "preview removed" message.
+: > "$NOTIFY_SINK"
+BODY="$(mktemp)"
+write_bitbucket_pr pullrequest:fulfilled collide "{src}" "{src}" "$BODY"
+code="$(post_hook /bitbucket X-Hub-Signature X-Event-Key pullrequest:fulfilled "$BODY")"
+[[ "$code" == "202" ]] && pass "PR-closed webhook for the colliding branch accepted" || fail "PR closed returned $code"
+flush_hooks
+write_bitbucket_pr pullrequest:created collide "{src}" "{src}" "$BODY"
+post_hook /bitbucket X-Hub-Signature X-Event-Key pullrequest:created "$BODY" >/dev/null
+flush_hooks
+rm -f "$BODY"
+assert_file_exists "$PERSISTENT_ROOT/$COLLIDE/uploads/precious.txt" "the regular site's persistent files survived all of it"
+assert_cmd_ok "the regular site's current symlink survived" test -L "$SITES_ROOT/$COLLIDE/current"
+wlog="$(./provision.sh logs webhook -n 20)"
+assert_contains "$wlog" "skip $COLLIDE: no preview of testsite" "webhook log: PR close with no preview is a skip, not a removal"
+assert_contains "$wlog" "skip $COLLIDE: that name is already a regular site" "webhook log: PR open explains the name collision"
+assert_not_contains "$(notify_sink)" "\"site\": \"$COLLIDE\"" "the webhook sent no notification about the colliding name"
+rm -rf "${SITES_ROOT:?}/$COLLIDE" "${PERSISTENT_ROOT:?}/$COLLIDE"
+out="$(./provision.sh remove-preview testsite never-existed 2>&1)"
+assert_contains "$out" "nothing to remove" "remove-preview of a preview that never existed is a no-op"
+assert_not_contains "$(notify_sink)" "testsite-never-existed" "...and sends no 'preview removed' message"
 
 # --- backup / restore, against real object storage (MinIO) -------------
 

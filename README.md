@@ -376,7 +376,18 @@ with `override <preview> additional_hostnames=...` if needed.
 `remove-preview --purge-files` deletes both files with the preview.
 
 `deploy-preview` does `git fetch && reset --hard`, not `--ff-only pull`
-— previews stay in-place, not atomic releases. Basic auth defaults **on**
+— previews stay in-place, not atomic releases. Like `deploy`, it then
+re-applies the preview's FPM pool and vhost from its config (a
+`php_version` change on the branch, or `ddeploy override <preview> ...`,
+takes effect on the next one), and re-owns whatever the reset changed.
+
+A preview's name is `<project>-<branch>`, so it can collide with a
+regular site (project `client`, site `client-shop`, branch `shop`) or
+with another project's preview. Every preview command — and the webhook —
+refuses to act on a name that isn't this project's preview, so a PR can
+never touch an unrelated site; the webhook log says
+`skip <name>: that name is already a regular site...`. Rename the branch
+to get a preview. Basic auth defaults **on**
 for previews (`--no-auth` to turn off), unlike normal sites. `init`
 generates a shared fallback htpasswd (`BASIC_AUTH_CREDENTIALS`, default
 `/etc/nginx/htpasswd/default`) for any site with auth on and no htpasswd

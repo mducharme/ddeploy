@@ -96,6 +96,7 @@ cmd_provision_preview() {
     local name; name="$(preview_slug "$project" "$branch")"
     validate_name "$name"
     [[ "$name" != "$project" ]] || die "project '$project' + branch '$branch' resolved to the project's own name — pick a different branch"
+    assert_preview_of "$name" "$project" "provision a preview over"
 
     local dir; dir="$(site_dir "$name")"
     local project_dir; project_dir="$(site_dir "$project")"
@@ -125,6 +126,12 @@ cmd_provision_preview() {
     git_trust_repo "$dir"
 
     seed_preview_override "$name" "$project"
+    # Persisted, not just used for this run: deploy-preview re-renders the
+    # vhost from config every time, and would otherwise silently put auth
+    # back to the default.
+    if [[ -n "$auth_flag" ]]; then
+        override_set_scalar "$name" basic_auth "$auth_flag"
+    fi
     resolve_preview_config "$name" "$project" "$mode"
     log_info "resolved: mode=$mode php=$PHP_VERSION docroot='${DOCROOT}'"
     scan_hooks "$name"
@@ -150,8 +157,7 @@ cmd_provision_preview() {
 
     local root="$dir"
     [[ -n "$DOCROOT" ]] && root="$dir/$DOCROOT"
-    local auth="${auth_flag:-${BASIC_AUTH_CONFIG:-true}}"
-    install_vhost "$name" "$root" "$auth" "${CLIENT_MAX_BODY_SIZE_CONFIG:-$CLIENT_MAX_BODY_SIZE}" "${ADDITIONAL_HOSTNAMES[@]}"
+    install_vhost "$name" "$root" "${BASIC_AUTH_CONFIG:-true}" "${CLIENT_MAX_BODY_SIZE_CONFIG:-$CLIENT_MAX_BODY_SIZE}" "${ADDITIONAL_HOSTNAMES[@]}"
 
     # Before any DB credentials are written: those go through this link,
     # on top of the copy of the parent's file it may have just seeded.
@@ -213,6 +219,7 @@ cmd_deploy_preview() {
     local dir; dir="$(site_dir "$name")"
     [[ -d "$dir/.git" ]] || die "$dir is not a git repo — provision-preview it first"
     read_preview_meta "$name" || die "'$name' has no preview metadata — was it created with provision-preview?"
+    assert_preview_of "$name" "$project" "deploy"
 
     local exec_user="www-$name" exec_home="$dir"
     if [[ "$PREVIEW_MODE" == "shared" ]]; then
@@ -248,6 +255,14 @@ cmd_deploy_preview() {
     git -c safe.directory='*' -C "$dir" reset --hard "origin/$PREVIEW_BRANCH" 2>&1 | tee -a "$LOG_DIR/$name.log"
 
     resolve_preview_config "$name" "$PREVIEW_PROJECT" "$PREVIEW_MODE"
+    ensure_php_installed "$PHP_VERSION"
+    # The fetch/reset above ran as root, so every file it created or
+    # changed is now root-owned (and umask-mode, not 640): hand the tree
+    # back to the user PHP runs as before any build step or request needs
+    # to write in it. Same as a normal deploy does to each new release.
+    # chown -R doesn't follow symlinks, so a shared preview's upload links
+    # into the parent's files are left alone.
+    apply_permissions "$name" "$dir" "$exec_user"
     # Re-assert the persistent link after the reset: a no-op normally,
     # but migrates a preview created before previews had one (its .env
     # was a plain file in the checkout), and repairs a repo that tracks
@@ -264,6 +279,15 @@ cmd_deploy_preview() {
     stop_deploy_ssh_agent
     trap - EXIT
     run_ops_hooks "post-deploy" "$name" "$dir" "$PHP_VERSION"
+
+    # Re-applied on every deploy-preview, like `deploy` does for a normal
+    # site: a php_version bump on the branch, or a change to the
+    # preview's own override (basic_auth, client_max_body_size, extra
+    # hostnames...), only takes effect here — provision-preview runs once.
+    install_fpm_pool "$name" "$PHP_VERSION" "$exec_user" "$exec_user" "${FPM_MAX_CHILDREN_CONFIG:-$FPM_MAX_CHILDREN}"
+    local root="$dir"
+    [[ -n "$DOCROOT" ]] && root="$dir/$DOCROOT"
+    install_vhost "$name" "$root" "${BASIC_AUTH_CONFIG:-true}" "${CLIENT_MAX_BODY_SIZE_CONFIG:-$CLIENT_MAX_BODY_SIZE}" "${ADDITIONAL_HOSTNAMES[@]}"
 
     systemctl reload "php${PHP_VERSION}-fpm" 2>/dev/null || true
     nginx -t && systemctl reload nginx
@@ -296,7 +320,12 @@ cmd_remove_preview() {
     done
 
     local name; name="$(preview_slug "$project" "$branch")"
+    assert_preview_of "$name" "$project" "remove"
     local dir; dir="$(site_dir "$name")"
+    if ! is_preview "$name" && [[ ! -e "$(site_root "$name")" ]] && ! is_provisioned "$name"; then
+        log_info "no preview '$name' for $project / $branch — nothing to remove"
+        return 0
+    fi
     local mode="isolated"
     if read_preview_meta "$name"; then
         mode="$PREVIEW_MODE"

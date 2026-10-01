@@ -50,6 +50,18 @@ options:
 EOF
 }
 
+# EXIT trap for a first provision whose clone failed: removes the site
+# directory, and the www-<name> user if this run created it ($2 = 1;
+# 2 means the user already existed and is kept).
+provision_undo_fresh() {
+    local name="$1" created="$2"
+    rm -rf "${SITES_ROOT:?}/$name"
+    if [[ "$created" == "1" ]]; then
+        userdel "www-$name" 2>/dev/null || true
+    fi
+    log_info "cleaned up '$name' — the clone failed, so nothing was provisioned"
+}
+
 cmd_provision() {
     [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage_provision; return 0; }
 
@@ -104,6 +116,24 @@ cmd_provision() {
     local wrapper; wrapper="$(site_root "$name")"
     local dir dest
 
+    # Before anything is created on disk: a typo'd name with no repo URL
+    # must not leave a directory and a Linux user behind.
+    if [[ ! -d "$(site_dir "$name")/.git" && -z "$repo_url" ]]; then
+        die "'$name' isn't provisioned yet — give its repo URL: ddeploy provision $name <repo-url>"
+    fi
+
+    # A first provision whose clone fails (wrong URL, no access) undoes
+    # the directory and user it just created, so nothing is left behind
+    # to trip up the next attempt. Only what this run created: a re-run
+    # on an existing site never removes anything.
+    local fresh=0
+    if [[ ! -e "$wrapper" ]]; then
+        fresh=1
+        if id -u "www-$name" >/dev/null 2>&1; then
+            fresh=2
+        fi
+    fi
+
     # Home dir for useradd; the wrapper is created by the clone below.
     # Must exist as a user before lock_site_root (called from
     # ensure_releases_layout) chowns the wrapper to that group.
@@ -111,9 +141,13 @@ cmd_provision() {
     ensure_site_user "$name" "$wrapper"
 
     if [[ ! -d "$(site_dir "$name")/.git" ]]; then
-        [[ -n "$repo_url" ]] || die "no repo at $(site_dir "$name") and no repo-url given"
+        if [[ "$fresh" -ne 0 ]]; then
+            # $name is validate_name-clean, safe to splice into the trap.
+            trap "provision_undo_fresh $name $fresh" EXIT
+        fi
         dest="$(clone_into_release "$name" "$repo_url" "$opt_branch")"
         switch_current "$name" "$dest"
+        trap - EXIT
     fi
 
     # Persists regardless of whether this was a first clone or a re-run

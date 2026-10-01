@@ -264,6 +264,12 @@ hook_process_job() {
             for parent in "${matches[@]}"; do
                 is_preview "$parent" && continue
                 preview="$(preview_slug "$parent" "$branch")"
+                # A name taken by something else (see assert_preview_of):
+                # say so plainly instead of failing inside provision.sh.
+                if ! (assert_preview_of "$preview" "$parent" "preview") 2>/dev/null; then
+                    hook_log warn "skip $preview: that name is already a regular site or another project's preview — branch '$branch' can't get a preview of $parent (rename the branch)"
+                    continue
+                fi
                 if is_preview "$preview" || is_provisioned "$preview"; then
                     if ! hook_run_site deploy-preview "$preview" "$PROVISIONER_DIR/provision.sh" deploy-preview "$parent" "$branch" --if-changed; then
                         failures=$((failures + 1))
@@ -285,11 +291,21 @@ hook_process_job() {
             for parent in "${matches[@]}"; do
                 is_preview "$parent" && continue
                 preview="$(preview_slug "$parent" "$branch")"
-                extra=()
-                if is_preview "$preview"; then
-                    read_preview_meta "$preview"
-                    [[ "$PREVIEW_MODE" == "isolated" ]] && extra+=(--purge-db)
+                # Only ever this project's own preview — never a regular
+                # site (or another project's preview) that happens to
+                # have the same name, and nothing to do when the PR never
+                # had a preview (opened before the webhook, say).
+                if ! is_preview "$preview"; then
+                    hook_log info "skip $preview: no preview of $parent for branch '$branch' to remove"
+                    continue
                 fi
+                if ! (assert_preview_of "$preview" "$parent" "remove") 2>/dev/null; then
+                    hook_log warn "skip $preview: it's another project's preview, not $parent's — not removing it"
+                    continue
+                fi
+                extra=()
+                read_preview_meta "$preview"
+                [[ "$PREVIEW_MODE" == "isolated" ]] && extra+=(--purge-db)
                 if ! hook_run_site remove-preview "$preview" "$PROVISIONER_DIR/provision.sh" remove-preview "$parent" "$branch" --purge-files "${extra[@]}"; then
                     failures=$((failures + 1))
                 fi
