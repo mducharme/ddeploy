@@ -90,9 +90,12 @@ install-cli`.
 `provisioner.conf` already exists).
 
 From there: `deploy <name>` on every push (or set up "Deploy on git
-push"), `list` to see the fleet, `doctor` to check on it. For custom
-domains, branch previews, backups, health-check paging: see
-[docs/new-project.md](docs/new-project.md).
+push"), `list` to see the fleet, `doctor` to check on it.
+
+**Putting a project on the server?** Follow
+[docs/new-project.md](docs/new-project.md): provision, environment,
+importing the database and uploads, checks, troubleshooting, then each
+optional feature (custom domain, auto-deploy, previews, backups, Slack).
 
 ## Commands
 

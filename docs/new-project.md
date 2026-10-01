@@ -1,206 +1,357 @@
-# Onboarding a project with everything turned on
+# Onboarding a project
 
-A task-oriented walkthrough for standing up one project and enabling
-every optional feature: custom domain, a non-default tracked branch,
-auto-deploy on push, branch previews with PR comments, uploads/database
-backups, and health-check paging. The main [README.md](../README.md) is
-the reference for what each feature actually does and why — this is the
-checklist for turning all of them on for one real project.
+How to put one project on a ddeploy server and get it working, then turn
+on whatever optional features it needs.
 
-Assumes the server itself is already set up (`./bootstrap.sh` +
-`./install.sh`, or `provision.sh configure` + `sudo provision.sh init` —
-see README "Quickstart"). A few features here are **server-wide,
-one-time settings** (enable once in `provisioner.conf`, then every
-project on the box gets them, usually via a `provision.sh configure
-<area>` wizard); others are **per-project config**, set either in the
-client repo itself or, without touching the repo at all, via `ddeploy
-override` (step 3). Each step below says which.
+- **Part 1** is the path every project takes: provision it, set its
+  environment, load its content, check it works, and know where to look
+  when it doesn't.
+- **Part 2** covers the optional features (custom domain, auto-deploy on
+  push, branch previews, backups, Slack...), each on its own.
+
+The [README](../README.md) explains what each feature does and why. This
+page is about what to type and what you should see. Each step is labeled
+**Per project** (do it for every project) or **Server-wide, once** (one
+person sets it up for the whole server, then every project has it).
+
+## Before you start
+
+**Server access.** SSH to the server as the `deploy` user, who has sudo.
+Every command below is `ddeploy <command>` and works from any directory.
+It asks for sudo by itself, so don't prefix it. `ddeploy -h` lists the
+commands, and `ddeploy <command> -h` explains one. (No `ddeploy` command
+on the server? It was set up before the command existed: run
+`sudo ./provision.sh install-cli` once from the ddeploy checkout.)
+
+**Repo access.** The server clones over SSH with one shared machine-user
+key (README "Git access"). That bot account needs **read access to the
+project's repo**, as a collaborator or through its org, or the first
+provision fails at `git clone`.
+
+**Pick the site name.** It becomes the URL (`<name>.$BASE_DOMAIN`), the
+Linux user (`www-<name>`) and the database name: lowercase letters,
+digits and hyphens, 28 characters max. **If the repo has a
+`.ddev/config.yaml`, the site name must equal its `name:` field**, or
+`provision` stops with `'name: x' ... does not match directory name`.
+
+**DNS.** Nothing to do for `<name>.$BASE_DOMAIN`, which the server's
+wildcard record and certificate already cover. Only a project's own
+domain needs DNS work (step 8).
+
+---
+
+# Part 1 — Get the project live
 
 ## 1. Provision the site
+
+*Per project.*
 
 ```
 ddeploy provision <name> <repo-url>
 ```
 
-`<name>` becomes `<name>.$BASE_DOMAIN`, the Linux username suffix
-(`www-<name>`), and the database name — lowercase, digits, hyphens, 28
-chars max. If the repo has a `.ddev/config.yaml`, PHP version/docroot/
-upload dirs/deploy hooks are read from it automatically; otherwise you're
-prompted (or pass `--non-interactive --php <ver>` for a scripted
-first-time setup). See README "Resolving a new site" for the full
-precedence order.
+What it reads from the repo:
 
-This alone gets you: an isolated Linux user, FPM pool, database, and
-nginx vhost, plus a first deploy. Everything below is additive.
+- `.ddev/config.yaml`, if there is one: PHP version, docroot, upload
+  directories, deploy steps (`hooks.post-start`). DDEV itself is never
+  run on the server.
+- No `.ddev/config.yaml`: it detects Craft, WordPress (plain or Bedrock)
+  or Charcoal from the repo and fills in sensible defaults, or asks you.
+  For a scripted run, pass `--non-interactive --php <ver>` (see
+  `ddeploy provision -h`).
 
-## 2. `.ddeploy/config.yaml` — the project-side feature switchboard
+What you get: a Linux user and PHP-FPM pool of its own, an empty
+database, an nginx vhost with HTTPS, and a first deploy (composer
+install, frontend build if there is one, the deploy steps). It ends with
+`provisioned: https://<name>.$BASE_DOMAIN`.
 
-Most of what follows is turned on by adding keys to one file, committed
-in the client repo next to `.ddev/config.yaml`. It doesn't have to exist
-at all — every key here is optional and additive. A project with
-everything on looks like this (trim to what you actually need):
+Track a branch other than the repo's default? Add `--branch develop`
+(step 9).
+
+## 2. Set the environment (`.env`)
+
+*Per project.*
+
+Provision writes the database credentials into the site's `.env` itself
+(`CRAFT_DB_*` for Craft, `DB_*` for Laravel-style apps; see README
+"Database credentials"). For Craft it also adds the keys Craft won't boot
+without, but only when they're missing: `CRAFT_APP_ID`,
+`CRAFT_SECURITY_KEY` (random), `CRAFT_ENVIRONMENT=staging`,
+`PRIMARY_SITE_URL`.
+
+**Everything else is yours to add** (mail settings, API keys, and so on)
+with `ddeploy env`:
+
+```
+ddeploy env <name>                            # show it (secrets masked; --reveal shows all)
+ddeploy env <name> MAILER_DSN=smtp://... OTHER=value
+ddeploy env <name> --unset OTHER
+ddeploy env <name> --edit                     # open the real file in an editor
+```
+
+Changes are live on the next request. Don't edit
+`<site>/current/.env` by hand: it's a symlink into the persistent store
+(`ddeploy env <name> --path` shows where), `sudoedit` refuses to touch
+it, and editors that save by replacing the file break the link, so the
+next deploy throws your edit away.
+
+**Importing a database from another environment (step 3)?** Set that
+environment's `CRAFT_SECURITY_KEY` too, or anything Craft encrypted
+there won't decrypt here:
+
+```
+ddeploy env <name> CRAFT_SECURITY_KEY=<the key from the other environment's .env>
+```
+
+## 3. Load the content: database and uploads
+
+*Per project.*
+
+A new site starts with an **empty database and no uploads**. For a CMS
+like Craft that usually means a 500 error until real content is in.
+
+**Database.** Export it locally, copy it up, and load it. It's loaded as
+the site's own database user, so you never need the credentials:
+
+```
+# on your machine
+ddev export-db --file=dump.sql.gz
+scp dump.sql.gz deploy@<server>:/tmp/
+
+# on the server
+ddeploy restore-database <name> --from-file /tmp/dump.sql.gz --yes
+rm /tmp/dump.sql.gz
+ddeploy deploy <name>        # re-runs the deploy steps (e.g. Craft migrations + project config) against the imported data
+```
+
+This **overwrites** the site's database. `.sql` and `.sql.gz` both work.
+
+**Uploads.** Each upload directory is a symlink into the persistent
+store. Copy into the real directory, then hand it to the site's user:
+
+```
+# on your machine (web/uploads as an example: use your project's upload_dirs)
+rsync -az web/uploads/ deploy@<server>:/tmp/<name>-uploads/
+
+# on the server
+real="$(readlink -f /home/deploy/sites/<name>/current/web/uploads)"
+sudo rsync -a /tmp/<name>-uploads/ "$real/"
+sudo chown -R www-<name>:www-data "$real"
+rm -rf /tmp/<name>-uploads
+```
+
+(`/home/deploy/sites` is the default `SITES_ROOT`; check
+`provisioner.conf` if yours differs.)
+
+## 4. Check it works
+
+*Per project.*
+
+- [ ] `curl -I https://<name>.$BASE_DOMAIN/` returns 200, or 401 if
+      basic auth is on.
+- [ ] The site loads in a browser with real content, and the CMS admin
+      (e.g. `/admin` for Craft) lets you log in.
+- [ ] Frontend: the deploy output shows
+      `node build (<name>, node <version>, npm, ...)` with the Node
+      version you expect, and a built asset loads. No `node build` line
+      at all? There's no lockfile; nothing is built automatically
+      without one.
+- [ ] `ddeploy doctor <name>` shows every line as `[ok]`.
+- [ ] `ddeploy list` shows the site with the PHP and Node versions,
+      database and deployed commit you expect.
+
+## 5. When something's wrong
+
+| Symptom | Where to look |
+| --- | --- |
+| Craft says "An internal server error occurred" | Craft's own log: `sudo tail -n 100 /home/deploy/sites/<name>/current/storage/logs/web-$(date +%F).log`. For the full error in the browser, briefly run `ddeploy env <name> CRAFT_DEV_MODE=true`, reload, then `ddeploy env <name> --unset CRAFT_DEV_MODE`. |
+| `provision` or `deploy` failed | `ddeploy logs <name> -n 200` (composer, build and deploy-step output). A failed deploy never goes live; the previous release keeps serving. |
+| 502, blank page, "Permission denied" | `sudo tail -n 50 /var/log/nginx/error.log` and `sudo tail -n 50 /var/log/php*-fpm.log`. |
+| Pushed, but the site didn't update | `ddeploy logs webhook` shows every delivery and what happened to it (deployed, skipped because it's not the tracked branch, rejected for a wrong secret...). |
+| Database connection errors | `ddeploy env <name>` to see what the app is using. Lost or broken credentials: re-run `ddeploy provision <name>` (no repo URL needed), which re-syncs the DB password. |
+| Not sure | `ddeploy doctor <name>` checks nginx, PHP-FPM, the database, disk and certificates. |
+
+Note for Craft: `storage/` lives in each release, so logs from before
+the latest deploy are in `/home/deploy/sites/<name>/releases/*/storage/logs/`,
+and they're deleted when old releases are pruned.
+
+---
+
+# Part 2 — Optional features
+
+## 6. `.ddeploy/config.yaml`: per-project settings in the repo
+
+*Per project.*
+
+Most per-project features are switched on by keys in one file,
+committed in the client repo next to `.ddev/config.yaml`. The file is
+optional and so is every key: an absent key means "server default" or
+"off". A project with everything on looks like this (keep only what you
+need):
 
 ```yaml
-db_env_scheme: charcoal          # laravel | craft | charcoal | none — usually auto-detected
+db_env_scheme: craft              # laravel | craft | charcoal | none — usually auto-detected
 additional_hostnames:
-  - alt-name                     # extra <x>.$BASE_DOMAIN names, same vhost/cert
+  - alt-name                      # extra <x>.$BASE_DOMAIN names, same vhost/cert
 additional_fqdns:
-  - www.client.com                # this project's OWN domain — see step 3
+  - www.client.com                # the project's OWN domain — see step 8
 persistent_files:
-  - storage/app/                  # survives `remove --purge-files` — see README "Persistent files"
+  - storage/app/                  # kept across deploys/removal — README "Persistent files"
   - .env.local
-basic_auth: true                  # crawlability gate; previews default to this on regardless
+basic_auth: true                  # password-protect the site (previews have it on regardless)
 client_max_body_size: 256m        # nginx upload ceiling (default 64m)
 fpm_max_children: 20              # PHP-FPM pool concurrency (default 5)
 auth_exempt_paths:
-  - /health                       # bypass basic_auth for a health/webhook endpoint — see step 9
+  - /health                       # reachable without basic auth — see step 13
 backup_exclude:
-  - cache/**                      # rclone --exclude glob, backup-uploads only
-db_backup_retention_days: 30      # per-project override of DB_BACKUP_RETENTION_DAYS
+  - cache/**                      # rclone --exclude glob, uploads backup only
+db_backup_retention_days: 30      # overrides the server's DB_BACKUP_RETENTION_DAYS
 php_ini:
   memory_limit: 256M
   upload_max_filesize: 64M
 security_headers: true            # X-Content-Type-Options / Referrer-Policy / X-Frame-Options
-static_cache: 30d                 # expires on css/js/images/fonts (1-9999 + s/m/h/d)
-deny_php_in_uploads: true         # deny all + 404 for PHP under any upload_dirs path under docroot
+static_cache: 30d                 # expires header on css/js/images/fonts (1-9999 + s/m/h/d)
+deny_php_in_uploads: true         # 404 for any PHP file under an upload directory
 redirects:
   - from: /old-page
     to: /new-page
     code: 301
-nodejs_version: "22"              # or .nvmrc / .ddev nodejs_version — see README "Frontend builds"
+nodejs_version: "22"              # or .nvmrc / .ddev nodejs_version — README "Frontend builds"
 build:                            # automatic anyway when package.json has a build script + a lockfile
-  path: .                         # dir with package.json
+  path: .                         # directory with package.json
   script: build
   outputs:
-    - web/dist                    # deploy fails if this is missing/empty after the build
+    - web/dist                    # the deploy fails if this is missing/empty after the build
 ```
 
-Full explanation of every key: README "Configuration" →
-`.ddeploy/config.yaml` (and "Frontend builds" for `build:`). Redeclare nothing you don't need — an absent key
-just means "server default" or "off."
+Every key is explained in README "Configuration" → `.ddeploy/config.yaml`
+(and "Frontend builds" for `build:`). Commit, then `ddeploy deploy
+<name>`: all of it is re-read on every deploy.
 
-Re-apply any change here with a plain `deploy <name>` — all of it,
-`persistent_files` included, is re-read and re-applied on every deploy,
-not just provision.
+## 7. Change a setting without touching the repo
 
-## 3. Overriding any of the above without touching the repo (optional)
+*Per project, server-side.*
 
-For when you need to flip one of step 2's settings and don't have (or
-don't want to wait for) repo write access — a client's uploads need a
-bigger `client_max_body_size` right now, basic auth needs to go on
-immediately, an extra hostname needs adding before the dev team gets to
-it:
+For when a setting from step 6 has to change now, and a repo commit
+would take too long or you don't have access (a bigger upload limit, basic
+auth on immediately, an extra hostname):
 
 ```
 ddeploy override <name> basic_auth=true "additional_hostnames=alt1 alt2"
+ddeploy deploy <name>
 ```
 
-Server-side only (`generated/<name>.override.yaml`), never written into
-the client's checkout, and it's the highest-precedence config source —
-wins over both `.ddeploy/config.yaml` and `.ddev/config.yaml`. Takes
-effect on the next `deploy`. `--show` prints what's currently set,
-`--unset <key>` removes one, `--clear` removes all of them (falling back
-to whatever the repo itself declares). Covers most of step 2's scalar and
-list keys — not `redirects`/`php_ini`, which need the repo's own
-`.ddeploy/config.yaml`. See README "Overriding a project's config
-without touching the repo" for the exact supported key list.
+It's stored on the server only (`generated/<name>.override.yaml`) and
+wins over both `.ddeploy/config.yaml` and `.ddev/config.yaml`. `--show`
+prints what's set, `--unset <key>` removes one key, and `--clear`
+removes everything. It covers most of step 6's keys, but not
+`redirects`, `php_ini`, `queue_workers` or `schedule`, which have to go
+in the repo. See README "Overriding a project's config without touching
+the repo" for the list.
 
-## 4. Custom domain (optional, per-project)
+## 8. Custom domain
 
-Already covered above by `additional_fqdns:`. Before provisioning (or
-before the next deploy):
+*Per project.*
 
-1. Point the domain's DNS at this server.
-2. If the server is behind Cloudflare, give the custom domain its own
-   DNS record there too — it does **not** inherit `$BASE_DOMAIN`'s
-   proxy setup.
-3. `deploy <name>` (or `provision`, first time) issues an HTTP-01
-   certificate for it. If DNS isn't live yet, this logs a warning and
-   leaves an HTTP-only vhost — re-run once it is.
+1. Add the domain under `additional_fqdns:` (step 6), or with
+   `ddeploy override <name> additional_fqdns=www.client.com`.
+2. Point the domain's DNS at this server. Behind Cloudflare, the domain
+   needs its own DNS record there; it doesn't inherit
+   `$BASE_DOMAIN`'s setup.
+3. `ddeploy deploy <name>` requests a certificate for it. If DNS isn't
+   live yet, it warns and leaves the domain on plain HTTP: deploy again
+   once DNS works.
 
 See README "Custom domains".
 
-## 5. Default branch (optional, per-project, operator-side)
+## 9. Track a different branch
 
-Only needed if this project's real branch isn't whatever `git clone`
-picked by default (`main`/`master`). This is **never** set in the
-client's repo — it's server-side state, so there's nothing to commit and
-no risk of a stale value fighting a later `git pull` on the ddeploy
-checkout itself:
+*Per project, server-side.*
+
+Only needed when the branch to deploy isn't the repo's default. It's
+server-side state, never committed to the repo:
 
 ```
-ddeploy provision <name> --branch develop
+ddeploy provision <name> --branch develop      # existing site: the next deploy switches over
+ddeploy provision <name> --clear-branch        # back to the default
 ```
 
-The next deploy switches onto it. `--clear-branch` removes the override.
-For a brand-new site, pass `--branch` at first-provision time to clone
-that branch directly instead of the remote's default. Onboarding several
-projects at once via `provision-all`? The manifest's optional 3rd column
-does the same thing (`<name> <repo-url> <branch>`). See README "Default
-branch".
+On a brand-new site, pass `--branch` at the first provision to clone
+that branch directly. With `provision-all`, the manifest's optional
+third column does the same (`<name> <repo-url> <branch>`). See README
+"Default branch".
 
-## 6. Auto-deploy on git push
+## 10. Auto-deploy on git push
 
-**Server-wide, one-time:** `sudo ./provision.sh configure webhook` turns
-on `WEBHOOK_ENABLED`, generates the HMAC secret, and offers to register
-the webhook itself via the GitHub/Bitbucket API (prompting for a
-token/app-password used once, never saved) — this covers Bitbucket
-either way, since it has no workspace-level webhook screen in its own UI
-at all, only per-repo. One registration covers every client repo on the
-box, nothing to repeat per project. See README "Deploy on git push" for
-the exact API calls if you'd rather do it by hand.
+**Server-wide, once:** `ddeploy configure webhook` turns the
+webhook on, generates its secret, and offers to register it on your
+GitHub org or Bitbucket workspace through their API (the token is used
+once, never saved). One registration covers every repo in that
+org/workspace. Then run `ddeploy init` to start the listener. See README
+"Deploy on git push" to register it by hand instead.
 
-**Per-project:** nothing, as long as the repo is under that same
-org/workspace. A push to the branch this site tracks (its current HEAD,
-or its `deploy_branch` override from step 5) deploys automatically. A PR
-opened/synced/closed drives branch previews (step 7) the same way.
+**Per project:** nothing, as long as the repo is in that org/workspace.
+A push to the branch the site tracks (step 9) deploys it. Pull requests
+drive branch previews (step 11).
 
-Can't use an org-wide webhook for this particular repo (different org,
-client-controlled CI, etc.)? Use the SSH escape hatch instead —
-`ddeploy deploy` over SSH is always valid, and
+**Checking it works:** push a commit and run `ddeploy logs webhook`.
+You should see the delivery `accepted`, then `deploy <name>: OK @ <sha>`.
+Don't rely on GitHub's delivery screen: it shows "delivered" even when
+the secret is wrong, because the server only checks the signature after
+answering. A wrong secret shows up in `ddeploy logs webhook` as
+`REJECTED: HMAC verification failed`.
+
+Repo in another org, or the client's own CI? Run `ddeploy deploy` over
+SSH from that pipeline instead:
 [examples/ci/github-action](../examples/ci/github-action/action.yml) /
-[examples/ci/bitbucket-pipelines.yml](../examples/ci/bitbucket-pipelines.yml)
-wrap it for a repo's own CI pipeline.
+[examples/ci/bitbucket-pipelines.yml](../examples/ci/bitbucket-pipelines.yml).
 
-## 7. Branch previews (optional, mostly automatic)
+## 11. Branch previews
 
-Once the webhook (step 6) is live, opening a PR on a provisioned project
-automatically stands up `<project>-<branch-slug>.$BASE_DOMAIN` — no
-per-project setup needed, and every webhook-triggered preview uses the
-server-wide `PREVIEW_DB_MODE` (`shared` by default: database and uploads
-are shared with the parent project, not copied — deliberate, not a
-shortcut; see README "Branch previews" for why). A preview created
-manually instead (`provision-preview <project> <branch> --isolated`) can
-opt that one preview out into a fully separate, disposable copy — there's
-no per-PR way to request that through the webhook itself.
+*Automatic once step 10 is set up.*
 
-Nothing to configure to get previews at all; two optional add-ons:
+Opening a pull request (from a branch in the same repo, never a fork)
+creates a preview at `https://<project>-<branch>.$BASE_DOMAIN`. New pushes
+to the PR update it, and closing or merging the PR removes it.
 
-- **PR comments** — **server-wide, one-time:** `configure webhook`
-  (step 6) offers to set this up as part of the same wizard, or do it
-  separately: point `PREVIEW_COMMENT_CREDENTIALS` (in `provisioner.conf`)
-  at a chmod-600 file with `GITHUB_TOKEN` and/or
-  `BITBUCKET_USER`+`BITBUCKET_APP_PASSWORD`. Every project's previews
-  then get a PR comment (`Preview: https://...`), updated in place on
-  later pushes, for free.
-- **Stale preview cleanup** — **server-wide, one-time:** set
-  `PREVIEW_PRUNE_ENABLED=true` (+ optionally `PREVIEW_PRUNE_SCHEDULE`) so
-  a cron catches any preview whose branch got deleted without a PR-closed
-  event reaching the webhook (network blip, PR closed by admin API, etc.)
-  — the normal cleanup path (`remove-preview` on PR close) already
-  handles the common case; this is the safety net.
+What a new developer needs to know:
 
-CI-triggered instead of the webhook? `ddeploy preview-url <project>
-<branch>` prints the same URL the PR comment would, so your own pipeline
-can post it itself.
+- **Password.** Previews have basic auth on. The username is `preview`,
+  and the password is `sudo cat /etc/ddeploy/basic-auth-password` (unless
+  the site has its own htpasswd at `/etc/nginx/htpasswd/<name>`).
+- **Shared database by default.** A preview uses its parent's database
+  and uploads, not a copy (`PREVIEW_DB_MODE=shared`, see README "Branch
+  previews" for why). Content entered on a preview is live on the
+  parent, and a migration on the branch runs against the parent's data.
+  For a separate, disposable copy, create the preview by hand:
+  `ddeploy provision-preview <project> <branch> --isolated`.
+- **Its own config.** At creation, a preview gets a copy of its parent's
+  `.env` (DB and URLs adjusted for the preview) and of the parent's
+  operator overrides. Change either for that preview alone with
+  `ddeploy env <preview> ...` / `ddeploy override <preview> ...`.
+- **Its name.** `<project>-<branch>`, lowercased, with anything other
+  than letters, digits and hyphens turned into hyphens, and shortened if
+  it's long. `ddeploy list` shows it, and `ddeploy preview-url <project>
+  <branch>` prints its URL whether or not it exists yet.
 
-## 8. Backups — uploads and database (optional)
+Optional, **server-wide, once**:
 
-**Server-wide, one-time:** `sudo ./provision.sh configure backups` walks
-through it interactively — pick DigitalOcean Spaces, AWS S3, or any
-other S3-compatible endpoint, enter the bucket and keys, and it writes
-the credentials file plus turns `BACKUP_ENABLED`/`DB_BACKUP_ENABLED` on.
-By hand, both point at the same object storage in `provisioner.conf`:
+- **PR comments:** point `PREVIEW_COMMENT_CREDENTIALS` (in
+  `provisioner.conf`) at a chmod-600 file with `GITHUB_TOKEN` and/or
+  `BITBUCKET_USER` + `BITBUCKET_APP_PASSWORD` (`configure webhook` offers
+  this too). Each preview then gets a `Preview: https://...` comment on
+  its PR, updated on later pushes.
+- **Stale preview cleanup:** `PREVIEW_PRUNE_ENABLED=true` adds a nightly
+  cron that removes previews whose branch no longer exists. It's the
+  safety net for a PR close the webhook never saw.
+
+## 12. Backups: uploads and database
+
+**Server-wide, once:** `ddeploy configure backups` asks for
+the provider (DigitalOcean Spaces, AWS S3, or any S3-compatible
+storage), bucket and keys, writes the credentials file, and turns both
+backups on. Then run `ddeploy init` to install the cron jobs. By hand,
+in `provisioner.conf`:
 
 ```
 BACKUP_CREDENTIALS="/etc/ddeploy/backup-credentials.env"   # BACKUP_ENDPOINT/ACCESS_KEY/SECRET_KEY, chmod 600
@@ -209,83 +360,93 @@ BACKUP_ENABLED="true"        # uploads
 DB_BACKUP_ENABLED="true"     # database
 ```
 
-`BACKUP_ENDPOINT` is provider-specific — DigitalOcean Spaces:
-`https://<region>.digitaloceanspaces.com`; AWS S3:
-`https://s3.<region>.amazonaws.com`; anything else uses whatever
-endpoint URL that provider gives you. See README "Backups" for where to
-generate each provider's access/secret key pair. One set of credentials
-and one bucket (with a `<name>/` prefix per site) covers every project.
+`BACKUP_ENDPOINT` depends on the provider: DigitalOcean Spaces is
+`https://<region>.digitaloceanspaces.com`, AWS S3 is
+`https://s3.<region>.amazonaws.com`. One bucket covers every project,
+with a `<name>/` prefix per site. See README "Backups" for creating keys.
 
-Either way, re-run `init` — it installs `rclone` and `cron` itself, and
-writes the schedule to `/etc/cron.d/ddeploy-backup-uploads` / `-database`
-(root, not any user's `crontab -l` — check `ddeploy doctor`
-or `cat` the file directly).
+**Per project:** databases are backed up automatically. Uploads are only
+backed up for directories declared in `upload_dirs:` (in
+`.ddev/config.yaml`, or `--upload-dirs "a b"` at provision). Tune with
+`backup_exclude:` and `db_backup_retention_days:` (step 6). Shared-mode
+previews are skipped, since their data is the parent's.
 
-**Per-project, for uploads only:** declare `upload_dirs:` in
-`.ddev/config.yaml` (or `--upload-dirs "a b"` at provision time) — a
-project with none declared is skipped for uploads backup entirely
-(nothing to sync). Database backup needs no per-project config; every
-provisioned site's database gets dumped automatically once
-`DB_BACKUP_ENABLED` is on.
+**Checking it works:** `ddeploy backup-uploads <name>` and
+`ddeploy backup-database <name>` run one now; then look for
+`<bucket>/<name>/` in the bucket. `ddeploy doctor <name>` reports how
+many database dumps exist and how old the newest is.
 
-`backup_exclude:` and `db_backup_retention_days:` (step 2's
-`.ddeploy/config.yaml`) are the only per-project tuning available. Run
-`backup-uploads <name>` / `backup-database <name>` directly to check a
-project's backup works without waiting for the cron schedule. Both are
-preview-aware — shared-mode previews are skipped (would just duplicate
-the parent's own backup).
+**Restoring:** `ddeploy restore-uploads <name> --yes` /
+`ddeploy restore-database <name> --yes` (without `--yes`, they show
+what would happen). See README "Restoring".
 
-Restoring: `restore-uploads <name> --yes` / `restore-database <name>
---yes` — see README "Restoring", including `--from-file` for loading a
-client-provided `.sql`/`.sql.gz` dump with no object storage involved.
+## 13. Health checks
 
-## 9. Health checks and failure paging (optional)
+**Per project:** if the site has basic auth on but something needs to
+reach a URL without it (an uptime monitor, an incoming webhook), list
+that path under `auth_exempt_paths:` (step 6), e.g. `/health`.
 
-**Per-project, if the site has `basic_auth: true` and you want an
-unauthenticated health/webhook endpoint:** add its path to
-`auth_exempt_paths:` in step 2's `.ddeploy/config.yaml` (`/health`, say).
+**Server-wide:** `ddeploy doctor` (all sites) or `ddeploy doctor <name>`
+checks nginx, PHP-FPM, disk, certificate expiry, each site's database
+connection, and the webhook/backup/pruning setup. It exits non-zero on
+any `[fail]`, so it can run from cron or monitoring. With
+notifications on (step 14), a failure is also posted to chat.
 
-**Server-wide, one-time:** `doctor [name]` (no args = every site) checks
-nginx, PHP-FPM, disk, cert expiry, and each site's own DB connection —
-run it by hand any time, or wire it into cron/monitoring since it exits
-nonzero on any `[fail]`. It's also explicit about webhook/backup/pruning
-status either way (on or off, never silent), tests the backup bucket is
-actually reachable when either backup is on, and — per site — reports
-how many database dumps are recoverable (with the newest one's age) and
-whether uploads have synced anything at all. Point `NOTIFY_WEBHOOK` (in `provisioner.conf`)
-at a Slack/Discord incoming webhook URL and a failure from `doctor`, the
-backup cron, or `prune-previews` pages it (the same command+site won't
-repage until `NOTIFY_COOLDOWN` seconds pass, default 3600). The same URL
-also gets deploy successes/failures, previews coming and going, and
-rejected webhooks (`NOTIFY_EVENTS`), and a site can have a channel of
-its own (`ddeploy notify <name> --set-url`). See README "Health
-check" / "Notifications".
+## 14. Slack (or Discord) notifications
 
-## Checklist: verify each feature actually works
+**Server-wide, once.** Create a webhook URL for a channel:
 
-- [ ] `curl -I https://<name>.$BASE_DOMAIN/` — 200 (or 401, if
-      `basic_auth: true`)
-- [ ] Custom domain, if set: `curl -I https://<your-domain>/` — check the
-      cert is for the right domain, not the wildcard
-- [ ] `curl https://<name>.$BASE_DOMAIN/health` — 200 with no
-      credentials, if `auth_exempt_paths` is set
-- [ ] Frontend: the deploy log shows `node build (<name>, node vX, npm, ...)`
-      with the Node version you expect, and a built asset loads (e.g.
-      `curl -I https://<name>.$BASE_DOMAIN/dist/<file>`). No build line
-      at all? Check for a lockfile — without one, nothing is built
-      automatically
-- [ ] Push a commit to the tracked branch → site updates (`logs <name>
-      -f` while it happens, or `list` afterward to confirm the deployed
-      sha)
-- [ ] Open a test PR → a preview appears at
-      `https://<project>-<branch-slug>.$BASE_DOMAIN` within a few
-      seconds, and (if configured) a comment lands on the PR
-- [ ] `ddeploy backup-uploads <name>` /
-      `backup-database <name>` — check the bucket for
-      `<bucket>/<name>/...`
-- [ ] `ddeploy override <name> basic_auth=true && sudo
-      ddeploy deploy <name>` then confirm the site now requires
-      auth, without touching the repo — `--clear` it afterward
-- [ ] `ddeploy doctor <name>` — every line `[ok]`
-- [ ] `ddeploy list` — confirms mode, DB, and (for previews)
-      parent resolution all look right
+1. https://api.slack.com/apps → **Create New App** → **From scratch**,
+   name it, pick the workspace.
+2. **Incoming Webhooks** → turn it on → **Add New Webhook to
+   Workspace** → pick the channel → **Allow**. (Some workspaces need an
+   admin to approve this.)
+3. Copy the `https://hooks.slack.com/services/...` URL. Anyone with it
+   can post to the channel, so treat it like a password.
+
+Put it in `provisioner.conf` (`sudoedit /path/to/checkout/provisioner.conf`):
+
+```
+NOTIFY_WEBHOOK="https://hooks.slack.com/services/..."
+```
+
+Then `ddeploy notify --test` should post a test message. From then on
+the channel gets a message for each deploy (green with the URL, commit,
+duration and who triggered it; red with the error when it fails), for
+previews created and removed, and for webhook deliveries rejected over a
+wrong secret. `NOTIFY_EVENTS` in `provisioner.conf` picks which of
+these are sent. The same URL also gets failure alerts from the backup
+cron, `prune-previews` and `doctor`. Discord webhook URLs work the same
+way.
+
+**Per project (optional):** send one project's messages to a channel of
+its own (a client's, say) as well:
+
+```
+ddeploy notify <name> --set-url      # asks for the URL; typing is hidden
+ddeploy notify <name> --test
+```
+
+Its previews use the same channel. See README "Notifications".
+
+## Checklist for the optional features
+
+Tick the ones you turned on:
+
+- [ ] Custom domain: `curl -I https://<your-domain>/` returns 200/401,
+      and the certificate is for that domain, not the wildcard.
+- [ ] Auth exemption: `curl https://<name>.$BASE_DOMAIN/health` returns
+      200 with no credentials.
+- [ ] Auto-deploy: push a commit to the tracked branch → `ddeploy logs
+      webhook` shows `deploy <name>: OK @ <sha>`, and the site has the
+      change.
+- [ ] Previews: open a test PR → `https://<project>-<branch>.$BASE_DOMAIN`
+      appears within a minute (user `preview`), plus a PR comment if
+      configured. Close the PR → it's gone.
+- [ ] Backups: `ddeploy backup-uploads <name>` and `ddeploy
+      backup-database <name>` succeed, and `<bucket>/<name>/` has files.
+- [ ] Override: `ddeploy override <name> basic_auth=true && ddeploy
+      deploy <name>` → the site now asks for a password. Then
+      `ddeploy override <name> --clear && ddeploy deploy <name>`.
+- [ ] Notifications: `ddeploy notify <name> --test` posts to the
+      channel, and the next deploy posts a green message.
