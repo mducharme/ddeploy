@@ -1012,6 +1012,12 @@ DB user. Files owned `www-<name>:www-data`. The checkout itself is
 root-owned, not `deploy`'s. Rationale for both, and for git/webhook
 isolation: [docs/security.md](docs/security.md).
 
+A hostname no site claims (`typo.$BASE_DOMAIN`, a removed site, any
+other domain pointed at the server) gets a 404 from a catch-all vhost
+`init` installs (`/etc/nginx/sites-available/000-ddeploy-default.conf`),
+never another site's content — nginx would otherwise fall back to
+whichever site's vhost it loaded first.
+
 ### Git access
 
 All git operations authenticate with one shared SSH key, placed at

@@ -43,6 +43,35 @@ install_pinned_yq() {
     log_info "installed yq $YQ_VERSION ($arch), checksum verified"
 }
 
+# The catch-all server for hostnames no site claims (see
+# templates/default-vhost.conf.tmpl). Without one, nginx's fallback for
+# an unknown name is simply the first vhost it loaded — some client's
+# site, served under any hostname that resolves here. HTTPS uses the
+# wildcard cert, so <anything>.$BASE_DOMAIN gets a clean 404; it's only
+# added once that cert exists (init issues it just before this).
+install_default_vhost() {
+    local cert="/etc/letsencrypt/live/$BASE_DOMAIN"
+    local tls=""
+    if [[ -f "$cert/fullchain.pem" ]]; then
+        tls="server {
+    listen 443 ssl http2 default_server;
+    listen [::]:443 ssl http2 default_server;
+    server_name _;
+    ssl_certificate     $cert/fullchain.pem;
+    ssl_certificate_key $cert/privkey.pem;
+    return 404;
+}"
+    else
+        log_warn "no wildcard cert at $cert yet — the HTTPS catch-all is skipped until it exists (re-run init)"
+    fi
+    render_template "$PROVISIONER_DIR/templates/default-vhost.conf.tmpl" /etc/nginx/sites-available/000-ddeploy-default.conf "TLS_BLOCK=$tls"
+    ln -sf /etc/nginx/sites-available/000-ddeploy-default.conf /etc/nginx/sites-enabled/000-ddeploy-default.conf
+    nginx -t
+    # Not running yet on a fresh server: the "services" step below starts it.
+    systemctl reload nginx 2>/dev/null || true
+    log_info "installed the catch-all vhost: hostnames no site claims get a 404"
+}
+
 cmd_init() {
     require_root
     load_conf
@@ -219,6 +248,7 @@ EOF
         rm -f /etc/nginx/sites-enabled/default
         log_info "disabled the stock default nginx site (per-site vhosts own the wildcard)"
     fi
+    install_default_vhost
     mkdir -p "$NGINX_EXTRA_DIR"
     chmod 755 "$NGINX_EXTRA_DIR"
     chown root:root "$NGINX_EXTRA_DIR"

@@ -1,0 +1,11 @@
+# Catch-all for hostnames no site claims (a typo, a removed site, any
+# other name pointed at this server): 404, instead of nginx quietly
+# serving whichever site's vhost happens to load first. Installed by
+# `init`; never edit by hand — re-run init instead.
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 404;
+}
+{{TLS_BLOCK}}

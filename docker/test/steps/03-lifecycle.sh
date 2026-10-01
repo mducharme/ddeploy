@@ -205,6 +205,14 @@ assert_contains "$out_custom" "MARKER=v1" "custom-domain vhost reaches the same 
 list_out="$(./provision.sh list)"
 assert_contains "$list_out" "testsite" "list shows testsite"
 
+step "hostnames no site claims get a 404, not some site"
+code="$(curl -sk -o /dev/null -w '%{http_code}' --resolve "nosuchsite.staging.ddeploy.test:443:127.0.0.1" "https://nosuchsite.staging.ddeploy.test/")"
+[[ "$code" == "404" ]] && pass "unknown <name>.\$BASE_DOMAIN over HTTPS is a 404" || fail "unknown hostname over HTTPS returned $code, expected 404 (nginx fell back to a site's vhost)"
+code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: nosuchsite.staging.ddeploy.test' "http://127.0.0.1/")"
+[[ "$code" == "404" ]] && pass "unknown hostname over plain HTTP is a 404" || fail "unknown hostname over HTTP returned $code, expected 404"
+code="$(curl -sk -o /dev/null -w '%{http_code}' --resolve "testsite.staging.ddeploy.test:443:127.0.0.1" "https://testsite.staging.ddeploy.test/")"
+[[ "$code" == "200" ]] && pass "...while a real site still answers (200)" || fail "testsite returned $code after adding the catch-all"
+
 step "logs and preview-url"
 logs_out="$(./provision.sh logs testsite -n 20)"
 assert_contains "$logs_out" "provision: started (manual" "logs shows the provision's start, with who triggered it"
