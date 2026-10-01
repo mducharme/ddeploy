@@ -9,8 +9,9 @@ end of `provision` / `deploy` respectively — for operator concerns
 (reverse-proxy lists, optional success pings), not site-specific
 setup. **Failure** paging is `NOTIFY_WEBHOOK` in `provisioner.conf`, not
 a hook here — these scripts only run after a successful provision/deploy.
-For site-specific one-offs, use `.provisioner/post-provision.sh` /
-`.provisioner/post-deploy.sh` in the client repo instead (see main README).
+For site-specific steps, use `hooks.post-deploy` / `hooks.post-provision`
+in the client repo's `.ddeploy/config.yaml` (or the `.ddeploy/post-*.sh`
+scripts) instead — see the main README, "Deploy hooks".
 
 - `post-provision.d/*.sh` — run once, after a site's first deploy finishes.
 - `post-deploy.d/*.sh` — run after every `deploy`.

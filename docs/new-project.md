@@ -119,7 +119,7 @@ scp dump.sql.gz deploy@<server>:/tmp/
 # on the server
 ddeploy restore-database <name> --from-file /tmp/dump.sql.gz --yes
 rm /tmp/dump.sql.gz
-ddeploy deploy <name>        # re-runs the deploy steps (e.g. Craft migrations + project config) against the imported data
+ddeploy deploy <name>        # re-runs the deploy steps against the imported data (Craft migrations: see hooks.post-deploy in step 6)
 ```
 
 This **overwrites** the site's database. `.sql` and `.sql.gz` both work.
@@ -213,6 +213,12 @@ security_headers: true            # X-Content-Type-Options / Referrer-Policy / X
 static_cache: 30d                 # expires header on css/js/images/fonts (1-9999 + s/m/h/d)
 deny_php_in_uploads: true         # 404 for any PHP file under an upload directory
 composer_dev: true                # keep dev packages (default: composer install --no-dev --optimize-autoloader)
+hooks:                            # steps for the server only — DDEV never runs these (README "Deploy hooks")
+  post-deploy:                    # every deploy, after the build
+    - exec: php craft migrate/all --interactive=0
+    - exec: php craft project-config/apply --force
+  post-provision:                 # once, after the first deploy
+    - exec: php craft clear-caches/all
 redirects:
   - from: /old-page
     to: /new-page

@@ -34,8 +34,9 @@ options:
                             overrides config
   --deploy-cmd <cmd>        repeatable; each becomes an exec step after
                             composer install; always overrides config
-                            (replaces any hooks.post-start from config, not
-                            merged with them)
+                            (replaces hooks.post-start from .ddev or
+                            .ddeploy, not merged with them; .ddeploy's
+                            hooks.post-deploy/post-provision still run)
   --auth                    force basic auth on for this site
   --no-auth                 force basic auth off for this site
   --node <version>          pin this site's Node version (22, 22.11.0, lts/*);
@@ -253,7 +254,8 @@ cmd_provision() {
     start_deploy_ssh_agent "www-$name"
     trap 'stop_deploy_ssh_agent' EXIT
     replay_hooks "$name" "$PHP_VERSION" "$dest" "www-$name" "$wrapper"
-    run_repo_hook "$name" "$PHP_VERSION" "$dest" ".provisioner/post-provision.sh" "post-provision script" "www-$name" "$wrapper"
+    replay_hooks "$name" "$PHP_VERSION" "$dest" "www-$name" "$wrapper" "$GENERATED_DIR/$name.provision-steps" provision
+    run_repo_hook "$name" "$PHP_VERSION" "$dest" ".ddeploy/post-provision.sh" "post-provision script" "www-$name" "$wrapper"
     stop_deploy_ssh_agent
     trap - EXIT
     # $dir (current-based, stable), not $dest (the specific release

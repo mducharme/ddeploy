@@ -337,14 +337,15 @@ read_ext_scalar() {
 # into TYPE<TAB>CMD lines. Same shape is used by the sidecar, so this
 # works for both ddev configs and our own generated ones.
 extract_hooks() {
-    local cfg="$1" out="$2" count i type val
+    local cfg="$1" out="$2" key="${3:-post-start}" count i type val
     : > "$out"
-    count="$(yq eval '.hooks.post-start | length' "$cfg" 2>/dev/null)"
+    [[ -f "$cfg" ]] || return 0
+    count="$(yq eval ".hooks.\"$key\" | length" "$cfg" 2>/dev/null)"
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
     local ddev_node_re='^ddev[[:space:]]+((npm|npx|pnpm|yarn)([[:space:]].*)?)$'
     for ((i = 0; i < count; i++)); do
-        type="$(yq eval ".hooks.post-start[$i] | to_entries | .[0].key" "$cfg")"
-        val="$(yq eval ".hooks.post-start[$i] | to_entries | .[0].value" "$cfg")"
+        type="$(yq eval ".hooks.\"$key\"[$i] | to_entries | .[0].key" "$cfg")"
+        val="$(yq eval ".hooks.\"$key\"[$i] | to_entries | .[0].value" "$cfg")"
         # `exec-host: ddev npm run build` is how most DDEV projects
         # declare a frontend build. Exactly that shape — `ddev` followed
         # directly by a package manager — becomes a plain exec step (run
@@ -551,8 +552,8 @@ resolve_build_config() {
     case "$mode" in
         auto)
             [[ -f "$pkg/package.json" && -n "$has_script" ]] || return 0
-            if steps_run_node "$steps"; then
-                [[ "$is_deploy" == "1" ]] && log_info "'$name': hooks.post-start already runs a Node package manager — no automatic build step added"
+            if steps_run_node "$steps" || steps_run_node "${POST_DEPLOY_STEPS:-}"; then
+                [[ "$is_deploy" == "1" ]] && log_info "'$name': the deploy steps already run a Node package manager — no automatic build step added"
                 return 0
             fi
             if ! has_node_lockfile "$pkg"; then
@@ -964,6 +965,10 @@ parse_config() {
         } > "$GENERATED_DIR/$name.steps"
         log_info "'$name': deploy steps overridden via --deploy-cmd"
         unset DEPLOY_CMDS_OVERRIDE
+    elif [[ -f "$ext_cfg" && "$(yq eval '.hooks | has("post-start")' "$ext_cfg" 2>/dev/null)" == "true" ]]; then
+        # .ddeploy/config.yaml's own hooks.post-start replaces .ddev's on
+        # the server — for a project whose DDEV steps are wrong there.
+        extract_hooks "$ext_cfg" "$GENERATED_DIR/$name.steps" post-start
     else
         extract_hooks "$cfg" "$GENERATED_DIR/$name.steps"
         # The sidecar is ddeploy's own file, and its composer step is
@@ -994,13 +999,28 @@ parse_config() {
         # is actually about to act on it (a deploy) — every read-only
         # caller (backup-uploads/backup-database/doctor/list/restore)
         # would otherwise repeat this same line every single run.
-        [[ "$is_deploy" == "1" ]] && log_info "'$name': no hooks.post-start declared but composer.json exists — defaulting to 'composer $(default_composer_args)' as the deploy step (composer_dev: true keeps dev packages; hooks.post-start in .ddev/config.yaml replaces it)"
+        [[ "$is_deploy" == "1" ]] && log_info "'$name': no hooks.post-start declared but composer.json exists — defaulting to 'composer $(default_composer_args)' as the deploy step (composer_dev: true keeps dev packages; hooks.post-start in .ddev/config.yaml or .ddeploy/config.yaml replaces it)"
     fi
+
+    # ddeploy-only steps, from .ddeploy/config.yaml (never .ddev's, which
+    # DDEV runs locally too): hooks.post-deploy after everything else,
+    # build included, on every deploy; hooks.post-provision once, after a
+    # site's or preview's first deploy (its own file, replayed by
+    # provision / provision-preview). post-deploy is read before the build
+    # is resolved, so a post-deploy step running npm/pnpm/yarn counts as
+    # the project building itself (no automatic build on top).
+    POST_DEPLOY_STEPS="$(mktemp)"
+    extract_hooks "$ext_cfg" "$POST_DEPLOY_STEPS" post-deploy
 
     # After the steps file is final — the build step is placed relative
     # to its composer steps, and skipped if they already run npm/pnpm/yarn.
     resolve_build_config "$name" "$override_cfg" "$ext_cfg" "$cfg" "$is_deploy"
     resolve_node_version_spec "$name" "$override_cfg" "$ext_cfg" "$cfg" "$BUILD_PATH"
+
+    cat "$POST_DEPLOY_STEPS" >> "$GENERATED_DIR/$name.steps"
+    rm -f "$POST_DEPLOY_STEPS"
+    POST_DEPLOY_STEPS=""
+    extract_hooks "$ext_cfg" "$GENERATED_DIR/$name.provision-steps" post-provision
 }
 
 # Writes a sidecar at $GENERATED_DIR/<name>.yaml in the same shape as a

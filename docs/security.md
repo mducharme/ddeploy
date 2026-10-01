@@ -88,7 +88,7 @@ leftover copy from an older run instead of writing a new one.
 The one place a site's own user genuinely needs live key access is
 opaque, project-declared code that runs as `www-<name>` — `composer
 install` against a private VCS package, a `hooks.post-start` `exec`
-step, `.provisioner/post-provision.sh`/`post-deploy.sh` — since ddeploy
+step, `.ddeploy/config.yaml`'s `hooks.post-*`, `.ddeploy/post-provision.sh`/`post-deploy.sh` — since ddeploy
 can't know in advance whether any of that needs git/SSH. For just that
 window, `provision`/`deploy`/`deploy-preview` start a per-deploy
 `ssh-agent` running *as* `www-<name>`, and root loads `GIT_DEPLOY_KEY`

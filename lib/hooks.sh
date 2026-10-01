@@ -14,19 +14,19 @@ guardrail_match() {
 # Reports guardrail hits without running anything — used at provision
 # time so a non-conforming repo is caught at setup, not mid-deploy.
 scan_hooks() {
-    local name="$1"
-    local steps="$GENERATED_DIR/$name.steps"
-    [[ -f "$steps" ]] || return 0
-    local type cmd
-    while IFS=$'\t' read -r type cmd; do
-        [[ -z "$type" ]] && continue
-        if guardrail_match "$cmd"; then
-            log_warn "guardrail: step '$type: $cmd' references ddev/a container path — will be SKIPPED at deploy time"
-        fi
-        if [[ "$type" == "exec-host" ]]; then
-            log_warn "host-context step ('$cmd') — runs outside the site's isolation boundary, review before trusting"
-        fi
-    done < "$steps"
+    local name="$1" steps type cmd
+    for steps in "$GENERATED_DIR/$name.steps" "$GENERATED_DIR/$name.provision-steps"; do
+        [[ -f "$steps" ]] || continue
+        while IFS=$'\t' read -r type cmd; do
+            [[ -z "$type" ]] && continue
+            if guardrail_match "$cmd"; then
+                log_warn "guardrail: step '$type: $cmd' references ddev/a container path — will be SKIPPED at deploy time"
+            fi
+            if [[ "$type" == "exec-host" ]]; then
+                log_warn "host-context step ('$cmd') — runs outside the site's isolation boundary, review before trusting"
+            fi
+        done < "$steps"
+    done
 }
 
 # A failed exec/composer step: one clear line saying the deploy stopped
@@ -34,11 +34,11 @@ scan_hooks() {
 # ($4, from run_captured). The [error] line is also what the failure
 # notification quotes.
 deploy_step_failed() {
-    local name="$1" rc="$2" what="$3" out="${4:-}"
-    site_log "$name" "deploy: step FAILED (exit $rc): $what"
+    local name="$1" rc="$2" what="$3" out="${4:-}" label="${5:-deploy}"
+    site_log "$name" "$label: step FAILED (exit $rc): $what"
     [[ -n "$out" ]] && site_log_output "$name" "$out"
     rm -f "$out"
-    die "'$name': deploy step failed (exit $rc): $what — the deploy stopped here (see the output above, or 'ddeploy logs $name')"
+    die "'$name': $label step failed (exit $rc): $what — the $label stopped here (see the output above, or 'ddeploy logs $name')"
 }
 
 # $4/$5 (optional) exec user/home — default to the site's own www-<name>.
@@ -48,11 +48,14 @@ deploy_step_failed() {
 # start_deploy_ssh_agent, lib/git_access.sh) if the caller started one —
 # threaded into exec/composer steps so a private VCS dependency still
 # resolves, without any key ever living in $exec_user's own $HOME.
+# $6 (optional) steps file — default the site's deploy steps; provision
+# passes <name>.provision-steps (hooks.post-provision). $7 (optional)
+# label for the logs — "deploy" or "provision".
 replay_hooks() {
     local name="$1" php="$2" dir="$3"
     local exec_user="${4:-www-$name}" exec_home="${5:-$dir}"
-    local steps="$GENERATED_DIR/$name.steps"
-    [[ -f "$steps" ]] || { log_info "no deploy steps for $name"; return 0; }
+    local steps="${6:-$GENERATED_DIR/$name.steps}" label="${7:-deploy}"
+    [[ -s "$steps" ]] || { [[ "$label" == deploy ]] && log_info "no deploy steps for $name"; return 0; }
 
     # Node on PATH for every step, not just the `node` build step — an
     # `exec: npm run build` in hooks.post-start is how most DDEV projects
@@ -69,24 +72,24 @@ replay_hooks() {
         [[ -z "$type" ]] && continue
         if guardrail_match "$cmd"; then
             log_warn "skipping step '$type: $cmd' — ddev/container-path reference"
-            site_log "$name" "deploy: SKIPPED (guardrail) $type: $cmd"
+            site_log "$name" "$label: SKIPPED (guardrail) $type: $cmd"
             continue
         fi
         case "$type" in
             exec)
                 log_info "exec ($name, php$php${NODE_VERSION:+, node $NODE_VERSION}): $cmd"
-                site_log "$name" "deploy: exec: $cmd"
+                site_log "$name" "$label: exec: $cmd"
                 out="$(mktemp)"
                 run_captured "$out" sudo -u "$exec_user" env HOME="$exec_home" PATH="$path" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" COMPOSER_NO_INTERACTION=1 bash -lc "cd '$dir' && $cmd" </dev/null \
-                    || deploy_step_failed "$name" "$?" "$cmd" "$out"
+                    || deploy_step_failed "$name" "$?" "$cmd" "$out" "$label"
                 rm -f "$out"
                 ;;
             composer)
                 log_info "composer ($name, php$php): $cmd"
-                site_log "$name" "deploy: composer: $cmd"
+                site_log "$name" "$label: composer: $cmd"
                 out="$(mktemp)"
                 run_captured "$out" sudo -u "$exec_user" env HOME="$exec_home" PATH="$path" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" COMPOSER_NO_INTERACTION=1 bash -lc "cd '$dir' && composer $cmd" </dev/null \
-                    || deploy_step_failed "$name" "$?" "composer $cmd" "$out"
+                    || deploy_step_failed "$name" "$?" "composer $cmd" "$out" "$label"
                 rm -f "$out"
                 ;;
             node)
@@ -94,7 +97,7 @@ replay_hooks() {
                 ;;
             exec-host)
                 log_warn "exec-host step skipped by default — host-context command, review before trusting: $cmd"
-                site_log "$name" "deploy: SKIPPED (exec-host, review manually) $cmd"
+                site_log "$name" "$label: SKIPPED (exec-host, review manually) $cmd"
                 ;;
             *)
                 log_warn "unknown hook type '$type', skipping"

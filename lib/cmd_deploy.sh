@@ -137,7 +137,7 @@ cmd_deploy() {
     if [[ "$run_hooks" -eq 1 ]]; then
         scan_hooks "$name"
         replay_hooks "$name" "$PHP_VERSION" "$dest" "www-$name" "$wrapper"
-        run_repo_hook "$name" "$PHP_VERSION" "$dest" ".provisioner/post-deploy.sh" "post-deploy script" "www-$name" "$wrapper"
+        run_repo_hook "$name" "$PHP_VERSION" "$dest" ".ddeploy/post-deploy.sh" "post-deploy script" "www-$name" "$wrapper"
     else
         log_info "skipping hook replay — retargeting an existing release that already ran them"
     fi

@@ -181,6 +181,9 @@ rm -f "$LOG_DIR/ghostsite.log"
 
 step "provision: checks"
 assert_cmd_ok "www-testsite Linux user created" id -u www-testsite
+assert_file_exists "$LIVE/.post-provision-ran" "hooks.post-provision from .ddeploy/config.yaml ran on the first deploy"
+assert_file_exists "$LIVE/.post-deploy-ran" "hooks.post-deploy from .ddeploy/config.yaml ran too"
+[[ "$(tail -n 1 "$GENERATED_DIR/testsite.steps")" == $'exec\ttouch .post-deploy-ran' ]] && pass "post-deploy steps run last, after the build" || fail "last step is '$(tail -n 1 "$GENERATED_DIR/testsite.steps")'"
 assert_contains "$(notify_sink)" '"event": "deploy-success", "site": "testsite"' "provision sent a deploy-success notification"
 assert_contains "$(notify_sink)" "testsite provisioned" "notification says what happened"
 assert_file_exists "/etc/nginx/sites-enabled/testsite.conf" "vhost enabled"
@@ -351,6 +354,8 @@ chmod 640 "$PERSISTENT_ROOT/testsite/.env"
 rm -f /tmp/ddeploy-ops-hook-ran
 ./provision.sh deploy testsite
 assert_contains "$(cat /tmp/ddeploy-ops-hook-ran 2>/dev/null)" "testsite" "an ops hook in /etc/ddeploy/hooks runs on deploy"
+assert_file_exists "$LIVE/.post-deploy-ran" "hooks.post-deploy runs on every deploy"
+assert_file_absent "$LIVE/.post-provision-ran" "hooks.post-provision doesn't run on a later deploy"
 env_mode_after="$(stat -L -c %a "$LIVE/.env")"
 [[ "$env_mode_after" == "600" ]] \
     && pass "a plain deploy re-tightens a stale 640 .env back to 600" \
@@ -645,6 +650,19 @@ printf 'name: composertest\nphp_version: "8.3"\nhooks:\n  post-start:\n    - com
 parse_ct "$CT/.ddev/config.yaml"
 [[ "$(composer_step composertest)" == "install --no-dev" ]] && pass "a composer step declared in .ddev/config.yaml runs as declared" || fail "declared composer step became '$(composer_step composertest)'"
 assert_cmd_fails "override refuses a non-boolean composer_dev" ./provision.sh override composertest composer_dev=maybe
+# .ddeploy/config.yaml's hooks.post-start replaces .ddev's on the server.
+mkdir -p "$CT/.ddeploy"
+printf 'hooks:\n  post-start:\n    - exec: echo ddeploy-only\n' > "$CT/.ddeploy/config.yaml"
+parse_ct "$CT/.ddev/config.yaml"
+[[ "$(cat "$GENERATED_DIR/composertest.steps")" == $'exec\techo ddeploy-only' ]] && pass ".ddeploy hooks.post-start replaces .ddev's (and no default composer step is added)" || fail "steps with .ddeploy post-start: $(tr '\n' '|' < "$GENERATED_DIR/composertest.steps")"
+# A post-deploy step that runs the build itself means no automatic build
+# on top of it (package.json has a build script and a lockfile here).
+printf '{"scripts":{"build":"echo built"}}' > "$CT/package.json"
+echo '{}' > "$CT/package-lock.json"
+printf 'hooks:\n  post-deploy:\n    - exec: npm run build\n' > "$CT/.ddeploy/config.yaml"
+parse_ct "$CT/.ddev/config.yaml"
+assert_cmd_fails "a post-deploy npm step means no automatic build step" grep -q $'^node\t' "$GENERATED_DIR/composertest.steps"
+[[ "$(tail -n 1 "$GENERATED_DIR/composertest.steps")" == $'exec\tnpm run build' ]] && pass "...and the post-deploy step is still there, last" || fail "steps: $(tr '\n' '|' < "$GENERATED_DIR/composertest.steps")"
 rm -rf "$CT" "$GENERATED_DIR"/composertest.*
 
 step "deploy steps: stdin isolation, and a failing step stops the deploy and notifies"

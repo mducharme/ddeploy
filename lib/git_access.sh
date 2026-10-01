@@ -12,7 +12,7 @@
 # The one thing that DOES need live key access from inside the site's
 # own, less-trusted www-<name> user is opaque, project-declared code —
 # `composer install` against a private VCS package, a hooks.post-start
-# `exec` step, `.provisioner/post-*.sh` — since ddeploy can't know in
+# `exec` step, `.ddeploy/post-*.sh` — since ddeploy can't know in
 # advance whether any of that needs git/SSH. start_deploy_ssh_agent /
 # stop_deploy_ssh_agent bracket just that hook-replay window with a
 # per-deploy ssh-agent: root loads the key into an agent that runs AS

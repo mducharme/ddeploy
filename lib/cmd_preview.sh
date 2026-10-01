@@ -195,7 +195,8 @@ cmd_provision_preview() {
     start_deploy_ssh_agent "$exec_user"
     trap 'stop_deploy_ssh_agent' EXIT
     replay_hooks "$name" "$PHP_VERSION" "$dir" "$exec_user" "$exec_home"
-    run_repo_hook "$name" "$PHP_VERSION" "$dir" ".provisioner/post-provision.sh" "post-provision script" "$exec_user" "$exec_home"
+    replay_hooks "$name" "$PHP_VERSION" "$dir" "$exec_user" "$exec_home" "$GENERATED_DIR/$name.provision-steps" provision
+    run_repo_hook "$name" "$PHP_VERSION" "$dir" ".ddeploy/post-provision.sh" "post-provision script" "$exec_user" "$exec_home"
     stop_deploy_ssh_agent
     trap - EXIT
     run_ops_hooks "post-provision" "$name" "$dir" "$PHP_VERSION"
@@ -283,7 +284,7 @@ cmd_deploy_preview() {
     start_deploy_ssh_agent "$exec_user"
     trap 'stop_deploy_ssh_agent' EXIT
     replay_hooks "$name" "$PHP_VERSION" "$dir" "$exec_user" "$exec_home"
-    run_repo_hook "$name" "$PHP_VERSION" "$dir" ".provisioner/post-deploy.sh" "post-deploy script" "$exec_user" "$exec_home"
+    run_repo_hook "$name" "$PHP_VERSION" "$dir" ".ddeploy/post-deploy.sh" "post-deploy script" "$exec_user" "$exec_home"
     stop_deploy_ssh_agent
     trap - EXIT
     run_ops_hooks "post-deploy" "$name" "$dir" "$PHP_VERSION"
@@ -375,7 +376,7 @@ cmd_remove_preview() {
         # credential file (uploads are the parent's, or copies inside the
         # checkout) — nothing outlives the preview itself.
         rm -rf "${PERSISTENT_ROOT:?}/$name"
-        rm -f "$GENERATED_DIR/$name.yaml" "$GENERATED_DIR/$name.steps" "$(override_config_path "$name")"
+        rm -f "$GENERATED_DIR/$name.yaml" "$GENERATED_DIR/$name.steps" "$GENERATED_DIR/$name.provision-steps" "$(override_config_path "$name")"
         if [[ "$mode" != "shared" ]] && id -u "www-$name" >/dev/null 2>&1; then
             userdel "www-$name" 2>/dev/null || true
         fi

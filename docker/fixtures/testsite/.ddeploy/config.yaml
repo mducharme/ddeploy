@@ -21,3 +21,10 @@ redirects:
   - from: /old-home
     to: /
     code: 301
+# ddeploy-only steps (README "Deploy hooks"): markers inside the checkout,
+# so a test can tell which release ran which.
+hooks:
+  post-deploy:
+    - exec: "touch .post-deploy-ran"
+  post-provision:
+    - exec: "touch .post-provision-ran"

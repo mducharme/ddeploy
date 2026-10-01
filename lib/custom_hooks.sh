@@ -28,7 +28,14 @@ run_repo_hook() {
     local path; path="$(toolchain_path "$php")"
     log_info "running $label: $script_rel"
     site_log "$name" "$label: $script_rel"
-    sudo -u "$exec_user" env HOME="$exec_home" PATH="$path" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" bash -lc "cd '$dir' && ./$script_rel"
+    # Same as a deploy step (lib/hooks.sh): no composer prompts, and on
+    # failure its last lines of output go in the site log.
+    local stage=deploy out
+    [[ "$script_rel" == *post-provision* ]] && stage=provision
+    out="$(mktemp)"
+    run_captured "$out" sudo -u "$exec_user" env HOME="$exec_home" PATH="$path" SSH_AUTH_SOCK="${DEPLOY_SSH_AUTH_SOCK:-}" COMPOSER_NO_INTERACTION=1 bash -lc "cd '$dir' && ./$script_rel" </dev/null \
+        || deploy_step_failed "$name" "$?" "$script_rel" "$out" "$stage"
+    rm -f "$out"
 }
 
 # $1 stage ("post-provision" or "post-deploy"), $2 name, $3 site dir, $4 php.

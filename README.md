@@ -306,7 +306,7 @@ space-separated (quote the value): `additional_hostnames`,
 `additional_fqdns`, `persistent_files`, `auth_exempt_paths`,
 `backup_exclude`, `deny_php_paths`, `preview_branches`. Not supported here (need
 `.ddeploy/config.yaml` in the repo): `redirects`, `php_ini`,
-`queue_workers`, `schedule`, a `build:` map — structured data, or (for `queue_workers`)
+`queue_workers`, `schedule`, `hooks`, a `build:` map — structured data, or (for `queue_workers`)
 a command likely to contain its own spaces.
 
 ```
@@ -842,6 +842,24 @@ database itself is untouched.
 steps run; `exec-host` steps are logged and skipped. A step referencing
 `ddev` or `/var/www/html` is skipped with a warning.
 
+**Steps for the server only** go in `.ddeploy/config.yaml` — DDEV never
+reads it, so they don't run on `ddev start`. Same step format:
+
+```yaml
+hooks:
+  post-deploy:          # every deploy, after everything else (frontend build included)
+    - exec: php craft migrate/all --interactive=0
+    - exec: php craft project-config/apply --force
+  post-provision:       # once, after a site's or preview's first deploy
+    - exec: php craft clear-caches/all
+  post-start:           # optional: replaces .ddev's hooks.post-start on the server
+    - composer: install --no-dev --optimize-autoloader
+```
+
+So a deploy runs: the regular steps (`.ddeploy`'s `post-start` if set,
+else `.ddev`'s, else the default composer step below), the frontend
+build, then `post-deploy` — and on the first deploy, `post-provision`.
+
 No `hooks.post-start` declared, but the repo has `composer.json`:
 `composer install --no-dev --optimize-autoloader` runs by default (DDEV
 often installs implicitly on `ddev start`, which this tool never sees).
@@ -849,18 +867,18 @@ The same production-style install is what ddeploy uses whenever it picks
 the composer step itself (a detected CMS, `--deploy-cmd`). A project that
 needs its dev packages on the server sets `composer_dev: true` in
 `.ddeploy/config.yaml` (or `ddeploy override <name> composer_dev=true`).
-This only fills a completely absent `hooks.post-start` — declared steps,
-`composer` ones included, run exactly as written, and declaring steps
-without `composer` is treated as deliberate. Every step runs with
+This only fills a completely absent `hooks.post-start` (in both files) —
+declared steps, `composer` ones included, run exactly as written, and
+declaring steps without `composer` is treated as deliberate. Every step runs with
 `COMPOSER_NO_INTERACTION=1`, so a composer prompt fails the deploy
 instead of hanging it.
 
 Two more extension points:
 
-- `.provisioner/post-provision.sh` / `.provisioner/post-deploy.sh` in
-the client repo — run as `www-<name>`, same as any hook step.
-`post-provision.sh` runs once after the first deploy; `post-deploy.sh`
-runs every deploy.
+- `.ddeploy/post-provision.sh` / `.ddeploy/post-deploy.sh` in the client
+repo — scripts, for anything too long for a step. Run as `www-<name>`,
+after the steps above: `post-provision.sh` once after the first deploy,
+`post-deploy.sh` every deploy.
 - `/etc/ddeploy/hooks/post-provision.d/*.sh` / `/etc/ddeploy/hooks/post-deploy.d/*.sh` on the
 server — run as root, for every site. See `hooks/README.md`.
 
@@ -869,7 +887,7 @@ server — run as root, for every site. See `hooks/README.md`.
 Node comes from one shared nvm install at `NVM_ROOT` (default
 `/opt/nvm`), root-owned, pinned to a verified nvm commit by `init`.
 Every step that runs as the site user — `hooks.post-start`,
-`.provisioner/*.sh`, queue workers, `schedule` — gets the site's Node on
+`.ddeploy/*.sh`, queue workers, `schedule` — gets the site's Node on
 `PATH` next to its pinned PHP, so an existing `exec: npm run build` hook
 just works.
 
