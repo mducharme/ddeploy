@@ -35,52 +35,77 @@ list_row_config() {
     printf '%s\x1f%s\x1f%s\x1f%s\n' "$PHP_VERSION" "$DOCROOT" "$DB_NAME" "$node"
 }
 
+# One full \x1f-separated table row for site $1, on stdout.
+list_row() {
+    local name="$1"
+    local php="?" node="?" docroot="" db="$name" row
+    # || true: under set -e a failed assignment would end the row (and
+    # outside the parallel wrapper, the whole list) instead of showing "?".
+    row="$(list_row_config "$name" 2>/dev/null)" || true
+    if [[ -n "$row" ]]; then
+        IFS=$'\x1f' read -r php docroot db node <<< "$row"
+        php="${php:-?}"
+        db="${db:-$name}"
+    fi
+
+    # Project/branch are already in the name and BRANCH column, so
+    # PREVIEW is just a marker plus the DB mode.
+    local preview="-" branch="-"
+    if is_preview "$name" && read_preview_meta "$name" 2>/dev/null; then
+        preview="✓ $PREVIEW_MODE"
+        branch="$PREVIEW_BRANCH"
+    fi
+
+    local sha="-" when="-" checkout
+    checkout="$(site_dir "$name")"
+    if [[ -d "$checkout/.git" ]]; then
+        # Non-previews: whatever the live release has checked out
+        # ("-" on a detached HEAD).
+        [[ "$branch" != "-" ]] \
+            || branch="$(git -C "$checkout" symbolic-ref --short -q HEAD 2>/dev/null || echo -)"
+        local last
+        last="$(git -C "$checkout" log -1 --format='%h%x1f%cd' --date=short 2>/dev/null || true)"
+        [[ -n "$last" ]] && IFS=$'\x1f' read -r sha when <<< "$last"
+    fi
+
+    printf '%s\n' "$name"$'\x1f'"$php"$'\x1f'"${node:--}"$'\x1f'"${docroot:-.}"$'\x1f'"$db"$'\x1f'"$branch"$'\x1f'"$sha"$'\x1f'"$when"$'\x1f'"$preview"
+}
+
 cmd_list() {
     load_conf
 
-    # Rows are buffered (\x1f-separated, like list_row_config) so every
-    # column can be sized to its widest value — fixed widths broke as
-    # soon as a preview name or node spec ran long.
-    local -a rows=()
-    rows+=("NAME"$'\x1f'"PHP"$'\x1f'"NODE"$'\x1f'"DOCROOT"$'\x1f'"DB"$'\x1f'"BRANCH"$'\x1f'"SHA"$'\x1f'"LAST DEPLOY"$'\x1f'"PREVIEW")
-
+    local -a names=()
     local site_path name
     # No trailing slash on the glob: "foo/" sorts after "foo-bar/"
     # ('-' < '/'), which would list a site's previews before it.
     for site_path in "$SITES_ROOT"/*; do
         [[ -d "$site_path" ]] || continue
         name="$(basename "$site_path")"
-        is_provisioned "$name" || continue
-
-        local php="?" node="?" docroot="" db="$name" row
-        row="$(list_row_config "$name" 2>/dev/null)"
-        if [[ -n "$row" ]]; then
-            IFS=$'\x1f' read -r php docroot db node <<< "$row"
-            php="${php:-?}"
-            db="${db:-$name}"
-        fi
-
-        # Project/branch are already in the name and BRANCH column, so
-        # PREVIEW is just a marker plus the DB mode.
-        local preview="-" branch="-"
-        if is_preview "$name" && read_preview_meta "$name" 2>/dev/null; then
-            preview="✓ $PREVIEW_MODE"
-            branch="$PREVIEW_BRANCH"
-        fi
-
-        local sha="-" when="-" checkout
-        checkout="$(site_dir "$name")"
-        if [[ -d "$checkout/.git" ]]; then
-            # Non-previews: whatever the live release has checked out
-            # ("-" on a detached HEAD).
-            [[ "$branch" != "-" ]] \
-                || branch="$(git -C "$checkout" symbolic-ref --short -q HEAD 2>/dev/null || echo -)"
-            sha="$(git -C "$checkout" log -1 --format=%h 2>/dev/null || echo -)"
-            when="$(git -C "$checkout" log -1 --format=%cd --date=short 2>/dev/null || echo -)"
-        fi
-
-        rows+=("$name"$'\x1f'"$php"$'\x1f'"${node:--}"$'\x1f'"${docroot:-.}"$'\x1f'"$db"$'\x1f'"$branch"$'\x1f'"$sha"$'\x1f'"$when"$'\x1f'"$preview")
+        is_provisioned "$name" && names+=("$name")
     done
+
+    # Rows are built in parallel, each into its own file, then printed
+    # together in order: every column is sized to its widest value, so
+    # nothing can print until every row is in — and each row is a few
+    # dozen yq processes (parse_config) plus git, too slow to run one
+    # site after another on a fleet of any size. Capped at the CPU count (min 8: it's mostly
+    # process startup, not CPU-bound work).
+    local tmp; tmp="$(mktemp -d)"
+    local max; max="$(nproc 2>/dev/null || echo 8)"
+    (( max < 8 )) && max=8
+    local i
+    for i in "${!names[@]}"; do
+        { list_row "${names[i]}" || true; } > "$tmp/$i" &
+        (( $(jobs -rp | wc -l) >= max )) && wait -n
+    done
+    wait
+
+    local -a rows=()
+    rows+=("NAME"$'\x1f'"PHP"$'\x1f'"NODE"$'\x1f'"DOCROOT"$'\x1f'"DB"$'\x1f'"BRANCH"$'\x1f'"SHA"$'\x1f'"LAST DEPLOY"$'\x1f'"PREVIEW")
+    for i in "${!names[@]}"; do
+        [[ -s "$tmp/$i" ]] && rows+=("$(<"$tmp/$i")")
+    done
+    rm -rf "$tmp"
 
     print_table "${rows[@]}"
 }
