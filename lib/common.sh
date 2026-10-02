@@ -54,9 +54,12 @@ export RCLONE_QUIET=true
 # needs to change.
 export RCLONE_CONFIG="/etc/ddeploy/rclone-backup.conf"
 
-log_info()  { printf '\033[36m[info]\033[0m  %s\n' "$*" >&2; }
-log_warn()  { printf '\033[33m[warn]\033[0m  %s\n' "$*" >&2; }
-log_error() { printf '\033[31m[error]\033[0m %s\n' "$*" >&2; }
+# Colored only when stderr is a terminal (and NO_COLOR is unset) — not
+# escape codes in cron mail, the journal, or captured site logs.
+log_color() { [[ -t 2 && -z "${NO_COLOR:-}" ]] && printf '\033[%sm' "$1"; return 0; }
+log_info()  { printf '%s[info]%s  %s\n'  "$(log_color 36)" "$(log_color 0)" "$*" >&2; }
+log_warn()  { printf '%s[warn]%s  %s\n'  "$(log_color 33)" "$(log_color 0)" "$*" >&2; }
+log_error() { printf '%s[error]%s %s\n' "$(log_color 31)" "$(log_color 0)" "$*" >&2; }
 die()       { log_error "$*"; exit 1; }
 
 # Appends a timestamped line to a site's provision/deploy log.

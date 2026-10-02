@@ -915,7 +915,9 @@ parse_config() {
         done
     fi
 
-    if [[ "${#ADDITIONAL_FQDNS[@]}" -gt 0 ]]; then
+    # PARSE_CONFIG_QUIET: read-only callers (doctor) — provisioning
+    # advice is noise in a health report.
+    if [[ "${#ADDITIONAL_FQDNS[@]}" -gt 0 && "${PARSE_CONFIG_QUIET:-0}" != "1" ]]; then
         log_info "custom domain(s) for '$name': ${ADDITIONAL_FQDNS[*]} — DNS for these must already point at this server; a certificate is requested via HTTP-01 on first provision"
     fi
 

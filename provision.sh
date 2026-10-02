@@ -193,7 +193,7 @@ commands:
   preview-url <project> <branch>   print https://<slug>.$BASE_DOMAIN (see -h)
   logs <name> [-n N] [-f]       tail a site or fleet log, or the webhook log: logs webhook (see -h)
   notify <name> [opts]          per-site Slack/Discord webhook for deploy notifications (see -h)
-  doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
+  doctor [-v] [name]            health check: nginx/PHP-FPM/DB/disk/certs (see -h)
   node-gc [--yes]               remove Node versions nothing uses any more (see -h)
   install-cli                   (re)install the ddeploy command + bash completion (init does this too)
   hook-worker                   drain the git-push webhook queue (systemd; not an operator command)

@@ -154,7 +154,8 @@ rm -rf /tmp/<name>-uploads
       version you expect, and a built asset loads. No `node build` line
       at all? There's no lockfile; nothing is built automatically
       without one.
-- [ ] `ddeploy doctor <name>` shows every line as `[ok]`.
+- [ ] `ddeploy doctor <name>` shows every line as `[ok]` (or `[off]`
+      for a feature that's disabled server-wide).
 - [ ] `ddeploy list` shows the site with the PHP and Node versions,
       database and deployed commit you expect.
 

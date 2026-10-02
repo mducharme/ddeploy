@@ -45,7 +45,9 @@ cmd_list() {
     rows+=("NAME"$'\x1f'"PHP"$'\x1f'"NODE"$'\x1f'"DOCROOT"$'\x1f'"DB"$'\x1f'"BRANCH"$'\x1f'"SHA"$'\x1f'"LAST DEPLOY"$'\x1f'"PREVIEW")
 
     local site_path name
-    for site_path in "$SITES_ROOT"/*/; do
+    # No trailing slash on the glob: "foo/" sorts after "foo-bar/"
+    # ('-' < '/'), which would list a site's previews before it.
+    for site_path in "$SITES_ROOT"/*; do
         [[ -d "$site_path" ]] || continue
         name="$(basename "$site_path")"
         is_provisioned "$name" || continue

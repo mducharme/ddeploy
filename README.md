@@ -122,7 +122,7 @@ preview-url <project> <branch>   print the preview URL (site need not exist)
 logs <name> [-n N] [-f]       tail a site or fleet log; `logs webhook` / `logs webhook-other` for git-push deliveries (see -h)
 env <name> [KEY=value] [opts] show/edit a site's persistent .env (see -h)
 notify <name> [opts]          per-site Slack/Discord channel for deploy notifications (see -h)
-doctor [name]                 health check: nginx/PHP-FPM/DB/disk/certs (see -h)
+doctor [-v] [name]            health check: nginx/PHP-FPM/DB/disk/certs (see -h)
 node-gc [--yes]               remove Node versions nothing uses any more (see -h)
 install-cli                   (re)install the ddeploy command + bash completion (init does this)
 ```
@@ -715,7 +715,7 @@ own to restore). Isolated preview restores its own.
 ### Health check
 
 ```
-doctor [name]
+doctor [-v] [name]
 ```
 
 Read-only checks: nginx config/service, disk space, database server,
@@ -726,12 +726,19 @@ deploy, DB connection test using the **site's own** credentials (not
 admin). No name: every provisioned site, previews included.
 
 Webhook listener, uploads backup, database backup, `prune-previews`:
-always reported, `[ok] ... disabled (...)` when off — never silent. When
+always reported, `[off] ... disabled (...)` when off — never silent. When
 a backup is on: bucket reachability, recoverable dump count + age, and
 whether uploads have synced anything at all (not a freshness check).
 Shared-mode preview: skipped (covered by the parent's row).
 
-Prints `[ok]`/`[warn]`/`[fail]` per line, exits nonzero on any failure —
+Output is a **Server** section (every check) and a **Sites** section:
+one line per site with its worst status and what's deployed
+(`branch @ sha (date)`), expanded only where something is `[warn]` or
+`[fail]` — `-v` expands every site, and `doctor <name>` always shows
+all of that site's checks. Colored on a terminal, plain when piped
+(or with `NO_COLOR`).
+
+Prints `[ok]`/`[warn]`/`[fail]`/`[off]` per check, exits nonzero on any failure —
 wire into cron/monitoring. One site's malformed config only produces one
 `[fail]` row, doesn't abort the rest.
 

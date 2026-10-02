@@ -7,13 +7,15 @@
 
 usage_doctor() {
     cat <<'EOF'
-usage: ddeploy doctor [name]
+usage: ddeploy doctor [-v|--verbose] [name]
 
 Read-only checks (nginx, PHP-FPM, database reachability, disk space,
 certificate expiry, Node toolchain and each site's last frontend
-build), printed as [ok]/[warn]/[fail] per line. Without a
-name, checks shared infrastructure plus every provisioned site; with
-one, shared infrastructure plus just that site (previews included).
+build), printed as [ok]/[warn]/[fail] per line ([off] for a feature
+that's disabled on purpose). Without a name, checks the server plus
+every provisioned site, one line per site, expanded only where
+something needs attention (-v expands every site); with one, the
+server plus every check for just that site (previews included).
 Exits nonzero if any check failed — fit for cron/monitoring. When
 NOTIFY_WEBHOOK is set, a [fail] (not a [warn]) also POSTs there.
 EOF
@@ -22,7 +24,11 @@ EOF
 CERT_WARN_DAYS="${CERT_WARN_DAYS:-14}"
 DISK_WARN_PERCENT="${DISK_WARN_PERCENT:-85}"
 
-# Prints one result row as TSV — always to stdout, never accumulated in
+# Prints one result row as TSV: status (ok/warn/fail/off — off is a
+# feature disabled on purpose, shown so "silent" and "off" don't look
+# alike, but not counted as a pass), check, detail. Site checks leave
+# the site's name out of the check column; the section header has it.
+# Always to stdout, never accumulated in
 # a shared variable, because doctor_check_infra/doctor_check_site run
 # inside a command-substitution subshell in cmd_doctor (same reasoning
 # as cmd_list.sh's list_row_config: parse_config/resolve_preview_config
@@ -47,8 +53,17 @@ doctor_check_cert() {
     local enddate; enddate="$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)"
     if openssl x509 -checkend $((CERT_WARN_DAYS * 86400)) -noout -in "$cert" >/dev/null 2>&1; then
         doctor_result ok "$label" "valid, expires $enddate"
+        return
+    fi
+    # certbot renews 30 days out, so a cert this close to expiry with the
+    # timer running means renewal itself is failing — point at why.
+    local why="certbot.timer isn't active — 'systemctl enable --now certbot.timer'"
+    systemctl is-active --quiet certbot.timer \
+        && why="certbot.timer is active, so renewal is failing — see 'journalctl -u certbot' or 'certbot renew --dry-run'"
+    if openssl x509 -checkend 0 -noout -in "$cert" >/dev/null 2>&1; then
+        doctor_result warn "$label" "expires within ${CERT_WARN_DAYS}d ($enddate); $why"
     else
-        doctor_result warn "$label" "expires within ${CERT_WARN_DAYS}d ($enddate) — certbot.timer should renew automatically; verify it's running"
+        doctor_result fail "$label" "EXPIRED $enddate; $why"
     fi
 }
 
@@ -103,7 +118,7 @@ doctor_check_infra() {
             doctor_result fail "webhook listener" "WEBHOOK_ENABLED=true but ddeploy-hook is not running"
         fi
     else
-        doctor_result ok "webhook listener" "disabled (WEBHOOK_ENABLED=false)"
+        doctor_result off "webhook listener" "disabled (WEBHOOK_ENABLED=false)"
     fi
 
     doctor_check_node_toolchain
@@ -111,17 +126,17 @@ doctor_check_infra() {
     if [[ "$BACKUP_ENABLED" == "true" ]]; then
         doctor_result ok "uploads backup" "enabled, schedule '$BACKUP_SCHEDULE'"
     else
-        doctor_result ok "uploads backup" "disabled (BACKUP_ENABLED=false)"
+        doctor_result off "uploads backup" "disabled (BACKUP_ENABLED=false)"
     fi
     if [[ "$DB_BACKUP_ENABLED" == "true" ]]; then
         doctor_result ok "database backup" "enabled, schedule '$DB_BACKUP_SCHEDULE'"
     else
-        doctor_result ok "database backup" "disabled (DB_BACKUP_ENABLED=false)"
+        doctor_result off "database backup" "disabled (DB_BACKUP_ENABLED=false)"
     fi
     if [[ "$PREVIEW_PRUNE_ENABLED" == "true" ]]; then
         doctor_result ok "prune-previews" "enabled, schedule '$PREVIEW_PRUNE_SCHEDULE'"
     else
-        doctor_result ok "prune-previews" "disabled (PREVIEW_PRUNE_ENABLED=false)"
+        doctor_result off "prune-previews" "disabled (PREVIEW_PRUNE_ENABLED=false)"
     fi
 
     if [[ "$BACKUP_ENABLED" == "true" || "$DB_BACKUP_ENABLED" == "true" || "$PREVIEW_PRUNE_ENABLED" == "true" ]]; then
@@ -163,7 +178,7 @@ doctor_check_infra() {
 # nvm at the pinned commit, and every BASELINE_NODE spec installed.
 doctor_check_node_toolchain() {
     if [[ "$NODE_ENABLED" != "true" ]]; then
-        doctor_result ok "node (nvm)" "disabled (NODE_ENABLED=false)"
+        doctor_result off "node (nvm)" "disabled (NODE_ENABLED=false)"
         return
     fi
     if [[ ! -f "$NVM_ROOT/nvm.sh" ]]; then
@@ -176,7 +191,7 @@ doctor_check_node_toolchain() {
         return
     fi
     local installed
-    installed="$(find "$NVM_ROOT/versions/node" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort -V | tr '\n' ' ')"
+    installed="$(find "$NVM_ROOT/versions/node" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort -V | paste -sd' ')"
     doctor_result ok "node (nvm $NVM_TAG)" "installed: ${installed:-none}"
     local spec ver
     for spec in $BASELINE_NODE; do
@@ -204,28 +219,27 @@ doctor_check_site_node() {
 
     local ver; ver="$(nvm_cmd version "$NODE_VERSION_SPEC" 2>/dev/null || true)"
     if [[ "$ver" == v* ]]; then
-        [[ "$needs" -eq 1 ]] && doctor_result ok "$name: node" "$ver ($NODE_VERSION_SPEC, from $NODE_VERSION_SOURCE)"
+        [[ "$needs" -eq 1 ]] && doctor_result ok "node" "$ver ($NODE_VERSION_SPEC, from $NODE_VERSION_SOURCE)"
     elif [[ "$needs" -eq 1 ]]; then
-        doctor_result warn "$name: node" "$NODE_VERSION_SPEC (from $NODE_VERSION_SOURCE) isn't installed yet — the next deploy installs it"
+        doctor_result warn "node" "$NODE_VERSION_SPEC (from $NODE_VERSION_SOURCE) isn't installed yet — the next deploy installs it"
     fi
 
     [[ "$BUILD_ENABLED" == "true" ]] || return 0
     local f; f="$(build_state_path "$name")"
     if [[ ! -s "$f" ]]; then
-        doctor_result warn "$name: frontend build" "enabled, but no build recorded yet"
+        doctor_result warn "frontend build" "enabled, but no build recorded yet"
         return
     fi
     local status ts bver detail age
     IFS=$'\t' read -r status ts bver detail < "$f"
     age="$(doctor_age $(( $(date +%s) - ${ts:-0} )))"
     if [[ "$status" == "ok" ]]; then
-        doctor_result ok "$name: frontend build" "built $age ago, node $bver ($detail)"
+        doctor_result ok "frontend build" "built $age ago, node $bver ($detail)"
     else
-        doctor_result warn "$name: frontend build" "LAST BUILD FAILED $age ago ($detail) — the live release is from an earlier deploy; see 'logs $name'"
+        doctor_result warn "frontend build" "LAST BUILD FAILED $age ago ($detail) — the live release is from an earlier deploy; see 'logs $name'"
     fi
 }
 
-# $1 site name, already known to be provisioned.
 # $1 site name (already resolved to config — DB_BACKUP_ENABLED,
 # BACKUP_CREDENTIALS etc. are globals from load_conf, not per-site).
 # Reports how many dump backups this site actually has, and how old the
@@ -249,7 +263,7 @@ doctor_check_db_backup() {
     [[ -n "$dumps" ]] && count="$(grep -c . <<< "$dumps")"
 
     if [[ "$count" -eq 0 ]]; then
-        doctor_result warn "$name: database backups" "0 recoverable dumps in $BACKUP_BUCKET/$target/db/ — has backup-database run yet?"
+        doctor_result warn "database backups" "0 recoverable dumps in $BACKUP_BUCKET/$target/db/ — has backup-database run yet?"
         return
     fi
 
@@ -271,7 +285,7 @@ doctor_check_db_backup() {
             age_desc="newest is $(( ($(date -u +%s) - epoch) / 3600 ))h old"
         fi
     fi
-    doctor_result ok "$name: database backups" "$count recoverable dump(s), $age_desc"
+    doctor_result ok "database backups" "$count recoverable dump(s), $age_desc"
 }
 
 # $1 site name — a weaker signal than the database check above: this is
@@ -292,9 +306,9 @@ doctor_check_uploads_backup() {
     [[ "${#UPLOAD_DIRS[@]}" -gt 1 ]] && suffix=" (checked 1 of ${#UPLOAD_DIRS[@]} upload_dirs)"
 
     if timeout 15 rclone lsf "${remote}/${target}/${dir}/" 2>/dev/null | grep -q .; then
-        doctor_result ok "$name: uploads backup" "'$dir' has synced content$suffix"
+        doctor_result ok "uploads backup" "'$dir' has synced content$suffix"
     else
-        doctor_result warn "$name: uploads backup" "'$dir' has no synced content in $BACKUP_BUCKET/$target/$dir/ yet — has backup-uploads run yet?$suffix"
+        doctor_result warn "uploads backup" "'$dir' has no synced content in $BACKUP_BUCKET/$target/$dir/ yet — has backup-uploads run yet?$suffix"
     fi
 }
 
@@ -303,34 +317,35 @@ doctor_check_site() {
     local dir; dir="$(site_dir "$name")"
 
     if is_preview "$name"; then
-        read_preview_meta "$name" || { doctor_result fail "$name" "preview metadata unreadable"; return; }
+        read_preview_meta "$name" || { doctor_result fail "config" "preview metadata unreadable"; return; }
         resolve_preview_config "$name" "$PREVIEW_PROJECT" "$PREVIEW_MODE"
     else
         local cfg_path; cfg_path="$(resolve_config_path "$name")"
         if [[ -z "$cfg_path" ]]; then
-            doctor_result fail "$name" "no config found (.ddev/config.yaml or sidecar)"
+            doctor_result fail "config" "no config found (.ddev/config.yaml or sidecar)"
             return
         fi
         parse_config "$name" "$cfg_path" 0
     fi
 
     if [[ -f "/etc/nginx/sites-enabled/$name.conf" ]]; then
-        doctor_result ok "$name: vhost" "enabled"
+        doctor_result ok "vhost" "enabled"
     else
-        doctor_result fail "$name: vhost" "not enabled"
+        doctor_result fail "vhost" "not enabled"
     fi
 
     if systemctl is-active --quiet "php${PHP_VERSION}-fpm"; then
-        doctor_result ok "$name: php${PHP_VERSION}-fpm" "running"
+        doctor_result ok "php${PHP_VERSION}-fpm" "running"
     else
-        doctor_result fail "$name: php${PHP_VERSION}-fpm" "not running"
+        doctor_result fail "php${PHP_VERSION}-fpm" "not running"
     fi
 
     if [[ -d "$dir/.git" ]]; then
-        local sha when
+        local sha when branch
         sha="$(git -C "$dir" log -1 --format=%h 2>/dev/null || echo '?')"
         when="$(git -C "$dir" log -1 --format=%cd --date=short 2>/dev/null || echo '?')"
-        doctor_result ok "$name: last deploy" "$sha ($when)"
+        branch="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null || echo 'detached')"
+        doctor_result ok "last deploy" "$branch @ $sha ($when)"
     fi
 
     doctor_check_site_node "$name"
@@ -341,15 +356,15 @@ doctor_check_site() {
     # not just "is the server up."
     local pass; pass="$(read_db_password "$name" "$dir" "$DB_ENV_SCHEME")"
     if [[ -z "$pass" ]]; then
-        doctor_result warn "$name: database" "no credentials on file yet (re-run provision?)"
+        doctor_result warn "database" "no credentials on file yet (re-run provision?)"
     elif mysql_as_user "$DB_USER" "$pass" -h "$DB_HOST" "$DB_NAME" -e "SELECT 1" >/dev/null 2>&1; then
-        doctor_result ok "$name: database" "reachable as '$DB_USER'"
+        doctor_result ok "database" "reachable as '$DB_USER'"
     else
-        doctor_result fail "$name: database" "connection failed as '$DB_USER'@'$DB_HOST' — credentials may be stale"
+        doctor_result fail "database" "connection failed as '$DB_USER'@'$DB_HOST' — credentials may be stale"
     fi
 
     if [[ "${#ADDITIONAL_FQDNS[@]}" -gt 0 ]]; then
-        doctor_check_cert "${ADDITIONAL_FQDNS[0]}" "$name: cert (custom domain)"
+        doctor_check_cert "${ADDITIONAL_FQDNS[0]}" "cert (custom domain)"
     fi
 
     # Skipped for a shared-mode preview: its uploads/database ARE its
@@ -361,48 +376,126 @@ doctor_check_site() {
     fi
 }
 
+# Sets the DOCTOR_C_* escapes: colored on a terminal, plain when piped
+# or captured (cron mail, monitoring, the test suite) or with NO_COLOR.
+doctor_colors() {
+    if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+        DOCTOR_C_ok=$'\033[32m' DOCTOR_C_warn=$'\033[33m' DOCTOR_C_fail=$'\033[31m'
+        DOCTOR_C_off=$'\033[2m' DOCTOR_C_bold=$'\033[1m' DOCTOR_C_reset=$'\033[0m'
+    else
+        DOCTOR_C_ok="" DOCTOR_C_warn="" DOCTOR_C_fail="" DOCTOR_C_off="" DOCTOR_C_bold="" DOCTOR_C_reset=""
+    fi
+}
+
+# "  [warn] " — the tag padded to a fixed width before coloring, so the
+# escapes don't throw the columns off.
+doctor_tag() {
+    local status="$1" c="DOCTOR_C_$1"
+    printf '%s%-6s%s ' "${!c}" "[$status]" "$DOCTOR_C_reset"
+}
+
+# The worst status among TSV rows $1: fail > warn > ok.
+doctor_worst() {
+    local rows="$1"
+    if grep -q $'^fail\t' <<< "$rows"; then echo fail
+    elif grep -q $'^warn\t' <<< "$rows"; then echo warn
+    else echo ok
+    fi
+}
+
+# Prints TSV rows $1 indented by $2 spaces, check names padded to the
+# widest in this block. $3=1 prints only warn/fail rows.
+doctor_print_rows() {
+    local rows="$1" indent="$2" problems_only="${3:-0}"
+    local width=0 status check detail
+    while IFS=$'\t' read -r status check detail; do
+        [[ -n "$status" ]] && (( ${#check} > width )) && width=${#check}
+    done <<< "$rows"
+    while IFS=$'\t' read -r status check detail; do
+        [[ -z "$status" ]] && continue
+        [[ "$problems_only" == "1" && "$status" != warn && "$status" != fail ]] && continue
+        printf '%*s%s%-*s  %s\n' "$indent" '' "$(doctor_tag "$status")" "$width" "$check" "$detail"
+    done <<< "$rows"
+}
+
 cmd_doctor() {
-    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage_doctor; return 0; }
+    local verbose=0 only=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)    usage_doctor; return 0 ;;
+            -v|--verbose) verbose=1; shift ;;
+            -*)           die "unknown option '$1' (see 'doctor -h')" ;;
+            *)            [[ -z "$only" ]] || die "doctor takes at most one site name"; only="$1"; shift ;;
+        esac
+    done
     load_conf
     require_root
 
-    local only="${1:-}"
     if [[ -n "$only" ]]; then
         validate_name "$only"
         is_provisioned "$only" || die "'$only' is not provisioned"
     fi
+    doctor_colors
+    PARSE_CONFIG_QUIET=1
 
     local all="" block
-    block="$(doctor_check_infra)" || block="fail"$'\t'"infra"$'\t'"infra checks crashed unexpectedly — see stderr above"
+    block="$(doctor_check_infra)" || block+=$'\n'"fail"$'\t'"infra"$'\t'"infra checks crashed unexpectedly — see stderr above"
     all+="$block"$'\n'
+    printf '%sServer%s\n' "$DOCTOR_C_bold" "$DOCTOR_C_reset"
+    doctor_print_rows "$block" 2
 
+    local -a names=()
+    local name
     if [[ -n "$only" ]]; then
-        block="$(doctor_check_site "$only")" || block="fail"$'\t'"$only"$'\t'"check crashed unexpectedly — see stderr above"
-        all+="$block"$'\n'
+        names=("$only")
     else
-        local site_path name
-        for site_path in "$SITES_ROOT"/*/; do
+        local site_path
+        # No trailing slash on the glob: "foo/" sorts after "foo-bar/"
+        # ('-' < '/'), which would list a site's previews before it.
+        for site_path in "$SITES_ROOT"/*; do
             [[ -d "$site_path" ]] || continue
             name="$(basename "$site_path")"
-            is_provisioned "$name" || continue
-            block="$(doctor_check_site "$name")" || block="fail"$'\t'"$name"$'\t'"check crashed unexpectedly — see stderr above"
-            all+="$block"$'\n'
+            is_provisioned "$name" && names+=("$name")
         done
     fi
 
-    local ok=0 warn=0 fail=0 status check detail
-    while IFS=$'\t' read -r status check detail; do
-        [[ -z "$status" ]] && continue
-        case "$status" in
-            ok)   ok=$((ok + 1));   printf '  [ok]   %-34s %s\n' "$check" "$detail" ;;
-            warn) warn=$((warn + 1)); printf '  [warn] %-34s %s\n' "$check" "$detail" ;;
-            fail) fail=$((fail + 1)); printf '  [fail] %-34s %s\n' "$check" "$detail" ;;
-        esac
-    done <<< "$all"
+    # One line per site: worst status, name, and what's deployed (the
+    # "last deploy" row) — then its rows underneath. A single named site
+    # or -v shows every row; the fleet view only the ones needing a look,
+    # so 20 healthy sites are 20 lines, not 150.
+    [[ "${#names[@]}" -gt 0 ]] && printf '\n%sSites%s\n' "$DOCTOR_C_bold" "$DOCTOR_C_reset"
+    local width=0 n
+    for n in "${names[@]}"; do (( ${#n} > width )) && width=${#n}; done
+    for name in "${names[@]}"; do
+        block="$(doctor_check_site "$name")" || block+=$'\n'"fail"$'\t'"check"$'\t'"crashed unexpectedly — see stderr above"
+        all+="$block"$'\n'
+        local worst summary label="$name"
+        worst="$(doctor_worst "$block")"
+        summary="$(awk -F'\t' '$2 == "last deploy" { print $3; exit }' <<< "$block")"
+        is_preview "$name" && read_preview_meta "$name" 2>/dev/null \
+            && summary="${summary:+$summary  }(preview of $PREVIEW_PROJECT, $PREVIEW_MODE)"
+        printf '  %s%s%-*s%s  %s\n' "$(doctor_tag "$worst")" "$DOCTOR_C_bold" "$width" "$label" "$DOCTOR_C_reset" "$summary"
+        if [[ -n "$only" || "$verbose" == "1" ]]; then
+            doctor_print_rows "$(grep -v $'\tlast deploy\t' <<< "$block")" 9
+        elif [[ "$worst" != ok ]]; then
+            doctor_print_rows "$block" 9 1
+        fi
+    done
 
-    log_info "doctor: $ok ok, $warn warn, $fail fail"
+    local ok fail warn off
+    ok="$(grep -c $'^ok\t' <<< "$all" || true)"
+    warn="$(grep -c $'^warn\t' <<< "$all" || true)"
+    fail="$(grep -c $'^fail\t' <<< "$all" || true)"
+    off="$(grep -c $'^off\t' <<< "$all" || true)"
+    local tally="$ok ok, $warn warn, $fail fail, $off off"
+    echo
     if [[ "$fail" -gt 0 ]]; then
+        log_error "doctor: $tally"
         notify_failure doctor "${only:-}" "$fail fail, $warn warn"
+    elif [[ "$warn" -gt 0 ]]; then
+        log_warn "doctor: $tally"
+    else
+        log_info "doctor: $tally"
     fi
     [[ "$fail" -eq 0 ]]
 }
