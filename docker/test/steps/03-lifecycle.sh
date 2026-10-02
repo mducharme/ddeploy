@@ -207,6 +207,7 @@ assert_contains "$out_custom" "MARKER=v1" "custom-domain vhost reaches the same 
 
 list_out="$(./provision.sh list)"
 assert_contains "$list_out" "testsite" "list shows testsite"
+assert_cmd_ok "list shows testsite's checked-out branch" grep -qE '^testsite .* main ' <<< "$list_out"
 
 step "hostnames no site claims get a 404, not some site"
 code="$(curl -sk -o /dev/null -w '%{http_code}' --resolve "nosuchsite.staging.ddeploy.test:443:127.0.0.1" "https://nosuchsite.staging.ddeploy.test/")"
@@ -1423,7 +1424,8 @@ else
 fi
 
 list_out="$(./provision.sh list)"
-assert_contains "$list_out" "testsite/feature-a (shared)" "list shows the preview, shared mode, resolved to its parent"
+assert_contains "$list_out" "✓ shared" "list marks the preview, shared mode"
+assert_cmd_ok "list shows the preview's branch" grep -qE '^testsite-feature-a .* feature-a ' <<< "$list_out"
 
 step "deploy-preview testsite feature-a via Bitbucket webhook"
 WORK="$(mktemp -d)"

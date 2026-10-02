@@ -425,9 +425,10 @@ branch is gone — the safety net behind CI's own `remove-preview` on PR
 close. Wire into `init` via `PREVIEW_PRUNE_ENABLED`/
 `PREVIEW_PRUNE_SCHEDULE` for a periodic cron run.
 
-Previews are transparent to the general commands: `list` shows a
-`PREVIEW` column; `deploy-all` skips previews; plain `remove <name>` on
-a preview delegates to `remove-preview` automatically.
+Previews are transparent to the general commands: `list` shows each
+site's `BRANCH` and marks previews (with their DB mode) in `PREVIEW`;
+`deploy-all` skips previews; plain `remove <name>` on a preview
+delegates to `remove-preview` automatically.
 
 ### Deploy on git push
 
