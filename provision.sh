@@ -6,6 +6,10 @@ set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)"
 # shellcheck source=lib/common.sh
 source "$LIB_DIR/common.sh"
+# shellcheck source=lib/json.sh
+source "$LIB_DIR/json.sh"
+# shellcheck source=lib/events.sh
+source "$LIB_DIR/events.sh"
 # shellcheck source=lib/releases.sh
 source "$LIB_DIR/releases.sh"
 # shellcheck source=lib/config.sh
@@ -86,6 +90,12 @@ source "$LIB_DIR/cmd_doctor.sh"
 source "$LIB_DIR/cmd_hook.sh"
 # shellcheck source=lib/cmd_node_gc.sh
 source "$LIB_DIR/cmd_node_gc.sh"
+# shellcheck source=lib/cmd_init_web.sh
+source "$LIB_DIR/cmd_init_web.sh"
+# shellcheck source=lib/cmd_db.sh
+source "$LIB_DIR/cmd_db.sh"
+# shellcheck source=lib/cmd_api.sh
+source "$LIB_DIR/cmd_api.sh"
 
 # Runs a deploy-type command ($3...) for site $2 and, if it fails, sends
 # a deploy-failure notification carrying the error it printed. The
@@ -96,12 +106,38 @@ source "$LIB_DIR/cmd_node_gc.sh"
 # $1 label for the message (deploy, provision-preview, ...).
 run_notifying() {
     local label="$1" site="$2"; shift 2
-    if [[ -z "$site" ]]; then
+    # Not a plain site name: the command itself will refuse it — and the
+    # name is about to become a log path and part of a trap string.
+    if [[ -z "$site" || ! "$site" =~ $NAME_RE ]]; then
         "$@"
         return
     fi
     local errlog; errlog="$(mktemp)"
     local started="$SECONDS" rc
+
+    # Every run gets an id (kept if `api run start` already assigned
+    # one), a full output log, and start/end events — see lib/events.sh.
+    if [[ ! "${DDEPLOY_RUN_ID:-}" =~ $RUN_ID_RE ]]; then
+        DDEPLOY_RUN_ID="$(new_run_id)"
+    fi
+    export DDEPLOY_RUN_ID
+    DDEPLOY_EVENT_ATTRS="$(mktemp)"
+    export DDEPLOY_EVENT_ATTRS
+    local runlog=/dev/null
+    if [[ "$EUID" -eq 0 ]] && mkdir -p "$RUNS_LOG_DIR" 2>/dev/null; then
+        chmod 750 "$RUNS_LOG_DIR" 2>/dev/null || true
+        prune_run_logs
+        # A detached `api run start` already points the unit's own
+        # stdout/stderr at this file (so lines from before this point,
+        # like waiting on the site lock, land in it too) — teeing here as
+        # well would write every line twice.
+        [[ "${DDEPLOY_RUN_LOG_EXTERNAL:-}" == 1 ]] || runlog="$RUNS_LOG_DIR/$DDEPLOY_RUN_ID.log"
+    fi
+    local -a start_attrs=()
+    case "$label" in
+        provision-preview|deploy-preview) start_attrs=("project=${2:-}" "branch=${3:-}") ;;
+    esac
+    [[ "$EUID" -eq 0 ]] && event_record "$site" "$label" started "${start_attrs[@]}"
     # Where the site log ends now: on failure, only what this run wrote
     # after this line goes into the notification (notify_failure_output).
     local log_start=0
@@ -111,10 +147,33 @@ run_notifying() {
     # stderr is copied to $errlog through a pipeline (the pipeline waits
     # for tee, so the file is complete when we read it); stdout goes
     # straight through on fd 3. rc is the command's, not tee's.
+    # Stopped from outside (`api run cancel`, systemctl stop, a reboot's
+    # SIGTERM): still record how the run ended, so it doesn't read as
+    # running forever. The pipeline's own processes get the same signal,
+    # so bash runs this as soon as they've exited. A release that wasn't
+    # switched in yet is discarded by cmd_deploy's own EXIT trap.
+    # shellcheck disable=SC2064  # expand $site/$label/$started now
+    trap "[[ \$EUID -eq 0 ]] && event_record '$site' \"\$(event_attr_get \"\$DDEPLOY_EVENT_ATTRS\" kind '$label')\" failed \"duration_s=\$((SECONDS - $started))\" 'error=interrupted (stopped before it finished)'; rm -f \"\$DDEPLOY_EVENT_ATTRS\"; exit 143" TERM INT HUP
     set +e
-    { ( set -e; "$@" ) 2>&1 1>&3 3>&- | tee "$errlog" >&2; } 3>&1
+    { ( set -e; "$@" ) 2>&1 1>&3 3>&- | tee -a "$errlog" "$runlog" >&2; } 3>&1
     rc="${PIPESTATUS[0]}"
     set -e
+    trap - TERM INT HUP
+    local -a end_attrs=("${start_attrs[@]}") key
+    for key in from_sha to_sha subject branch project; do
+        end_attrs+=("$key=$(event_attr_get "$DDEPLOY_EVENT_ATTRS" "$key")")
+    done
+    end_attrs+=("duration_s=$((SECONDS - started))")
+    local end_kind end_phase
+    end_kind="$(event_attr_get "$DDEPLOY_EVENT_ATTRS" kind "$label")"
+    if [[ "$rc" -eq 0 ]]; then
+        end_phase="$(event_attr_get "$DDEPLOY_EVENT_ATTRS" phase succeeded)"
+    else
+        end_phase=failed
+        end_attrs+=("error=$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | grep -E '^\[error\]' | tail -n 1 | sed 's/^\[error\] *//' | cut -c1-300 || true)")
+    fi
+    [[ "$EUID" -eq 0 ]] && event_record "$site" "$end_kind" "$end_phase" "${end_attrs[@]}"
+    rm -f "$DDEPLOY_EVENT_ATTRS"
     if [[ "$rc" -ne 0 ]]; then
         # `|| true`: no [error] line is a normal case (grep exits 1), and
         # under pipefail + set -e that alone would kill the script here,
@@ -186,6 +245,8 @@ commands:
   backup-database [name]        dump + upload each site's DB (needs DB_BACKUP_ENABLED=true)
   restore-uploads <name> --yes  overwrite local upload_dirs from the backup (see -h)
   restore-database <name> [--from <file> | --from-file <path>] --yes   overwrite the DB from a dump (see -h)
+  db-import <name> --from-file <path> --yes   snapshot the DB, then load a dump into it (see -h)
+  db-snapshot <name> [--list]   local safety dump of a site's DB (see -h)
   provision-preview <project> <branch> [repo-url] [opts]   branch preview (see -h)
   deploy-preview <project> <branch>       pull + redeploy a preview
   remove-preview <project> <branch> [opts]   remove a preview (see -h)
@@ -195,13 +256,40 @@ commands:
   notify <name> [opts]          per-site Slack/Discord webhook for deploy notifications (see -h)
   doctor [-v] [name]            health check: nginx/PHP-FPM/DB/disk/certs (see -h)
   node-gc [--yes]               remove Node versions nothing uses any more (see -h)
+  init-web                      set up the web UI's user, sudoers rule and vhost (see -h)
+  api <verb> [args]             JSON interface for the web UI (see: ddeploy api -h)
   install-cli                   (re)install the ddeploy command + bash completion (init does this too)
   hook-worker                   drain the git-push webhook queue (systemd; not an operator command)
 EOF
 }
 
+# Serializes every run against one site — CLI, webhook and web alike —
+# by re-executing this whole command under `flock -o` on the site's lock
+# file (the same one hook-worker's with_site_lock takes, which sets
+# DDEPLOY_LOCK_HELD so this doesn't then wait on itself). -o closes the
+# lock fd in the child: anything a deploy leaves running (an ssh-agent, a
+# restarted worker) can't inherit the lock and hold it forever. $1 site
+# (empty, or not a valid name: no lock — the command reports that
+# itself), rest the full original argv.
+site_lock_reexec() {
+    local site="$1"; shift
+    [[ -n "$site" && "$site" =~ $NAME_RE && "$EUID" -eq 0 ]] || return 0
+    [[ "${DDEPLOY_LOCK_HELD:-}" == "$site" ]] && return 0
+    command -v flock >/dev/null 2>&1 || return 0
+    local lock_dir="$DDEPLOY_STATE/locks"
+    mkdir -p "$lock_dir"
+    if ! flock -n "$lock_dir/$site.lock" true; then
+        log_info "'$site': another run holds this site's lock — waiting for it to finish"
+    fi
+    DDEPLOY_LOCK_HELD="$site" exec flock -o "$lock_dir/$site.lock" "$PROVISIONER_DIR/provision.sh" "$@"
+}
+
 main() {
     local cmd="${1:-}"
+    case "$cmd" in
+        provision|deploy|remove|restore-database|db-import) site_lock_reexec "$(notify_site_arg site "${@:2}")" "$@" ;;
+        provision-preview|deploy-preview|remove-preview) site_lock_reexec "$(notify_site_arg preview "${@:2}")" "$@" ;;
+    esac
     if [[ $# -gt 0 ]]; then
         shift
     fi
@@ -221,6 +309,11 @@ main() {
         backup-database) cmd_backup_database "$@" ;;
         restore-uploads) cmd_restore_uploads "$@" ;;
         restore-database) cmd_restore_database "$@" ;;
+        db-import)      run_notifying db-import "$(notify_site_arg site "$@")" cmd_db_import "$@" ;;
+        db-snapshot)
+            if [[ " $* " == *" --list "* ]]; then cmd_db_snapshot "$@"
+            else run_notifying db-snapshot "$(notify_site_arg site "$@")" cmd_db_snapshot "$@"
+            fi ;;
         provision-preview) run_notifying provision-preview "$(notify_site_arg preview "$@")" cmd_provision_preview "$@" ;;
         deploy-preview) run_notifying deploy-preview "$(notify_site_arg preview "$@")" cmd_deploy_preview "$@" ;;
         remove-preview) cmd_remove_preview "$@" ;;
@@ -230,6 +323,8 @@ main() {
         notify)         cmd_notify "$@" ;;
         doctor)         cmd_doctor "$@" ;;
         node-gc)        cmd_node_gc "$@" ;;
+        init-web)       cmd_init_web "$@" ;;
+        api)            cmd_api "$@" ;;
         install-cli)    cmd_install_cli "$@" ;;
         hook-worker)    cmd_hook_worker "$@" ;;
         -h|--help|help|"") usage ;;

@@ -52,11 +52,15 @@ site_head_branch() {
 }
 
 # $1 site name — serialize webhook-driven deploys of the same site.
+# Same lock file provision.sh's site_lock_reexec takes for every run
+# (CLI and web too); DDEPLOY_LOCK_HELD tells that child it already holds
+# it. -o: the lock fd isn't inherited by the command (see
+# site_lock_reexec for why).
 with_site_lock() {
     local name="$1"; shift
-    local lock_dir="/var/lib/ddeploy/locks"
+    local lock_dir="$DDEPLOY_STATE/locks"
     mkdir -p "$lock_dir"
-    flock "$lock_dir/$name.lock" "$@"
+    DDEPLOY_LOCK_HELD="$name" flock -o "$lock_dir/$name.lock" "$@"
 }
 
 install_webhook() {

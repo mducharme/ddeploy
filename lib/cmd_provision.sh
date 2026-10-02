@@ -275,6 +275,10 @@ cmd_provision() {
 
     site_log "$name" "provision: done in $((SECONDS - started))s — https://$name.$BASE_DOMAIN"
     log_info "provisioned: https://$name.$BASE_DOMAIN"
+    local live; live="$(site_dir "$name")"
+    event_attr to_sha "$(git -c safe.directory='*' -C "$live" log -1 --format=%H 2>/dev/null || true)"
+    event_attr subject "$(git -c safe.directory='*' -C "$live" log -1 --format=%s 2>/dev/null | cut -c1-200 || true)"
+    event_attr branch "$(git -c safe.directory='*' -C "$live" symbolic-ref --short -q HEAD 2>/dev/null || true)"
     local fqdn
     for fqdn in "${ADDITIONAL_FQDNS[@]}"; do
         log_info "  also: https://$fqdn"

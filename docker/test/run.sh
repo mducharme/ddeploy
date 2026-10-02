@@ -147,5 +147,6 @@ log "DB admin credentials copied from dbhost to web"
 "${COMPOSE[@]}" exec -T web bash /opt/ddeploy/docker/test/steps/00-fixtures.sh
 "${COMPOSE[@]}" exec -T web bash /opt/ddeploy/docker/test/steps/02-init.sh
 "${COMPOSE[@]}" exec -T web bash /opt/ddeploy/docker/test/steps/03-lifecycle.sh
+"${COMPOSE[@]}" exec -T web bash /opt/ddeploy/docker/test/steps/04-api.sh
 
 log "ALL SMOKE TESTS PASSED"

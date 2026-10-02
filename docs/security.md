@@ -223,3 +223,77 @@ specifically so a hostile or malformed dump (a client-provided
 `--from-file` export, an object-storage backup) can't use its own
 content to `DROP` an unrelated database, `CREATE USER`, or read
 `mysql.*` directly.
+
+## The web UI reaches root through one allowlisted subcommand
+
+The web UI ([webddeploy](https://github.com/mducharme/webddeploy)) is a
+network-facing process holding browser sessions — the same kind of
+lower-trust actor as the webhook listener, and treated the same way: it
+runs unprivileged (`WEB_USER`, no shell, no `sudo` group), and its only
+root access is the sudoers rule `init-web` installs:
+
+```
+ddeploy-web ALL=(root) NOPASSWD: /opt/ddeploy/provision.sh api *
+```
+
+So what a compromised web process can do is exactly what `lib/cmd_api.sh`
+dispatches, no more:
+
+- **A verb allowlist.** Read verbs (`info`, `sites`, `site`, `events`,
+  `previews`, `doctor`, `logs`, `inspect-repo`, `run show|log`) change
+  nothing. The only write is `run start`, for `deploy` and `provision`.
+  `env` (secrets), `override`, `remove`, `restore-*`, `init*`,
+  `configure`, `node-gc` aren't reachable at all.
+- **Every argument validated before anything is touched,** with the same
+  validators the CLI's config handling uses (`validate_name`,
+  `validate_branch_name`, `validate_hostname`, ...), plus a repo-URL
+  check (ssh/git@/https only; no host starting with `-`, the
+  `ssh -oProxyCommand` trick). Arguments are argv entries end to end —
+  the web side spawns without a shell — never interpolated.
+- **No free text that gets executed.** `provision --deploy-cmd` runs its
+  value as a command, so `run start provision` refuses it; projects
+  declare deploy steps in `.ddeploy/config.yaml`, which goes through
+  review in their own repo.
+- **Paths built from input** (log names, run ids) are allowlisted
+  charsets (`NAME_RE`, `RUN_ID_RE`), so `../` never reaches a path.
+- **No environment through sudo.** Ubuntu's default `env_reset` drops the
+  caller's environment, and the rule has no `SETENV`: the web user can't
+  set `DDEPLOY_TRIGGER`, `DDEPLOY_RUN_ID` or anything else ddeploy reads.
+  Attribution (`web (<email>)`) comes from `--actor`, charset-checked,
+  and is only as trustworthy as the web app's own sign-in — it's an
+  audit trail, not an authorization input.
+
+Phase 2 added verbs that touch secrets and data; the same rules apply,
+plus:
+
+- **Secrets never travel in argv.** `env --apply` reads `KEY=value` lines
+  from stdin (argv is visible in `ps` to every user); the web side masks
+  secret-looking values until one is explicitly revealed, and records each
+  reveal in its audit log. Events and the audit log carry key names only.
+- **`settings` is narrower than `override`.** `db_env_scheme` and
+  `persistent_files` decide where a site's database credentials and data
+  live; changing them can disconnect a site from its database, so they
+  stay CLI-only. Every value goes through the same validators
+  `override` uses.
+- **Database imports are spooled and checked before anything runs.** The
+  dump arrives on stdin into a root-only spool file
+  (`/var/lib/ddeploy/imports/`), capped at `WEB_IMPORT_MAX_MB`, refused if
+  it's neither gzip nor text, then loaded as the site's own DB user (never
+  admin) after a snapshot — the same scoped path as `restore-database
+  --from-file`.
+- **`db credentials` returns the site's own DB user**, never the admin
+  account; the database isn't exposed publicly, so using them still takes
+  an SSH tunnel through the server.
+- **`run cancel` only stops runs the api started** (it needs their
+  metadata file), never a CLI or webhook run.
+
+The docker harness asserts the rule's shape directly
+(`docker/test/steps/04-api.sh`): `api` works as the web user; any other
+command, a shell, and passing an environment variable through sudo all
+fail.
+
+What this deliberately doesn't defend against: a compromised web process
+can deploy any site and provision new ones (that's the feature). A
+deploy only ever builds what's on the tracked branch, and a provision
+only clones from a URL the deploy key can already read — the same
+reach a CI deploy key has.

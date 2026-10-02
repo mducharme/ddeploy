@@ -35,10 +35,12 @@ jobs:
         run: |
           set -e
           bash -n provision.sh
-          for f in lib/*.sh docker/test/run.sh docker/test/lib.sh docker/test/steps/*.sh; do
+          for f in lib/*.sh tests/*.sh docker/test/run.sh docker/test/lib.sh docker/test/steps/*.sh; do
             echo "checking $f"
             bash -n "$f"
           done
+      - name: unit tests (json, events, api validators)
+        run: tests/unit.sh
       - name: python syntax (webhook listener)
         run: python3 -m py_compile hook/listener.py
       - name: python lint (webhook listener)

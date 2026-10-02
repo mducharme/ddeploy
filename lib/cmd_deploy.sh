@@ -91,6 +91,10 @@ cmd_deploy() {
         if [[ ( -z "$target" || "$target" == "$tracked" ) ]] && checkout_matches_remote "$name" "$dir" "$tracked"; then
             log_info "'$name': already at ${current_sha:0:12}, the tip of origin/$tracked — nothing to deploy"
             site_log "$name" "deploy: skipped (--if-changed), already at ${current_sha:0:12}"
+            event_attr phase skipped
+            event_attr from_sha "$current_sha"
+            event_attr to_sha "$current_sha"
+            event_attr branch "$tracked"
             return 0
         fi
     fi
@@ -113,6 +117,11 @@ cmd_deploy() {
     local verb=deploy
     [[ "$rollback" -eq 1 ]] && verb=rollback
     site_log "$name" "$verb: started ($(notify_trigger)) — ${current_sha:0:7} -> $(git -C "$dest" log -1 --format='%h "%s"' | cut -c1-120)"
+    event_attr kind "$verb"
+    event_attr from_sha "$current_sha"
+    event_attr to_sha "$(git -C "$dest" log -1 --format=%H 2>/dev/null || true)"
+    event_attr subject "$(git -C "$dest" log -1 --format=%s 2>/dev/null | cut -c1-200 || true)"
+    event_attr branch "$(git -C "$dest" symbolic-ref --short -q HEAD 2>/dev/null || true)"
 
     # Discard this release on any failure before switch_current, so a
     # broken hook cannot take the site down. Same trap also tears down

@@ -190,6 +190,8 @@ cmd_provision_preview() {
 
     write_preview_meta "$name" "$project" "$branch" "$mode"
     site_log "$name" "provision-preview: started ($(notify_trigger)) — $project / $branch, mode=$mode, php=$PHP_VERSION, at $(git -c safe.directory='*' -C "$dir" log -1 --format='%h "%s"' | cut -c1-120)"
+    event_attr to_sha "$(git -c safe.directory='*' -C "$dir" log -1 --format=%H 2>/dev/null || true)"
+    event_attr subject "$(git -c safe.directory='*' -C "$dir" log -1 --format=%s 2>/dev/null | cut -c1-200 || true)"
 
     log_info "running first deploy for $name"
     start_deploy_ssh_agent "$exec_user"
@@ -243,6 +245,7 @@ cmd_deploy_preview() {
         && [[ "$(cat "$(preview_deployed_path "$name")" 2>/dev/null)" == "$(git -c safe.directory='*' -C "$dir" rev-parse HEAD)" ]]; then
         log_info "'$name': already at the tip of origin/$PREVIEW_BRANCH — nothing to deploy"
         site_log "$name" "deploy-preview: skipped (--if-changed), already at the remote tip"
+        event_attr phase skipped
         return 0
     fi
 
@@ -256,6 +259,7 @@ cmd_deploy_preview() {
     log_info "git fetch + reset --hard origin/$PREVIEW_BRANCH ($name)"
     git_release_config "$dir"
     local before; before="$(git -c safe.directory='*' -C "$dir" rev-parse --short HEAD 2>/dev/null || true)"
+    event_attr from_sha "$(git -c safe.directory='*' -C "$dir" rev-parse HEAD 2>/dev/null || true)"
     local out; out="$(mktemp)"
     run_captured "$out" env GIT_SSH_COMMAND="$(git_ssh_command)" git -c safe.directory='*' -C "$dir" fetch origin "$PREVIEW_BRANCH" \
         || git_failed "$name" "$out" "" "git fetch of origin/$PREVIEW_BRANCH failed (branch deleted? see 'ddeploy logs $name')"
@@ -263,6 +267,8 @@ cmd_deploy_preview() {
         || git_failed "$name" "$out" "" "git reset to origin/$PREVIEW_BRANCH failed"
     rm -f "$out"
     site_log "$name" "deploy-preview: started ($(notify_trigger)) — ${before:-?} -> $(git -c safe.directory='*' -C "$dir" log -1 --format='%h "%s"' | cut -c1-120)"
+    event_attr to_sha "$(git -c safe.directory='*' -C "$dir" log -1 --format=%H 2>/dev/null || true)"
+    event_attr subject "$(git -c safe.directory='*' -C "$dir" log -1 --format=%s 2>/dev/null | cut -c1-200 || true)"
 
     resolve_preview_config "$name" "$PREVIEW_PROJECT" "$PREVIEW_MODE"
     ensure_php_installed "$PHP_VERSION"
@@ -387,6 +393,7 @@ cmd_remove_preview() {
     rm -f "$(build_state_path "$name")"
     rm -f "$GENERATED_DIR/$name.preview" "$(preview_deployed_path "$name")"
     site_log "$name" "removed preview (purge_db=$purge_db purge_files=$purge_files, $(notify_trigger))"
+    event_record "$name" remove-preview succeeded "project=$project" "branch=$branch"
     notify_event preview-removed "$name" "$name removed" "Preview of $project / $branch — $(notify_trigger)"
 }
 

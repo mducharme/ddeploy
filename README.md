@@ -7,7 +7,8 @@ via nvm, per-site version). No containers. Reads a project's own
 `.ddev/config.yaml` as config; never runs DDEV itself.
 
 Built for staging/QA/client-review — no staging→production promotion
-path, no web UI. One web server per project; a database server can be
+path. Optional web UI:
+[webddeploy](https://github.com/mducharme/webddeploy), driven through `ddeploy api`. One web server per project; a database server can be
 shared across several (`init-db`).
 
 ## Requirements
@@ -124,11 +125,13 @@ env <name> [KEY=value] [opts] show/edit a site's persistent .env (see -h)
 notify <name> [opts]          per-site Slack/Discord channel for deploy notifications (see -h)
 doctor [-v] [name]            health check: nginx/PHP-FPM/DB/disk/certs (see -h)
 node-gc [--yes]               remove Node versions nothing uses any more (see -h)
+init-web [--disable]          web UI user, sudoers rule and vhost (see "Web UI")
+api <verb> [args]             JSON interface the web UI drives (see "Web UI")
 install-cli                   (re)install the ddeploy command + bash completion (init does this)
 ```
 
 `init`, `init-db`, `provision`, `deploy`, `remove`, `backup-uploads`,
-`backup-database`, `logs`, `env`, `notify`, `node-gc`, `install-cli`, and the `*-preview`/`prune-previews` commands need root.
+`backup-database`, `logs`, `env`, `notify`, `node-gc`, `install-cli`, `init-web`, `api`, and the `*-preview`/`prune-previews` commands need root.
 
 ## Configuration
 
@@ -697,6 +700,24 @@ Dumps older than `DB_BACKUP_RETENTION_DAYS` (default 7) pruned each run.
 
 Both skip shared-mode previews (uploads/database are the parent's).
 
+### Database snapshots and imports
+
+```
+db-snapshot <name> [--reason <word>]     local safety dump (DB_SNAPSHOT_KEEP per site, default 5)
+db-snapshot <name> --list
+db-import <name> --from-file <dump.sql[.gz]> --yes   replace the database with a dump
+db-import <name> --snapshot <id> --yes               ...or with one of its snapshots
+```
+
+`db-import` snapshots the current database first (`--no-snapshot` to
+skip), then drops every table and view and loads the dump as the site's
+own DB user — a replace, not a merge (`--keep-existing` to load over what's
+there). It prints the command that undoes it. Snapshots are local and
+root-only (`/var/lib/ddeploy/db-snapshots/<site>/`), a short-term undo,
+not a backup. A shared-mode preview's database is its parent's: importing
+there changes the parent's. The web UI's Database tab drives exactly these
+(upload, download, snapshots, restore).
+
 ### Restoring
 
 ```
@@ -723,7 +744,9 @@ certificate expiry, and whether any directory above the checkout is
 writable by a non-root user (who could then replace the code root runs —
 docs/security.md); per site: vhost enabled, PHP-FPM pool running, last
 deploy, DB connection test using the **site's own** credentials (not
-admin). No name: every provisioned site, previews included.
+admin), and whether the site actually answers: a GET of `/` through this
+server's own nginx (`http` — 2xx/3xx/401 ok, other 4xx warn, 5xx or no
+answer fail). No name: every provisioned site, previews included.
 
 Webhook listener, uploads backup, database backup, `prune-previews`:
 always reported, `[off] ... disabled (...)` when off — never silent. When
@@ -744,6 +767,65 @@ wire into cron/monitoring. One site's malformed config only produces one
 
 `NOTIFY_WEBHOOK` in `provisioner.conf` pages on `[fail]` (not `[warn]`).
 See "Notifications."
+
+## Web UI
+
+[webddeploy](https://github.com/mducharme/webddeploy) is a web front end
+for admins: the fleet, deploy and preview history, live run output, logs,
+`doctor`, starting a deploy, provisioning a project. Google SSO.
+
+**Setup.** `WEB_ENABLED=true` in `provisioner.conf`, then `ddeploy
+init-web` (`init` runs it too when enabled). It creates `WEB_USER`
+(default `ddeploy-web`), gives it exactly one sudoers rule —
+`provision.sh api *` — and an nginx vhost for `WEB_HOSTNAME` (default
+`ddeploy.$BASE_DOMAIN`, on the wildcard cert) proxying to `WEB_LISTEN`
+(default `127.0.0.1:8790`). The app itself installs from its own repo.
+`doctor` reports it. `init-web --disable` removes the rule and vhost.
+Why the boundary is drawn there: [docs/security.md](docs/security.md#the-web-ui-reaches-root-through-one-allowlisted-subcommand).
+
+**`ddeploy api`.** One JSON object per call (`{"api_version": 1, ...}`,
+or `{"error": {"code", "message"}}` and exit 1). `ddeploy api -h` lists
+every verb. Usable from scripts too.
+
+- Read: `info`, `sites`, `site <name>`, `events`, `previews <project>`,
+  `doctor [name]`, `logs [<name>]`, `inspect-repo <url>`, `env <name>`,
+  `branches <name>`, `commits <name> <from> <to>`, `db info|credentials
+  <name>`, `db dump <name>` (gzipped SQL on stdout), `run show|log <id>`.
+- Write (each needs `--actor <email>`): `run start deploy|rollback|
+  provision|db-import|db-restore|db-snapshot`, `run cancel <id>`, `env
+  <name> --apply` (values on stdin, never argv), `settings <name>`
+  (operator overrides and the tracked branch — every `override` key except
+  `db_env_scheme` and `persistent_files`). Provision takes a fixed flag set
+  (no `--deploy-cmd`).
+
+**Runs and history** (CLI, webhook and web alike — not just the UI):
+
+- Every `deploy`, `provision`, `provision-preview`, `deploy-preview` gets a
+  run id; its full output lands in `/var/log/ddeploy/runs/<id>.log`
+  (kept `RUN_LOG_RETENTION_DAYS`, default 30) — not just the last 25
+  lines in the site log on failure.
+- Start and end of each run (and `remove-preview`) are appended to
+  `/var/lib/ddeploy/events/<site>.jsonl`: kind (deploy/rollback/...),
+  outcome (succeeded/failed/skipped), who (`web (<email>)`, `manual
+  (<sudo user>)`, `webhook [<id>]`), SHAs, duration, error line. That's
+  what history views read; removed previews stay in it. `.deploys` is
+  unchanged (rollback still reads it).
+- `api run start` doesn't run anything in the web request: it starts a
+  transient systemd unit (`ddeploy-run-<id>`), so a deploy outlives the
+  request and a restart of the UI.
+- `api run cancel` stops a run the web UI started (its systemd unit). A
+  run that's stopped — that way, by `systemctl stop`, or a reboot's
+  SIGTERM — still records a `failed: interrupted` event. One that never
+  recorded an end at all (SIGKILL, power loss) shows as "no result" in the
+  UI after 3 hours.
+- Config changes made through the api (`env --apply`, `settings`) are
+  events too (`env-change`, `settings-change`, keys only — never values),
+  so a site's history shows who changed what alongside its deploys.
+- Event files are trimmed to their newest 4000 lines past 2 MB.
+- **Runs on one site are serialized**, whoever starts them: `provision`,
+  `deploy`, `remove` and the preview commands take the site's lock (the
+  one webhook deploys always took). A second run waits, and says so in its
+  output, instead of racing the first.
 
 ## Notifications
 
@@ -1111,7 +1193,10 @@ anything:
 /var/lib/ddeploy/generated/       per-site state: sidecars, overrides, preview metadata, deploy
                                   history, worker/schedule scripts, *.dbpass, *.notify-url
 /var/lib/ddeploy/                 also: webhook queue, locks, notification cooldowns, PHP shims
+/var/lib/ddeploy/events/          per-site run history, one JSON event per line ("Web UI")
+/var/lib/ddeploy/runs/            metadata of runs started via `api run start`
 /var/log/ddeploy/                 site, fleet and webhook logs (`ddeploy logs`), rotated weekly
+/var/log/ddeploy/runs/            full output of every run, by run id
 ```
 
 Sites are

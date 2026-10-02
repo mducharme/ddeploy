@@ -7,7 +7,7 @@
 
 usage_doctor() {
     cat <<'EOF'
-usage: ddeploy doctor [-v|--verbose] [name]
+usage: ddeploy doctor [-v|--verbose] [--no-notify] [name]
 
 Read-only checks (nginx, PHP-FPM, database reachability, disk space,
 certificate expiry, Node toolchain and each site's last frontend
@@ -17,7 +17,8 @@ every provisioned site, one line per site, expanded only where
 something needs attention (-v expands every site); with one, the
 server plus every check for just that site (previews included).
 Exits nonzero if any check failed — fit for cron/monitoring. When
-NOTIFY_WEBHOOK is set, a [fail] (not a [warn]) also POSTs there.
+NOTIFY_WEBHOOK is set, a [fail] (not a [warn]) also POSTs there —
+unless --no-notify (an interactive check that shouldn't page anyone).
 EOF
 }
 
@@ -119,6 +120,18 @@ doctor_check_infra() {
         fi
     else
         doctor_result off "webhook listener" "disabled (WEBHOOK_ENABLED=false)"
+    fi
+
+    if [[ "$WEB_ENABLED" == "true" ]]; then
+        if [[ ! -f /etc/sudoers.d/ddeploy-web || ! -e /etc/nginx/sites-enabled/ddeploy-web.conf ]]; then
+            doctor_result fail "web UI" "WEB_ENABLED=true but its sudoers rule or vhost is missing — run 'ddeploy init-web'"
+        elif curl -fsS -m 3 -o /dev/null "http://${WEB_LISTEN}/healthz" 2>/dev/null; then
+            doctor_result ok "web UI" "https://$WEB_HOSTNAME (app answering on $WEB_LISTEN)"
+        else
+            doctor_result warn "web UI" "vhost and sudoers in place, but nothing answers on $WEB_LISTEN — is webddeploy running?"
+        fi
+    else
+        doctor_result off "web UI" "disabled (WEB_ENABLED=false)"
     fi
 
     doctor_check_node_toolchain
@@ -312,6 +325,26 @@ doctor_check_uploads_backup() {
     fi
 }
 
+# Does the site actually answer? A GET of / through this server's own
+# nginx (--resolve to 127.0.0.1, so DNS and any CDN in front don't
+# matter). 2xx/3xx, and 401 from basic auth, mean PHP served it; 5xx or
+# no answer is a failure the vhost/FPM/database checks alone can miss.
+doctor_check_site_http() {
+    local name="$1" host="$1.$BASE_DOMAIN" out code secs
+    command -v curl >/dev/null 2>&1 || return 0
+    out="$(curl -sk -o /dev/null -m 10 -w '%{http_code} %{time_total}' --resolve "$host:443:127.0.0.1" "https://$host/" 2>/dev/null || true)"
+    code="${out%% *}"
+    secs="${out#* }"
+    local ms; ms="$(awk -v s="${secs:-0}" 'BEGIN { printf "%d", s * 1000 }')"
+    case "$code" in
+        2??|3??) doctor_result ok "http" "GET / -> $code in ${ms}ms" ;;
+        401)     doctor_result ok "http" "GET / -> 401 (basic auth) in ${ms}ms" ;;
+        4??)     doctor_result warn "http" "GET / -> $code in ${ms}ms" ;;
+        5??)     doctor_result fail "http" "GET / -> $code — the app is erroring (see 'ddeploy logs $name' and the PHP-FPM log)" ;;
+        *)       doctor_result fail "http" "no response from https://$host/ within 10s" ;;
+    esac
+}
+
 doctor_check_site() {
     local name="$1"
     local dir; dir="$(site_dir "$name")"
@@ -349,6 +382,7 @@ doctor_check_site() {
     fi
 
     doctor_check_site_node "$name"
+    doctor_check_site_http "$name"
 
     # As the site's OWN user/credentials, not the admin connection
     # doctor_check_infra already tested — this catches a revoked grant
@@ -419,11 +453,12 @@ doctor_print_rows() {
 }
 
 cmd_doctor() {
-    local verbose=0 only=""
+    local verbose=0 only="" no_notify=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -h|--help)    usage_doctor; return 0 ;;
             -v|--verbose) verbose=1; shift ;;
+            --no-notify)  no_notify=1; shift ;;
             -*)           die "unknown option '$1' (see 'doctor -h')" ;;
             *)            [[ -z "$only" ]] || die "doctor takes at most one site name"; only="$1"; shift ;;
         esac
@@ -491,7 +526,7 @@ cmd_doctor() {
     echo
     if [[ "$fail" -gt 0 ]]; then
         log_error "doctor: $tally"
-        notify_failure doctor "${only:-}" "$fail fail, $warn warn"
+        [[ "$no_notify" -eq 1 ]] || notify_failure doctor "${only:-}" "$fail fail, $warn warn"
     elif [[ "$warn" -gt 0 ]]; then
         log_warn "doctor: $tally"
     else

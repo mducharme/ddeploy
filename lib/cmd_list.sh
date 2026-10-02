@@ -71,41 +71,59 @@ list_row() {
     printf '%s\n' "$name"$'\x1f'"$php"$'\x1f'"${node:--}"$'\x1f'"${docroot:-.}"$'\x1f'"$db"$'\x1f'"$branch"$'\x1f'"$sha"$'\x1f'"$when"$'\x1f'"$preview"
 }
 
-cmd_list() {
-    load_conf
-
-    local -a names=()
+# Every provisioned site (previews included), one per line, sorted so a
+# site's previews follow it. No trailing slash on the glob: "foo/" sorts
+# after "foo-bar/" ('-' < '/'), which would list a site's previews
+# before it.
+provisioned_site_names() {
     local site_path name
-    # No trailing slash on the glob: "foo/" sorts after "foo-bar/"
-    # ('-' < '/'), which would list a site's previews before it.
     for site_path in "$SITES_ROOT"/*; do
         [[ -d "$site_path" ]] || continue
         name="$(basename "$site_path")"
-        is_provisioned "$name" && names+=("$name")
+        is_provisioned "$name" && printf '%s\n' "$name"
     done
+    return 0
+}
 
-    # Rows are built in parallel, each into its own file, then printed
-    # together in order: every column is sized to its widest value, so
-    # nothing can print until every row is in — and each row is a few
-    # dozen yq processes (parse_config) plus git, too slow to run one
-    # site after another on a fleet of any size. Capped at the CPU count (min 8: it's mostly
-    # process startup, not CPU-bound work).
+# Runs function $1 once per remaining argument, in parallel, and prints
+# each call's stdout in argument order (a failing call just prints
+# nothing). Each row is a few dozen yq processes (parse_config) plus git,
+# too slow to run one site after another on a fleet of any size. Capped
+# at the CPU count (min 8: it's mostly process startup, not CPU-bound
+# work).
+parallel_map() {
+    local fn="$1"; shift
+    local -a items=("$@")
     local tmp; tmp="$(mktemp -d)"
     local max; max="$(nproc 2>/dev/null || echo 8)"
     (( max < 8 )) && max=8
     local i
-    for i in "${!names[@]}"; do
-        { list_row "${names[i]}" || true; } > "$tmp/$i" &
+    for i in "${!items[@]}"; do
+        { "$fn" "${items[i]}" || true; } > "$tmp/$i" &
         (( $(jobs -rp | wc -l) >= max )) && wait -n
     done
     wait
-
-    local -a rows=()
-    rows+=("NAME"$'\x1f'"PHP"$'\x1f'"NODE"$'\x1f'"DOCROOT"$'\x1f'"DB"$'\x1f'"BRANCH"$'\x1f'"SHA"$'\x1f'"LAST DEPLOY"$'\x1f'"PREVIEW")
-    for i in "${!names[@]}"; do
-        [[ -s "$tmp/$i" ]] && rows+=("$(<"$tmp/$i")")
+    for i in "${!items[@]}"; do
+        [[ -s "$tmp/$i" ]] && cat "$tmp/$i"
     done
     rm -rf "$tmp"
+    return 0
+}
+
+cmd_list() {
+    load_conf
+
+    local -a names=()
+    mapfile -t names < <(provisioned_site_names)
+
+    # Every column is sized to its widest value, so nothing can print
+    # until every row is in.
+    local -a rows=()
+    rows+=("NAME"$'\x1f'"PHP"$'\x1f'"NODE"$'\x1f'"DOCROOT"$'\x1f'"DB"$'\x1f'"BRANCH"$'\x1f'"SHA"$'\x1f'"LAST DEPLOY"$'\x1f'"PREVIEW")
+    local row
+    while IFS= read -r row; do
+        [[ -n "$row" ]] && rows+=("$row")
+    done < <(parallel_map list_row "${names[@]}")
 
     print_table "${rows[@]}"
 }

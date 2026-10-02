@@ -346,6 +346,13 @@ EOF
         log_info "WEBHOOK_ENABLED=false — skipping git webhook listener"
     fi
 
+    log_info "== web UI =="
+    if [[ "$WEB_ENABLED" == "true" ]]; then
+        install_web
+    else
+        log_info "WEB_ENABLED=false — skipping the web UI's user, sudoers rule and vhost (see 'init-web -h')"
+    fi
+
     nginx -t && systemctl reload nginx
 
     if [[ "$CLOUDFLARE_PROXIED" == "true" ]]; then
