@@ -1635,7 +1635,7 @@ api_backups() {
         if raw="$(timeout 60 rclone lsjson "${remote}/$target/db-kept/" 2>/dev/null)"; then
             rows+="$(api_backup_dump_rows true <<< "$raw")"
         fi
-        dumps="$(grep -v '^$' <<< "$rows" | sort -r | json_lines_to_array)"
+        dumps="$({ grep -v '^$' <<< "$rows" || true; } | sort -r | json_lines_to_array)"
 
         local -a dirs_json=()
         local d size_json count bytes

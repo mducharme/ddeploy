@@ -311,6 +311,18 @@ assert_contains "$out" "isn't one of" "only the site's own upload dirs"
 out="$(echo hi | ddeploy api run start uploads-import testsite --dir web/uploads --actor admin@example.com 2>/dev/null || true)"
 assert_contains "$out" "isn't a .zip, .tar or .tar.gz" "non-archives refused up front"
 
+step "api: backups — a site with nothing in object storage yet"
+# Earlier steps already backed testsite up: set its prefix aside, as if new.
+remote="$(cd /opt/ddeploy && bash -c 'source lib/common.sh; load_conf >/dev/null 2>&1; source lib/backup.sh; backup_remote_spec')"
+export RCLONE_CONFIG=/etc/ddeploy/rclone-backup.conf   # lib/common.sh
+rclone moveto "$remote/testsite" "$remote/zz-aside-testsite" >/dev/null 2>&1 || true
+if out="$(ddeploy api backups testsite)"; then pass "api backups works with no backups yet"; else fail "api backups failed with no backups: $out"; fi
+assert_contains "$(jq_py 'len(d["database"]["dumps"])' <<< "$out")" "0" "...no dumps"
+assert_contains "$(jq_py 'd["error"]' <<< "$out")" "null" "...and no error"
+assert_contains "$(jq_py 'len(d["uploads"]["versions"])' <<< "$out")" "0" "...no versions"
+rclone moveto "$remote/zz-aside-testsite" "$remote/testsite" >/dev/null 2>&1 || true
+assert_contains "$(ddeploy api backups testsite | jq_py 'len(d["database"]["dumps"]) > 0')" "true" "backups back in place"
+
 step "api: backups — run now, versions, restore, keep/delete, download"
 U=/home/deploy/persistent/testsite/web/uploads
 echo v1 > "$U/doc.txt"; echo keep > "$U/keep.txt"; chown www-testsite:www-data "$U/doc.txt" "$U/keep.txt"
@@ -362,7 +374,9 @@ assert_contains "$(jq_py '[s["value"] for s in d["settings"] if s["key"] == "FPM
 assert_contains "$(cat /etc/cron.d/ddeploy-backup-uploads)" "42 * * * *" "a changed schedule rewrites the cron job"
 assert_contains "$(grep -c '^FPM_MAX_CHILDREN=' /etc/ddeploy/provisioner.conf)" "1" "one line per key"
 assert_contains "$(tail -n 1 /var/log/ddeploy/server-config.log)" "web (root@example.com)" "change logged with who made it"
-assert_contains "$(find /etc/ddeploy -maxdepth 1 -name 'provisioner.conf.bak-*' | wc -l)" "1" "the previous file was backed up"
+# The newest backup is the file as it was before this change (earlier runs may have left others).
+newest_bak="$(find /etc/ddeploy -maxdepth 1 -name 'provisioner.conf.bak-*' | sort | tail -n 1)"
+if [[ -n "$newest_bak" ]] && cmp -s "$newest_bak" /tmp/provisioner.conf.before; then pass "the previous file was backed up"; else fail "no backup matching the previous provisioner.conf (${newest_bak:-none})"; fi
 # shellcheck disable=SC2016  # literal injection attempts, on purpose
 for bad in 'BASE_DOMAIN=evil.test' 'FPM_MAX_CHILDREN=$(touch /tmp/pwned)' 'DEFAULT_PHP=8.3`touch /tmp/pwned`' 'BACKUP_SCHEDULE=* * * * * root touch /tmp/pwned'; do
     out="$(echo "$bad" | ddeploy api config set --actor root@example.com 2>/dev/null || true)"

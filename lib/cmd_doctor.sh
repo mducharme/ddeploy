@@ -271,7 +271,18 @@ doctor_check_db_backup() {
     # every time in testing, even against a bucket with real dumps in
     # it, until this was caught). Matches how the same function is
     # already called, un-timed-out, everywhere else it's used.
-    local dumps; dumps="$(list_database_backups "$target" "$remote" 2>/dev/null)"
+    # rclone's own error is reported, not read as "no dumps": a listing
+    # that failed (credentials, endpoint, timeout) isn't an empty bucket.
+    local raw rc=0 dumps
+    raw="$(rclone lsf "${remote}/$target/db/" 2>&1)" || rc=$?
+    if [[ "$rc" -ne 0 && "$raw" != *"directory not found"* ]]; then
+        local why; why="$(grep -E 'ERROR|Failed' <<< "$raw" | tail -n 1 || true)"
+        [[ -n "$why" ]] || why="$(grep -v '^[[:space:]]*$' <<< "$raw" | tail -n 1 || true)"
+        doctor_result warn "database backups" "couldn't list $BACKUP_BUCKET/$target/db/: ${why:0:200}"
+        return
+    fi
+    [[ "$rc" -eq 0 ]] || raw=""
+    dumps="$(grep -E '\.sql(\.gz)?$' <<< "$raw" | sort -r || true)"
     local count=0
     [[ -n "$dumps" ]] && count="$(grep -c . <<< "$dumps")"
 
@@ -318,8 +329,15 @@ doctor_check_uploads_backup() {
     local suffix=""
     [[ "${#UPLOAD_DIRS[@]}" -gt 1 ]] && suffix=" (checked 1 of ${#UPLOAD_DIRS[@]} upload_dirs)"
 
-    if timeout 15 rclone lsf "${remote}/${target}/${dir}/" 2>/dev/null | grep -q .; then
+    # lsf doesn't recurse: one level of a large uploads folder, not all of it.
+    local raw rc=0
+    raw="$(timeout 30 rclone lsf "${remote}/${target}/${dir}/" 2>&1)" || rc=$?
+    if [[ "$rc" -eq 0 ]] && grep -qv '^[[:space:]]*$' <<< "$raw" && ! grep -q 'ERROR' <<< "$raw"; then
         doctor_result ok "uploads backup" "'$dir' has synced content$suffix"
+    elif [[ "$rc" -eq 124 ]]; then
+        doctor_result warn "uploads backup" "listing $BACKUP_BUCKET/$target/$dir/ timed out after 30s$suffix"
+    elif grep -q 'ERROR\|Failed' <<< "$raw" && ! grep -q 'directory not found' <<< "$raw"; then
+        doctor_result warn "uploads backup" "couldn't list $BACKUP_BUCKET/$target/$dir/: $(grep 'ERROR\|Failed' <<< "$raw" | tail -n 1 | cut -c1-200)$suffix"
     else
         doctor_result warn "uploads backup" "'$dir' has no synced content in $BACKUP_BUCKET/$target/$dir/ yet — has backup-uploads run yet?$suffix"
     fi
