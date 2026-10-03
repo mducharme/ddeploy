@@ -11,7 +11,8 @@ usage: ddeploy logs <name> [-n lines] [-f]
 
 Print the last lines of /var/log/ddeploy/<name>.log (provision/deploy/preview for a
 site, or backup-uploads / backup-database / prune-previews for fleet
-cron). -n is how many (default 50). -f follows, like tail -f.
+cron — timestamped, one started/done pair per run). -n is how many
+(default 50). -f follows, like tail -f.
 
 `logs webhook` is the git-push webhook log: every delivery that concerns
 a site on this server, and every rejected one (e.g. a wrong HMAC

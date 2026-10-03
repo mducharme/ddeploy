@@ -370,7 +370,16 @@ cmd_remove_preview() {
         if [[ "$mode" == "shared" ]]; then
             log_info "shared-mode preview — its database belongs to '$project', not dropping it"
         else
-            db_drop "${DB_NAME:-$name}" "${DB_USER:-$name}"
+            local drop_db="${DB_NAME:-$name}" drop_user="${DB_USER:-$name}"
+            # Never the project's own database or user, whatever the
+            # preview's config resolved to (see resolve_preview_config).
+            if [[ -n "${PREVIEW_PROJECT_DB_NAME:-}" && "$drop_db" == "$PREVIEW_PROJECT_DB_NAME" ]] \
+                || [[ -n "${PREVIEW_PROJECT_DB_USER:-}" && "$drop_user" == "$PREVIEW_PROJECT_DB_USER" ]] \
+                || [[ "$drop_db" == "$project" || "$drop_user" == "$project" ]]; then
+                log_warn "'$name' resolves to '$project's own database ($drop_db / $drop_user) — not dropping it"
+            else
+                db_drop "$drop_db" "$drop_user"
+            fi
             rm -f "$GENERATED_DIR/$name.dbpass"
         fi
     fi
@@ -395,7 +404,9 @@ cmd_remove_preview() {
     rm -f "$(build_state_path "$name")"
     rm -f "$GENERATED_DIR/$name.preview" "$(preview_deployed_path "$name")"
     site_log "$name" "removed preview (purge_db=$purge_db purge_files=$purge_files, $(notify_trigger))"
-    event_record "$name" remove-preview succeeded "project=$project" "branch=$branch"
+    # Inside run_notifying (a remove-preview command) the wrapper records
+    # the run's start and end; prune-previews calls this directly.
+    [[ -n "${DDEPLOY_EVENT_ATTRS:-}" ]] || event_record "$name" remove-preview succeeded "project=$project" "branch=$branch"
     notify_event preview-removed "$name" "$name removed" "Preview of $project / $branch — $(notify_trigger)"
 }
 
@@ -405,8 +416,11 @@ cmd_remove_preview() {
 cmd_prune_previews() {
     load_conf
     require_root
+    log_timestamps_unless_tty
+    local started="$SECONDS"
+    log_info "prune-previews: started${1:+ ($1)}"
 
-    local only_project="${1:-}" failures=0
+    local only_project="${1:-}" failures=0 checked=0 removed=0
     local f name
     for f in "$GENERATED_DIR"/*.preview; do
         [[ -e "$f" ]] || continue
@@ -418,6 +432,7 @@ cmd_prune_previews() {
         [[ -d "$dir/.git" ]] || continue
         local remote; remote="$(git -C "$dir" remote get-url origin 2>/dev/null)"
         [[ -n "$remote" ]] || continue
+        checked=$((checked + 1))
 
         # --exit-code returns 2 specifically for "connected fine, ref not
         # found" — any other nonzero (network blip, auth failure, host
@@ -445,7 +460,10 @@ cmd_prune_previews() {
             log_error "prune: failed to remove preview '$name'"
             failures=$((failures + 1))
             notify_failure prune-previews "$name" "failed to remove preview of $PREVIEW_PROJECT/$PREVIEW_BRANCH"
+        else
+            removed=$((removed + 1))
         fi
     done
+    log_info "prune-previews: done in $((SECONDS - started))s — $checked preview(s) checked, $removed removed, $failures failed"
     [[ "$failures" -eq 0 ]] || die "$failures preview(s) failed to remove"
 }

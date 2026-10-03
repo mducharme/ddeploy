@@ -56,10 +56,26 @@ export RCLONE_CONFIG="/etc/ddeploy/rclone-backup.conf"
 
 # Colored only when stderr is a terminal (and NO_COLOR is unset) — not
 # escape codes in cron mail, the journal, or captured site logs.
-log_color() { [[ -t 2 && -z "${NO_COLOR:-}" ]] && printf '\033[%sm' "$1"; return 0; }
-log_info()  { printf '%s[info]%s  %s\n'  "$(log_color 36)" "$(log_color 0)" "$*" >&2; }
-log_warn()  { printf '%s[warn]%s  %s\n'  "$(log_color 33)" "$(log_color 0)" "$*" >&2; }
-log_error() { printf '%s[error]%s %s\n' "$(log_color 31)" "$(log_color 0)" "$*" >&2; }
+# LOG_TIMESTAMPS=1 prefixes a UTC timestamp, same format as the site
+# logs (see log_timestamps_unless_tty). Builtins only, no subshells:
+# these run for every line of every command.
+_log() {
+    local tag="$1" color="$2" msg="$3" ts="" c="" r=""
+    [[ "${LOG_TIMESTAMPS:-0}" == "1" ]] && TZ=UTC printf -v ts '%(%Y-%m-%dT%H:%M:%SZ)T ' -1
+    [[ -t 2 && -z "${NO_COLOR:-}" ]] && { c=$'\033['"$color"'m'; r=$'\033[0m'; }
+    printf '%s%s%s%s %s\n' "$ts" "$c" "$tag" "$r" "$msg" >&2
+}
+log_info()  { _log '[info] ' 36 "$*"; }
+log_warn()  { _log '[warn] ' 33 "$*"; }
+log_error() { _log '[error]' 31 "$*"; }
+
+# For commands cron runs into an append-only log ($LOG_DIR/<job>.log):
+# timestamp every log line when not on a terminal, so one run can be
+# told from the next. Done here rather than in the cron.d line so
+# existing installs get it without re-running init.
+log_timestamps_unless_tty() {
+    [[ -t 2 ]] || LOG_TIMESTAMPS=1
+}
 die()       { log_error "$*"; exit 1; }
 
 # Appends a timestamped line to a site's provision/deploy log.

@@ -152,6 +152,16 @@ resolve_preview_config() {
     ADDITIONAL_FQDNS=()
 
     PREVIEW_PROJECT_DB_NAME="$project_db_name"
+    PREVIEW_PROJECT_DB_USER="$project_db_user"
+    if [[ "$mode" != "shared" ]]; then
+        # Isolated: always this preview's own database and user. The
+        # branch's own config is the project's file — a database.name /
+        # database.user declared in it names the PROJECT's database, and
+        # taking it here made an "isolated" preview re-grant the project's
+        # user on creation and drop the project's database on removal.
+        DB_NAME="$name"
+        DB_USER="$name"
+    fi
     if [[ "$mode" == "shared" ]]; then
         [[ -n "$project_db_name" ]] || die "couldn't resolve '$project's database — is it provisioned with a readable config?"
         DB_NAME="$project_db_name"

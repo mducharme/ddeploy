@@ -1637,6 +1637,13 @@ assert_not_contains "$backup_out" "backup-uploads failed" "backup-uploads succee
 db_backup_out="$(./provision.sh backup-database 2>&1)"
 assert_contains "$db_backup_out" "skipping 'testsite-feature-a'" "backup-database skips the shared-mode preview"
 assert_not_contains "$db_backup_out" "backup-database failed" "backup-database succeeded for testsite"
+# Captured, like cron's append to $LOG_DIR/<job>.log: every log line is
+# timestamped, and each run is bracketed by started/done lines.
+TS_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[(info|warn|error)\] '
+assert_cmd_ok "backup-uploads: log lines are timestamped when not on a terminal" grep -qE "${TS_RE} backup-uploads: started" <<< "$backup_out"
+assert_cmd_ok "backup-uploads: closing summary line" grep -qE "${TS_RE} backup-uploads: done in [0-9]+s — [0-9]+ site\(s\) backed up, 0 failed" <<< "$backup_out"
+assert_cmd_ok "backup-database: log lines are timestamped when not on a terminal" grep -qE "${TS_RE} backup-database: started" <<< "$db_backup_out"
+assert_cmd_ok "backup-database: closing summary line" grep -qE "${TS_RE} backup-database: done in [0-9]+s" <<< "$db_backup_out"
 
 remote="$(backup_remote_spec)"
 
@@ -1737,7 +1744,8 @@ mysql --defaults-extra-file="$DB_ADMIN_CREDENTIALS" -h "$DB_HOST" testsite -e "D
 
 step "prune-previews (feature-a branch deleted upstream)"
 git -C "$BARE" branch -D feature-a >/dev/null
-./provision.sh prune-previews
+prune_out="$(./provision.sh prune-previews 2>&1)"
+assert_cmd_ok "prune-previews: timestamped summary line" grep -qE "${TS_RE} prune-previews: done in [0-9]+s — [0-9]+ preview\(s\) checked, 1 removed, 0 failed" <<< "$prune_out"
 assert_file_absent "/etc/nginx/sites-enabled/$PREVIEW.conf" "prune-previews removed the preview whose branch is gone"
 assert_file_absent "$PERSISTENT_ROOT/$PREVIEW" "removing the preview removed its persistent .env too"
 assert_file_absent "$GENERATED_DIR/$PREVIEW.override.yaml" "removing the preview removed its override file"

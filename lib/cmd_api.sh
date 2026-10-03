@@ -59,6 +59,9 @@ write (each needs --actor <email>):
   run start db-import <name> --actor <email>     the dump (.sql or .sql.gz) on stdin
   run start db-restore <name> --snapshot <id> --actor <email>
   run start db-snapshot <name> --actor <email>
+  run start preview-create <project> --branch <b> [--shared|--isolated] [--no-seed] [--auth|--no-auth] --actor <email>
+  run start preview-deploy <project> --branch <b> --actor <email>
+  run start preview-remove <project> --branch <b> --actor <email>   (its files, and its DB if isolated)
   run start provision <name> <repo-url> --actor <email> [--branch b] [--php X.Y]
       [--docroot p] [--db name] [--hostnames "a b"] [--custom-domains "a b"]
       [--upload-dirs "a b"] [--auth|--no-auth] [--node v] [--build|--no-build]
@@ -771,9 +774,11 @@ api_run_start() {
     local actor="" name="" url=""
     local -a argv=() flags=()
     case "$kind" in
-        deploy|provision|rollback|db-import|db-restore|db-snapshot) ;;
-        *) api_die bad_request "run start: kind must be deploy, provision, rollback, db-import, db-restore or db-snapshot" ;;
+        deploy|provision|rollback|db-import|db-restore|db-snapshot|preview-create|preview-deploy|preview-remove) ;;
+        *) api_die bad_request "run start: unknown kind '$kind'" ;;
     esac
+    local preview=0
+    [[ "$kind" == preview-* ]] && preview=1
     local sha="" snapshot=""
 
     while [[ $# -gt 0 ]]; do
@@ -787,8 +792,11 @@ api_run_start() {
                 [[ "$kind" == db-restore ]] || api_die bad_request "--snapshot is only for db-restore"
                 api_valid validate_snapshot_id "${2:-}"
                 snapshot="$2"; shift ;;
+            --shared|--isolated|--seed|--no-seed)
+                [[ "$kind" == preview-create ]] || api_die bad_request "$1 is only for preview-create"
+                flags+=("$1") ;;
             --branch)
-                [[ "$kind" == provision ]] || api_die bad_request "--branch is only for provision"
+                [[ "$kind" == provision || "$preview" -eq 1 ]] || api_die bad_request "--branch is only for provision and previews"
                 api_valid validate_branch_name "${2:-}" "--branch"
                 [[ -n "${2:-}" ]] && flags+=(--branch "$2")
                 shift ;;
@@ -821,7 +829,10 @@ api_run_start() {
                 [[ "$node" == lts ]] && node="lts/*"
                 api_valid validate_node_version_spec "$node" "--node"
                 flags+=(--node "$node"); shift ;;
-            --auth|--no-auth|--build|--no-build)
+            --auth|--no-auth)
+                [[ "$kind" == provision || "$kind" == preview-create ]] || api_die bad_request "$1 is only for provision and preview-create"
+                flags+=("$1") ;;
+            --build|--no-build)
                 [[ "$kind" == provision ]] || api_die bad_request "$1 is only for provision"
                 flags+=("$1") ;;
             -*) api_die bad_request "run start: option '$1' is not allowed" ;;
@@ -841,6 +852,31 @@ api_run_start() {
     if [[ "$kind" != provision ]]; then
         is_provisioned "$name" || api_die not_found "'$name' is not provisioned"
     fi
+    # Previews: $name is the project; the run is about the preview site
+    # <project>-<branch> (preview_slug), which is what gets locked, logged
+    # and recorded.
+    local run_site="$name"
+    if [[ "$preview" -eq 1 ]]; then
+        is_preview "$name" && api_die bad_request "'$name' is itself a preview — previews belong to a project"
+        local branch="" i
+        for (( i = 0; i < ${#flags[@]}; i++ )); do
+            [[ "${flags[i]}" == --branch ]] && branch="${flags[i+1]}"
+        done
+        [[ -n "$branch" ]] || api_die bad_request "--branch <branch> required"
+        run_site="$( (preview_slug "$name" "$branch") 2>/dev/null )" || api_die bad_request "can't derive a preview name from '$name' + '$branch'"
+        [[ "$run_site" =~ $NAME_RE ]] || api_die bad_request "can't derive a preview name from '$name' + '$branch'"
+        local owner=""
+        if is_preview "$run_site" && read_preview_meta "$run_site"; then owner="$PREVIEW_PROJECT"; fi
+        if [[ "$kind" == preview-create ]]; then
+            [[ -z "$owner" ]] || api_die conflict "a preview of '$branch' already exists ($run_site) — redeploy it instead"
+            is_provisioned "$run_site" && api_die conflict "'$run_site' already exists and isn't a preview of '$name'"
+            local remote
+            remote="$(GIT_SSH_COMMAND="$(git_ssh_command)" timeout 30 git -c safe.directory='*' -C "$(site_dir "$name")" ls-remote origin "refs/heads/$branch" 2>/dev/null || true)"
+            [[ -n "$remote" ]] || api_die bad_request "branch '$branch' doesn't exist on the remote"
+        else
+            [[ "$owner" == "$name" ]] || api_die not_found "no preview of '$branch' for '$name'"
+        fi
+    fi
     if [[ "$kind" == deploy || "$kind" == rollback ]]; then
         is_preview "$name" && api_die bad_request "'$name' is a preview — previews are deployed with deploy-preview"
     fi
@@ -853,6 +889,21 @@ api_run_start() {
     elif [[ "$kind" == db-restore ]]; then
         [[ -n "$snapshot" ]] || api_die bad_request "--snapshot <id> required"
         argv=(db-import "$name" --snapshot "$snapshot" --yes)
+    elif [[ "$kind" == preview-create ]]; then
+        local -a pflags=()
+        for (( i = 0; i < ${#flags[@]}; i++ )); do
+            case "${flags[i]}" in
+                --branch) i=$((i + 1)) ;;
+                *) pflags+=("${flags[i]}") ;;
+            esac
+        done
+        argv=(provision-preview "$name" "$branch" "${pflags[@]}")
+    elif [[ "$kind" == preview-deploy ]]; then
+        argv=(deploy-preview "$name" "$branch")
+    elif [[ "$kind" == preview-remove ]]; then
+        # --purge-db only ever drops an isolated preview's own database;
+        # a shared one's belongs to the project (remove-preview -h).
+        argv=(remove-preview "$name" "$branch" --purge-db --purge-files)
     elif [[ "$kind" == db-import ]]; then
         local spool
         spool="$(api_spool_import "$id")"
@@ -885,7 +936,7 @@ api_run_start() {
     : > "$log"
     chmod 640 "$log"
     printf '{"run_id":%s,"kind":%s,"site":%s,"argv":%s,"actor":%s,"submitted_at":%s}\n' \
-        "$(json_str "$id")" "$(json_str "$kind")" "$(json_str "$name")" "$(json_str_array "${argv[@]}")" \
+        "$(json_str "$id")" "$(json_str "$kind")" "$(json_str "$run_site")" "$(json_str_array "${argv[@]}")" \
         "$(json_str "$actor")" "$(json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" > "$RUNS_META_DIR/$id.json"
 
     local trigger="web ($actor)"
@@ -894,7 +945,7 @@ api_run_start() {
         # the web request, and a restart of the web app, and shows up in
         # `systemctl list-units 'ddeploy-run-*'`.
         systemd-run --quiet --collect --unit "ddeploy-run-$id" \
-            --description "ddeploy $kind $name (run $id)" \
+            --description "ddeploy $kind $run_site (run $id)" \
             --property "StandardOutput=append:$log" --property "StandardError=append:$log" \
             --setenv "DDEPLOY_RUN_ID=$id" --setenv DDEPLOY_RUN_LOG_EXTERNAL=1 \
             --setenv "DDEPLOY_TRIGGER=$trigger" --setenv HOME=/root --setenv NO_COLOR=1 \
@@ -905,7 +956,7 @@ api_run_start() {
             setsid -f "$PROVISIONER_DIR/provision.sh" "${argv[@]}" >> "$log" 2>&1 < /dev/null
     fi
     api_header
-    printf ',"run_id":%s}\n' "$(json_str "$id")"
+    printf ',"run_id":%s,"site":%s}\n' "$(json_str "$id")" "$(json_str "$run_site")"
 }
 
 api_run_show() {

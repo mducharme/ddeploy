@@ -135,7 +135,7 @@ run_notifying() {
     fi
     local -a start_attrs=()
     case "$label" in
-        provision-preview|deploy-preview) start_attrs=("project=${2:-}" "branch=${3:-}") ;;
+        provision-preview|deploy-preview|remove-preview) start_attrs=("project=${2:-}" "branch=${3:-}") ;;
     esac
     [[ "$EUID" -eq 0 ]] && event_record "$site" "$label" started "${start_attrs[@]}"
     # Where the site log ends now: on failure, only what this run wrote
@@ -316,7 +316,7 @@ main() {
             fi ;;
         provision-preview) run_notifying provision-preview "$(notify_site_arg preview "$@")" cmd_provision_preview "$@" ;;
         deploy-preview) run_notifying deploy-preview "$(notify_site_arg preview "$@")" cmd_deploy_preview "$@" ;;
-        remove-preview) cmd_remove_preview "$@" ;;
+        remove-preview) run_notifying remove-preview "$(notify_site_arg preview "$@")" cmd_remove_preview "$@" ;;
         prune-previews) cmd_prune_previews "$@" ;;
         preview-url)    cmd_preview_url "$@" ;;
         logs)           cmd_logs "$@" ;;

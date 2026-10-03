@@ -358,7 +358,11 @@ at once can conflict against that one shared database; `backup-database`
 covers recovery from that. `--isolated` gives a preview its own
 database/uploads/Linux user instead. `PREVIEW_SEED` (default `true`)
 seeds an isolated preview once at creation from the parent's current
-state; `--no-seed` for an empty database.
+state; `--no-seed` for an empty database. An isolated preview's database
+and user are always named after the preview itself, even when the
+repository's config declares `database.name`/`database.user` (that names
+the parent's). `remove-preview --purge-db` refuses to drop anything that
+is the parent's database or user.
 
 **Each preview has its own config, seeded from its parent's** at
 creation — never overwritten afterwards, so tune a preview without
@@ -810,7 +814,8 @@ every verb. Usable from scripts too.
   `branches <name>`, `commits <name> <from> <to>`, `db info|credentials
   <name>`, `db dump <name>` (gzipped SQL on stdout), `run show|log <id>`.
 - Write (each needs `--actor <email>`): `run start deploy|rollback|
-  provision|db-import|db-restore|db-snapshot`, `run cancel <id>`, `env
+  provision|db-import|db-restore|db-snapshot|preview-create|
+  preview-deploy|preview-remove`, `run cancel <id>`, `env
   <name> --apply` (values on stdin, never argv), `settings <name>`
   (operator overrides and the tracked branch — every `override` key except
   `db_env_scheme` and `persistent_files`). Provision takes a fixed flag set

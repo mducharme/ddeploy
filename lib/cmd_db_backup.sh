@@ -7,8 +7,11 @@ cmd_backup_database() {
     load_conf
     require_root
     [[ "$DB_BACKUP_ENABLED" == "true" ]] || die "DB_BACKUP_ENABLED is not true in provisioner.conf"
+    log_timestamps_unless_tty
+    local started="$SECONDS"
+    log_info "backup-database: started${1:+ ($1)}"
 
-    local only="${1:-}" failures=0
+    local only="${1:-}" failures=0 ok=0
     local site_path name
     local -a failed_names=()
     for site_path in "$SITES_ROOT"/*/; do
@@ -44,8 +47,11 @@ cmd_backup_database() {
             log_error "backup-database failed for $name"
             failures=$((failures + 1))
             failed_names+=("$name")
+        else
+            ok=$((ok + 1))
         fi
     done
+    log_info "backup-database: done in $((SECONDS - started))s — $ok site(s) backed up, $failures failed"
     if [[ "$failures" -ne 0 ]]; then
         notify_failure backup-database "" "${failures} site(s): ${failed_names[*]}"
         die "$failures site(s) failed to back up"

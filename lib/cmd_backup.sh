@@ -7,8 +7,11 @@ cmd_backup_uploads() {
     load_conf
     require_root
     [[ "$BACKUP_ENABLED" == "true" ]] || die "BACKUP_ENABLED is not true in provisioner.conf"
+    log_timestamps_unless_tty
+    local started="$SECONDS"
+    log_info "backup-uploads: started${1:+ ($1)}"
 
-    local only="${1:-}" failures=0
+    local only="${1:-}" failures=0 ok=0
     local site_path name
     local -a failed_names=()
     for site_path in "$SITES_ROOT"/*/; do
@@ -44,8 +47,11 @@ cmd_backup_uploads() {
             log_error "backup-uploads failed for $name"
             failures=$((failures + 1))
             failed_names+=("$name")
+        else
+            ok=$((ok + 1))
         fi
     done
+    log_info "backup-uploads: done in $((SECONDS - started))s — $ok site(s) backed up, $failures failed"
     if [[ "$failures" -ne 0 ]]; then
         notify_failure backup-uploads "" "${failures} site(s): ${failed_names[*]}"
         die "$failures site(s) failed to back up"
