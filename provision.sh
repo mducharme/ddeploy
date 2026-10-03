@@ -94,6 +94,8 @@ source "$LIB_DIR/cmd_node_gc.sh"
 source "$LIB_DIR/cmd_init_web.sh"
 # shellcheck source=lib/cmd_db.sh
 source "$LIB_DIR/cmd_db.sh"
+# shellcheck source=lib/cmd_uploads.sh
+source "$LIB_DIR/cmd_uploads.sh"
 # shellcheck source=lib/cmd_api.sh
 source "$LIB_DIR/cmd_api.sh"
 
@@ -247,6 +249,8 @@ commands:
   restore-database <name> [--from <file> | --from-file <path>] --yes   overwrite the DB from a dump (see -h)
   db-import <name> --from-file <path> --yes   snapshot the DB, then load a dump into it (see -h)
   db-snapshot <name> [--list]   local safety dump of a site's DB (see -h)
+  uploads-import <name> --dir <d> --from-file <archive> --yes   unpack files into an upload dir, snapshot first (see -h)
+  uploads-snapshot <name> [--list]   hardlink snapshot of a site's upload dirs (see -h)
   provision-preview <project> <branch> [repo-url] [opts]   branch preview (see -h)
   deploy-preview <project> <branch>       pull + redeploy a preview
   remove-preview <project> <branch> [opts]   remove a preview (see -h)
@@ -287,7 +291,7 @@ site_lock_reexec() {
 main() {
     local cmd="${1:-}"
     case "$cmd" in
-        provision|deploy|remove|restore-database|db-import) site_lock_reexec "$(notify_site_arg site "${@:2}")" "$@" ;;
+        provision|deploy|remove|restore-database|db-import|uploads-import) site_lock_reexec "$(notify_site_arg site "${@:2}")" "$@" ;;
         provision-preview|deploy-preview|remove-preview) site_lock_reexec "$(notify_site_arg preview "${@:2}")" "$@" ;;
     esac
     if [[ $# -gt 0 ]]; then
@@ -310,6 +314,11 @@ main() {
         restore-uploads) cmd_restore_uploads "$@" ;;
         restore-database) cmd_restore_database "$@" ;;
         db-import)      run_notifying db-import "$(notify_site_arg site "$@")" cmd_db_import "$@" ;;
+        uploads-import) run_notifying uploads-import "$(notify_site_arg site "$@")" cmd_uploads_import "$@" ;;
+        uploads-snapshot)
+            if [[ " $* " == *" --list "* ]]; then cmd_uploads_snapshot "$@"
+            else run_notifying uploads-snapshot "$(notify_site_arg site "$@")" cmd_uploads_snapshot "$@"
+            fi ;;
         db-snapshot)
             if [[ " $* " == *" --list "* ]]; then cmd_db_snapshot "$@"
             else run_notifying db-snapshot "$(notify_site_arg site "$@")" cmd_db_snapshot "$@"

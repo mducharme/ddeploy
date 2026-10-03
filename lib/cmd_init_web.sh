@@ -80,7 +80,7 @@ EOF2
     log_info "installed $WEB_SUDOERS ($user -> provision.sh api)"
 
     render_template "$PROVISIONER_DIR/templates/web-vhost.conf.tmpl" "$WEB_VHOST" \
-        "HOSTNAME=$hostname" "CERT_NAME=$BASE_DOMAIN" "PORT=$port" "IMPORT_MAX=$(( $(api_import_max_bytes) / 1024 / 1024 ))m"
+        "HOSTNAME=$hostname" "CERT_NAME=$BASE_DOMAIN" "PORT=$port" "IMPORT_MAX=$(( $(api_import_max_bytes) / 1024 / 1024 ))m" "UPLOAD_MAX=$(( $(api_upload_max_bytes) / 1024 / 1024 ))m"
     ln -sf "$WEB_VHOST" /etc/nginx/sites-enabled/ddeploy-web.conf
     log_info "installed web UI vhost: https://$hostname -> 127.0.0.1:$port"
     log_info "next: install the webddeploy app (see its README) listening on 127.0.0.1:$port as $user"

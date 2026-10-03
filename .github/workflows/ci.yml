@@ -41,6 +41,8 @@ jobs:
           done
       - name: unit tests (json, events, api validators)
         run: tests/unit.sh
+      - name: unit tests (uploads extractor, hostile archives)
+        run: python3 -m unittest tests/test_uploads_extract.py
       - name: python syntax (webhook listener)
         run: python3 -m py_compile hook/listener.py
       - name: python lint (webhook listener)

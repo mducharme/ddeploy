@@ -48,6 +48,8 @@ read:
   db info <name>                        database size, tables, snapshots
   db credentials <name>                 the site's own DB connection details
   db dump <name> [--snapshot <id>]      gzipped SQL on stdout (not JSON)
+  uploads <name>                        upload dirs (size, file count) and their snapshots
+  uploads download <name> --dir <d>     a .tar.gz of one upload dir on stdout (not JSON)
 
 write (each needs --actor <email>):
   env <name> --apply [--unset KEY]...   set the KEY=value lines read from stdin
@@ -62,6 +64,9 @@ write (each needs --actor <email>):
   run start preview-create <project> --branch <b> [--shared|--isolated] [--no-seed] [--auth|--no-auth] --actor <email>
   run start preview-deploy <project> --branch <b> --actor <email>
   run start preview-remove <project> --branch <b> --actor <email>   (its files, and its DB if isolated)
+  run start uploads-import <name> --dir <d> [--mode merge|replace] --actor <email>   archive on stdin
+  run start uploads-restore <name> --snapshot <id> --actor <email>
+  run start uploads-snapshot <name> --actor <email>
   run start provision <name> <repo-url> --actor <email> [--branch b] [--php X.Y]
       [--docroot p] [--db name] [--hostnames "a b"] [--custom-domains "a b"]
       [--upload-dirs "a b"] [--auth|--no-auth] [--node v] [--build|--no-build]
@@ -76,6 +81,11 @@ cmd_api() {
     if [[ "${1:-}" == db && "${2:-}" == dump ]]; then
         shift 2
         api_db_dump "$@"
+        return
+    fi
+    if [[ "${1:-}" == uploads && "${2:-}" == download ]]; then
+        shift 2
+        api_uploads_download "$@"
         return
     fi
     local errf codef out rc
@@ -119,7 +129,7 @@ api_valid() {
 api_dispatch() {
     local verb="$1"; shift
     case "$verb" in
-        info|sites|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db) ;;
+        info|sites|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db|uploads) ;;
         *) api_die unknown_verb "unknown api verb '$verb'" ;;
     esac
     load_conf
@@ -140,6 +150,7 @@ api_dispatch() {
         branches)     api_branches "$@" ;;
         commits)      api_commits "$@" ;;
         db)           api_db "$@" ;;
+        uploads)      api_uploads "$@" ;;
     esac
 }
 
@@ -181,8 +192,14 @@ api_info() {
     printf ',"basic_auth_default":%s' "$(json_bool "$BASIC_AUTH_DEFAULT")"
     printf ',"defaults":{"client_max_body_size":%s,"fpm_max_children":%s,"db_backup_retention_days":%s}' \
         "$(json_str "$CLIENT_MAX_BODY_SIZE")" "$(json_str "$FPM_MAX_CHILDREN")" "$(json_str "$DB_BACKUP_RETENTION_DAYS")"
-    printf ',"limits":{"db_import_max_bytes":%s}' "$(api_import_max_bytes)"
+    printf ',"limits":{"db_import_max_bytes":%s,"uploads_import_max_bytes":%s}' "$(api_import_max_bytes)" "$(api_upload_max_bytes)"
     printf '}\n'
+}
+
+api_upload_max_bytes() {
+    local mb="${WEB_UPLOAD_MAX_MB:-10240}"
+    [[ "$mb" =~ ^[1-9][0-9]{0,6}$ ]] || mb=10240
+    printf '%s' "$(( mb * 1024 * 1024 ))"
 }
 
 api_import_max_bytes() {
@@ -774,12 +791,12 @@ api_run_start() {
     local actor="" name="" url=""
     local -a argv=() flags=()
     case "$kind" in
-        deploy|provision|rollback|db-import|db-restore|db-snapshot|preview-create|preview-deploy|preview-remove) ;;
+        deploy|provision|rollback|db-import|db-restore|db-snapshot|preview-create|preview-deploy|preview-remove|uploads-import|uploads-restore|uploads-snapshot) ;;
         *) api_die bad_request "run start: unknown kind '$kind'" ;;
     esac
     local preview=0
     [[ "$kind" == preview-* ]] && preview=1
-    local sha="" snapshot=""
+    local sha="" snapshot="" upload_dir="" upload_mode=merge
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -789,9 +806,19 @@ api_run_start() {
                 [[ "${2:-}" =~ ^[0-9a-f]{7,40}$ ]] || api_die bad_request "--sha must be a commit SHA"
                 sha="$2"; shift ;;
             --snapshot)
-                [[ "$kind" == db-restore ]] || api_die bad_request "--snapshot is only for db-restore"
-                api_valid validate_snapshot_id "${2:-}"
+                if [[ "$kind" == db-restore ]]; then api_valid validate_snapshot_id "${2:-}"
+                elif [[ "$kind" == uploads-restore ]]; then api_valid validate_uploads_snapshot_id "${2:-}"
+                else api_die bad_request "--snapshot is only for db-restore and uploads-restore"
+                fi
                 snapshot="$2"; shift ;;
+            --dir)
+                [[ "$kind" == uploads-import ]] || api_die bad_request "--dir is only for uploads-import"
+                [[ "${2:-}" =~ ^[A-Za-z0-9._/-]{1,200}$ && "${2:-}" != /* ]] || api_die bad_request "--dir must be one of the site's upload dirs"
+                upload_dir="$2"; shift ;;
+            --mode)
+                [[ "$kind" == uploads-import ]] || api_die bad_request "--mode is only for uploads-import"
+                [[ "${2:-}" == merge || "${2:-}" == replace ]] || api_die bad_request "--mode is merge or replace"
+                upload_mode="$2"; shift ;;
             --shared|--isolated|--seed|--no-seed)
                 [[ "$kind" == preview-create ]] || api_die bad_request "$1 is only for preview-create"
                 flags+=("$1") ;;
@@ -904,6 +931,20 @@ api_run_start() {
         # --purge-db only ever drops an isolated preview's own database;
         # a shared one's belongs to the project (remove-preview -h).
         argv=(remove-preview "$name" "$branch" --purge-db --purge-files)
+    elif [[ "$kind" == uploads-import ]]; then
+        [[ -n "$upload_dir" ]] || api_die bad_request "--dir <upload dir> required"
+        # The dir must be one the site actually declares — checked before
+        # reading a possibly huge upload.
+        ( uploads_resolve_site "$name" >/dev/null 2>&1 && uploads_require_dir "$upload_dir" >/dev/null 2>&1 ) \
+            || api_die bad_request "'$upload_dir' isn't one of '$name's upload dirs"
+        local spool
+        spool="$(api_spool_upload "$id")"
+        argv=(uploads-import "$name" --dir "$upload_dir" --from-file "$spool" --mode "$upload_mode" --yes --delete-file)
+    elif [[ "$kind" == uploads-restore ]]; then
+        [[ -n "$snapshot" ]] || api_die bad_request "--snapshot <id> required"
+        argv=(uploads-import "$name" --snapshot "$snapshot" --yes)
+    elif [[ "$kind" == uploads-snapshot ]]; then
+        argv=(uploads-snapshot "$name")
     elif [[ "$kind" == db-import ]]; then
         local spool
         spool="$(api_spool_import "$id")"
@@ -1362,4 +1403,107 @@ api_db_dump() {
     else
         dump_database "${src#*$'\t'}" /dev/stdout
     fi
+}
+
+# --- uploads ------------------------------------------------------------
+
+# Like api_spool_import, for an uploads archive: .zip, .tar or .tar.gz,
+# up to WEB_UPLOAD_MAX_MB. Content is checked member by member later, by
+# lib/uploads_extract.py; this only refuses what's obviously not one.
+api_spool_upload() {
+    local id="$1"
+    [[ ! -t 0 ]] || api_die bad_request "uploads-import reads the archive from stdin"
+    mkdir -p "$DB_IMPORTS_DIR"
+    chmod 700 "$DB_IMPORTS_DIR"
+    find "$DB_IMPORTS_DIR" -maxdepth 1 -type f -mtime +1 -delete 2>/dev/null || true
+    local max; max="$(api_upload_max_bytes)"
+    local out="$DB_IMPORTS_DIR/$id.upload-archive"
+    ( umask 077; head -c "$((max + 1))" > "$out" )
+    local size; size="$(stat -c %s "$out")"
+    if (( size == 0 )); then rm -f "$out"; api_die bad_request "the archive is empty"; fi
+    if (( size > max )); then rm -f "$out"; api_die bad_request "the archive is larger than the $((max / 1024 / 1024)) MB limit (WEB_UPLOAD_MAX_MB)"; fi
+    local magic; magic="$(head -c 4 "$out" | od -An -tx1 | tr -d ' \n')"
+    local ustar; ustar="$(dd if="$out" bs=1 skip=257 count=5 2>/dev/null)"
+    if [[ "$magic" != 1f8b* && "$magic" != 504b0304 && "$magic" != 504b0506 && "$ustar" != ustar ]]; then
+        rm -f "$out"
+        api_die bad_request "that isn't a .zip, .tar or .tar.gz archive"
+    fi
+    printf '%s' "$out"
+}
+
+api_uploads() {
+    local name="${1:-}"
+    [[ $# -le 1 ]] || api_die bad_request "uploads takes one site name"
+    api_require_site "$name"
+    uploads_resolve_site "$name"
+    local -a objs=()
+    local d path files bytes exists
+    for d in "${UPLOAD_DIRS[@]}"; do
+        path="$(uploads_path "$d")"
+        files=null bytes=null exists=false
+        if [[ -d "$path" ]]; then
+            exists=true
+            # Bounded: a media library with a million files mustn't hang
+            # the page. null = didn't finish counting.
+            files="$(timeout 10 find "$path" -type f 2>/dev/null | wc -l || true)"
+            bytes="$(timeout 10 du -sb "$path" 2>/dev/null | cut -f1 || true)"
+            [[ "$files" =~ ^[0-9]+$ ]] || files=null
+            [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=null
+        fi
+        objs+=("{\"dir\":$(json_str "$d"),\"path\":$(json_str "$path"),\"exists\":$exists,\"files\":$files,\"bytes\":$bytes}")
+    done
+    local snaps="[" first=1 id sdir reason
+    while IFS=$'\t' read -r id sdir reason; do
+        [[ -n "$id" ]] || continue
+        [[ "$first" -eq 1 ]] || snaps+=","
+        first=0
+        snaps+="{\"id\":$(json_str "$id"),\"dir\":$(json_str "$sdir"),\"reason\":$(json_str "$reason"),\"created_at\":$(json_str "${id:0:4}-${id:4:2}-${id:6:2}T${id:9:2}:${id:11:2}:${id:13:2}Z")}"
+    done < <(uploads_snapshot_list)
+    snaps+="]"
+    api_header
+    printf ',"site":%s,"target":%s,"dirs":' "$(json_str "$name")" "$(json_str "$UPX_TARGET")"
+    printf '%s\n' "${objs[@]}" | json_lines_to_array
+    printf ',"snapshots":%s,"max_bytes":%s}\n' "$snaps" "$(api_upload_max_bytes)"
+}
+
+# Streams one upload dir as a .tar.gz. Validation errors are the usual
+# JSON error, before any output.
+api_uploads_download() {
+    local errf; errf="$(mktemp)"
+    local name="${1:-}" dir=""
+    shift || true
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dir) dir="${2:-}"; shift ;;
+            *) dir="?$1" ;;
+        esac
+        shift
+    done
+    local rc=0 path=""
+    set +e
+    path="$( {
+        set -e
+        API_ERR_CODE_FILE="$errf.code"
+        [[ "$dir" != \?* ]] || api_die bad_request "uploads download: unexpected argument '${dir#\?}'"
+        [[ -n "$dir" ]] || api_die bad_request "--dir <upload dir> required"
+        load_conf
+        require_root
+        PARSE_CONFIG_QUIET=1
+        api_require_site "$name"
+        uploads_resolve_site "$name"
+        api_valid uploads_require_dir "$dir"
+        [[ -d "$(uploads_path "$dir")" ]] || api_die not_found "'$dir' has no files yet"
+        uploads_path "$dir"
+    } 2>"$errf" )"
+    rc=$?
+    set -e
+    if [[ "$rc" -ne 0 ]]; then
+        local msg; msg="$(grep -E '^\[error\]' "$errf" | tail -n 1 | sed 's/^\[error\] *//' || true)"
+        printf '{"api_version":%s,"error":{"code":%s,"message":%s}}\n' "$API_VERSION" \
+            "$(json_str "$(cat "$errf.code" 2>/dev/null || echo error)")" "$(json_str "${msg:-uploads download failed}")"
+        rm -f "$errf" "$errf.code"
+        return 1
+    fi
+    rm -f "$errf" "$errf.code"
+    tar -czf - -C "$path" .
 }

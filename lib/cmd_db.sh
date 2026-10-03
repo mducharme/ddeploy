@@ -193,6 +193,12 @@ cmd_db_import() {
         event_attr kind db-import
     fi
     local bytes; bytes="$(stat -c %s "$from_file")"
+    # A web upload's spool file goes when this run is over, imported or not.
+    if [[ "$delete_file" -eq 1 && -z "$snapshot_id" ]]; then
+        local spool; spool="$(readlink -f "$from_file")"
+        # shellcheck disable=SC2064  # expand now
+        [[ "$spool" == "$DB_IMPORTS_DIR"/* ]] && trap "rm -f '$spool'" EXIT
+    fi
     if [[ "$confirm" -ne 1 ]]; then
         log_warn "dry run — this would load $label ($bytes bytes) into '$DBX_NAME', OVERWRITING it. Pass --yes."
         return 0
@@ -215,8 +221,4 @@ cmd_db_import() {
     site_log "$name" "db-import: loaded $label into '$DBX_NAME' ($(notify_trigger))${undo:+ — undo snapshot $undo}"
     log_info "imported $label into '$DBX_NAME'"
 
-    if [[ "$delete_file" -eq 1 ]]; then
-        local real; real="$(readlink -f "$from_file")"
-        [[ "$real" == "$DB_IMPORTS_DIR"/* ]] && rm -f "$real"
-    fi
 }

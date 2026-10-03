@@ -277,6 +277,40 @@ assert_contains "$dbs" "testsite" "removing an isolated preview keeps the projec
 assert_not_contains "$dbs" "testsite-alt-main" "...and drops only the preview's own"
 assert_contains "$(ddeploy api db info testsite | jq_py 'd["error"]')" "null" "the project's database user still works after removing it"
 
+step "api: uploads — import (merge, replace), restore, download, refusals"
+U=/home/deploy/persistent/testsite/web/uploads
+out="$(ddeploy api uploads testsite)"
+assert_contains "$(jq_py '[d["dir"] for d in d["dirs"]]' <<< "$out")" "web/uploads" "upload dirs listed"
+rm -rf /tmp/up && mkdir -p /tmp/up/uploads/2024 && echo hello > /tmp/up/uploads/a.txt && echo img > /tmp/up/uploads/2024/b.jpg && touch /tmp/up/uploads/.DS_Store
+(cd /tmp/up && tar -czf /tmp/up.tgz uploads)
+id="$(ddeploy api run start uploads-import testsite --dir web/uploads --actor admin@example.com < /tmp/up.tgz | run_id_of)"
+assert_contains "$(wait_run "$id" 120)" "succeeded" "tar.gz merged into web/uploads"
+assert_file_exists "$U/2024/b.jpg" "nested file in place (the 'uploads' wrapper folder unwrapped)"
+assert_file_absent "$U/.DS_Store" "junk skipped"
+assert_contains "$(stat -c '%U:%G %a' "$U/a.txt")" "www-testsite:www-data 640" "files owned by the site, readable by nginx"
+assert_contains "$(stat -c '%a' "$U/2024")" "2750" "folders setgid, like the persistent store's"
+assert_contains "$(curl_site testsite.staging.ddeploy.test/uploads/a.txt 2>/dev/null || curl -sk --resolve testsite.staging.ddeploy.test:443:127.0.0.1 https://testsite.staging.ddeploy.test/uploads/a.txt)" "hello" "served by nginx"
+python3 -c "import zipfile; z=zipfile.ZipFile('/tmp/new.zip','w'); z.writestr('new.txt','new'); z.close()"
+id="$(ddeploy api run start uploads-import testsite --dir web/uploads --mode replace --actor admin@example.com < /tmp/new.zip | run_id_of)"
+assert_contains "$(wait_run "$id" 120)" "succeeded" "zip replaced web/uploads"
+assert_file_exists "$U/new.txt"
+assert_file_absent "$U/a.txt" "replace removed what wasn't in the archive"
+snap="$(ddeploy api uploads testsite | jq_py '[s["id"] for s in d["snapshots"] if s["reason"] == "pre-import"][0]')"
+id="$(ddeploy api run start uploads-restore testsite --snapshot "$snap" --actor admin@example.com | run_id_of)"
+assert_contains "$(wait_run "$id" 120)" "succeeded" "restored from the pre-import snapshot"
+assert_file_exists "$U/a.txt" "the replaced files are back"
+assert_file_absent "$U/new.txt" "and the replace is undone"
+assert_contains "$(ddeploy api uploads download testsite --dir web/uploads | tar -tzf -)" "./2024/b.jpg" "download streams a .tar.gz of the folder"
+python3 -c "import tarfile; t=tarfile.open('/tmp/evil.tar','w'); ti=tarfile.TarInfo('x'); ti.type=tarfile.SYMTYPE; ti.linkname='/etc'; t.addfile(ti); t.close()"
+id="$(ddeploy api run start uploads-import testsite --dir web/uploads --actor admin@example.com < /tmp/evil.tar | run_id_of)"
+assert_contains "$(wait_run "$id" 120)" "failed" "an archive with a symlink is refused"
+assert_contains "$(ddeploy api run show "$id" | jq_py 'd["events"][-1]["error"]')" "nothing was changed" "...before anything changed"
+assert_contains "$(find /var/lib/ddeploy/imports -type f | wc -l)" "0" "and its spool file is gone"
+out="$(ddeploy api run start uploads-import testsite --dir ../../etc --actor admin@example.com < /tmp/new.zip 2>/dev/null || true)"
+assert_contains "$out" "isn't one of" "only the site's own upload dirs"
+out="$(echo hi | ddeploy api run start uploads-import testsite --dir web/uploads --actor admin@example.com 2>/dev/null || true)"
+assert_contains "$out" "isn't a .zip, .tar or .tar.gz" "non-archives refused up front"
+
 step "init-web: the web UI's sudoers rule is api-only"
 ddeploy init-web >/dev/null 2>&1
 assert_file_exists /etc/sudoers.d/ddeploy-web

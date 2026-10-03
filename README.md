@@ -740,6 +740,33 @@ not a backup. A shared-mode preview's database is its parent's: importing
 there changes the parent's. The web UI's Database tab drives exactly these
 (upload, download, snapshots, restore).
 
+### Uploaded files: import, snapshots, download
+
+```
+uploads-import <name> --dir <upload_dir> --from-file <archive> --yes [--mode merge|replace]
+uploads-import <name> --snapshot <id> --yes          put a folder back as it was
+uploads-snapshot <name> [--dir <upload_dir>]         hardlink snapshot (free until files change)
+uploads-snapshot <name> --list
+```
+
+Unpacks a `.zip`, `.tar` or `.tar.gz` into one of the site's
+`upload_dirs` (the persistent folder every release links to). `merge`
+(the default) adds files and overwrites same-path ones; `replace` makes the
+folder exactly the archive. A snapshot comes first either way
+(`UPLOADS_SNAPSHOT_KEEP` per site, default 3, kept root-only under
+`$PERSISTENT_ROOT/<site>/.uploads-snapshots/`). An archive whose only
+top-level folder is named like the target (someone zipped the `uploads`
+folder itself) is unwrapped.
+
+The archive is untrusted input, so `lib/uploads_extract.py` checks every
+member before writing anything: only plain files and folders (no links,
+devices, absolute or `..` paths), declared sizes within the free disk
+space. It then unpacks **as the site's own user** into a staging folder,
+which is moved or hardlinked into place. `__MACOSX/`, `.DS_Store` and
+`Thumbs.db` are skipped. The web UI's Files tab uses the same command for
+dropped folders: the browser packs them into a tar, which arrives as a
+single upload.
+
 ### Restoring
 
 ```
@@ -812,10 +839,12 @@ every verb. Usable from scripts too.
 - Read: `info`, `sites`, `site <name>`, `events`, `previews <project>`,
   `doctor [name]`, `logs [<name>]`, `inspect-repo <url>`, `env <name>`,
   `branches <name>`, `commits <name> <from> <to>`, `db info|credentials
-  <name>`, `db dump <name>` (gzipped SQL on stdout), `run show|log <id>`.
+  <name>`, `db dump <name>` (gzipped SQL on stdout), `uploads <name>`,
+  `uploads download <name> --dir <d>` (.tar.gz on stdout), `run show|log <id>`.
 - Write (each needs `--actor <email>`): `run start deploy|rollback|
   provision|db-import|db-restore|db-snapshot|preview-create|
-  preview-deploy|preview-remove`, `run cancel <id>`, `env
+  preview-deploy|preview-remove|uploads-import|uploads-restore|
+  uploads-snapshot`, `run cancel <id>`, `env
   <name> --apply` (values on stdin, never argv), `settings <name>`
   (operator overrides and the tracked branch — every `override` key except
   `db_env_scheme` and `persistent_files`). Provision takes a fixed flag set

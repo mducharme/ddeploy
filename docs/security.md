@@ -281,6 +281,14 @@ plus:
   it's neither gzip nor text, then loaded as the site's own DB user (never
   admin) after a snapshot — the same scoped path as `restore-database
   --from-file`.
+- **Uploads archives are unpacked as the site's own user, after a full
+  check.** `uploads-import` refuses any archive with a link, device,
+  absolute or `..` path, or declared sizes beyond the free disk space,
+  before writing a byte (`lib/uploads_extract.py`; tests with hostile
+  archives in `tests/test_uploads_extract.py`). Only the site's declared
+  `upload_dirs` can be targeted. Unpacking happens in a staging folder
+  owned by `www-<site>`, so even a missed case can't write anything that
+  user couldn't.
 - **`db credentials` returns the site's own DB user**, never the admin
   account; the database isn't exposed publicly, so using them still takes
   an SSH tunnel through the server.
