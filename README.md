@@ -698,7 +698,12 @@ real bucket** (`rclone lsd`) before writing, then turns
 `BACKUP_ENABLED`/`DB_BACKUP_ENABLED` on. `BACKUP_ENDPOINT` by provider:
 
 - **DigitalOcean Spaces**: `https://<region>.digitaloceanspaces.com`.
-  Key pair under "API" → "Spaces access keys," account-wide.
+  Key pair under "API" → "Spaces access keys," account-wide. Not the
+  Space's "Origin Endpoint" (`https://<space>.<region>...`): with the
+  bucket name in the endpoint, backups are filed under
+  `<bucket>/<bucket>/` and can't be listed or restored. `configure
+  backups` offers the corrected endpoint, and `doctor` fails on it with
+  the fix.
 - **AWS S3**: `https://s3.<region>.amazonaws.com`. IAM key scoped to
   `s3:GetObject`/`PutObject`/`DeleteObject`/`ListBucket`.
 - **Any other S3-compatible** (MinIO, Backblaze B2, Wasabi, ...): same

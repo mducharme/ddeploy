@@ -323,6 +323,19 @@ assert_contains "$(jq_py 'len(d["uploads"]["versions"])' <<< "$out")" "0" "...no
 rclone moveto "$remote/zz-aside-testsite" "$remote/testsite" >/dev/null 2>&1 || true
 assert_contains "$(ddeploy api backups testsite | jq_py 'len(d["database"]["dumps"]) > 0')" "true" "backups back in place"
 
+step "api: backups — an endpoint that already names the bucket is explained, not \"no backups\""
+creds="$(sed -n 's/^BACKUP_CREDENTIALS="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' /etc/ddeploy/provisioner.conf)"
+bucket="$(sed -n 's/^BACKUP_BUCKET="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' /etc/ddeploy/provisioner.conf)"
+cp "$creds" /tmp/creds.before
+sed -i "s#^BACKUP_ENDPOINT=.*#BACKUP_ENDPOINT=\"https://$bucket.tor1.digitaloceanspaces.com\"#" "$creds"
+out="$(ddeploy api backups testsite)"
+assert_contains "$(jq_py 'd["error"]' <<< "$out")" "BACKUP_ENDPOINT includes the bucket name" "api backups explains the endpoint"
+assert_contains "$(jq_py 'd["error"]' <<< "$out")" "https://tor1.digitaloceanspaces.com" "...with the endpoint to use"
+out="$(ddeploy doctor --no-notify 2>&1 || true)"
+assert_contains "$out" "BACKUP_ENDPOINT includes the bucket name" "doctor fails on it"
+cp /tmp/creds.before "$creds"
+assert_contains "$(ddeploy api backups testsite | jq_py 'd["error"]')" "null" "fine again with the region endpoint"
+
 step "api: backups — run now, versions, restore, keep/delete, download"
 U=/home/deploy/persistent/testsite/web/uploads
 echo v1 > "$U/doc.txt"; echo keep > "$U/keep.txt"; chown www-testsite:www-data "$U/doc.txt" "$U/keep.txt"

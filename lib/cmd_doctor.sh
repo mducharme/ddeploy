@@ -171,7 +171,10 @@ doctor_check_infra() {
             doctor_result fail "object storage" "BACKUP_CREDENTIALS/BACKUP_BUCKET not fully set in provisioner.conf"
         else
             local remote; remote="$(backup_remote_spec)"
-            if timeout 15 rclone lsd "$remote" >/dev/null 2>&1; then
+            local fixed
+            if fixed="$(backup_endpoint_with_bucket "$(backup_endpoint)" "$BACKUP_BUCKET")"; then
+                doctor_result fail "object storage ($BACKUP_BUCKET)" "BACKUP_ENDPOINT includes the bucket name, so backups are filed under $BACKUP_BUCKET/$BACKUP_BUCKET/ and can't be found or restored — set BACKUP_ENDPOINT=\"$fixed\" in $BACKUP_CREDENTIALS, then move what's there: rclone move $remote/$BACKUP_BUCKET $remote"
+            elif timeout 15 rclone lsd "$remote" >/dev/null 2>&1; then
                 doctor_result ok "object storage ($BACKUP_BUCKET)" "reachable"
             else
                 doctor_result fail "object storage ($BACKUP_BUCKET)" "could not list the bucket with the configured credentials"

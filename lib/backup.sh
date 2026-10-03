@@ -27,6 +27,31 @@ require_backup_credentials() {
 # string (see RCLONE_CONFIG's own comment for why that was a problem).
 BACKUP_RCLONE_REMOTE="ddeploy-backup"
 
+# BACKUP_ENDPOINT from the credentials file. (backup_remote_spec sources it
+# too, but callers run that in $(...), so the variable stays in the subshell.)
+backup_endpoint() {
+    # shellcheck source=/dev/null
+    ( source "$BACKUP_CREDENTIALS" 2>/dev/null; printf '%s\n' "${BACKUP_ENDPOINT:-}" )
+}
+
+# $1 endpoint URL, $2 bucket. Prints the corrected endpoint (and returns 0)
+# when the endpoint already names the bucket as its first host label —
+# DigitalOcean's "Origin Endpoint" (https://<space>.tor1.digitaloceanspaces.com)
+# or a virtual-hosted S3 URL. rclone adds the bucket again, so uploads land
+# under <bucket>/<bucket>/... while listings of <bucket>/<site>/ come back
+# empty: every backup "succeeds" and none can be found. Returns 1 if fine.
+backup_endpoint_with_bucket() {
+    local endpoint="$1" bucket="$2"
+    [[ -n "$endpoint" && -n "$bucket" ]] || return 1
+    local scheme="" rest="$endpoint"
+    if [[ "$rest" == *"://"* ]]; then scheme="${rest%%://*}://"; rest="${rest#*://}"; fi
+    local host="${rest%%/*}" path=""
+    [[ "$rest" == */* ]] && path="/${rest#*/}"
+    local first="${host%%.*}"
+    [[ "$host" == *.* && "${first,,}" == "${bucket,,}" ]] || return 1
+    printf '%s%s%s\n' "$scheme" "${host#*.}" "${path%/}"
+}
+
 backup_remote_spec() {
     # shellcheck source=/dev/null
     source "$BACKUP_CREDENTIALS"

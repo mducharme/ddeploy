@@ -118,6 +118,12 @@ cmd_configure_backups() {
     local endpoint bucket access_key secret_key cred_path
     endpoint="$(prompt_required "BACKUP_ENDPOINT")"
     bucket="$(prompt_required "Bucket/space name")"
+    local fixed
+    if fixed="$(backup_endpoint_with_bucket "$endpoint" "$bucket")"; then
+        log_warn "the endpoint already contains the bucket name ('$bucket.') — backups would be filed under $bucket/$bucket/ and never found again"
+        local use; read -rp "Use $fixed instead? [Y/n]: " use
+        [[ "$use" =~ ^[Nn] ]] || endpoint="$fixed"
+    fi
     access_key="$(prompt_required "Access key")"
     secret_key="$(prompt_secret "Secret key")"
     cred_path="$(prompt_value "Write credentials to" "/etc/ddeploy/backup-credentials.env")"

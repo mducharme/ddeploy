@@ -1626,8 +1626,13 @@ api_backups() {
     local dumps="[]" mirror="[]" versions="[]" error=""
     if [[ "$configured" == true ]]; then
         local remote; remote="$(backup_remote_spec)"
-        local raw rows=""
-        if raw="$(timeout 60 rclone lsjson "${remote}/$target/db/" 2>&1)"; then
+        local raw rows="" fixed
+        if fixed="$(backup_endpoint_with_bucket "$(backup_endpoint)" "$BACKUP_BUCKET")"; then
+            error="BACKUP_ENDPOINT includes the bucket name, so backups are filed under $BACKUP_BUCKET/$BACKUP_BUCKET/ and none can be listed here. On the server: set BACKUP_ENDPOINT=\"$fixed\" in $BACKUP_CREDENTIALS, then rclone move $remote/$BACKUP_BUCKET $remote"
+        fi
+        if [[ -n "$error" ]]; then
+            :
+        elif raw="$(timeout 60 rclone lsjson "${remote}/$target/db/" 2>&1)"; then
             rows+="$(api_backup_dump_rows false <<< "$raw")"$'\n'
         elif [[ "$raw" != *"directory not found"* ]]; then
             error="couldn't list $BACKUP_BUCKET: $(tail -n 1 <<< "$raw")"

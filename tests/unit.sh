@@ -22,6 +22,8 @@ source lib/cmd_db.sh
 source lib/cmd_api.sh
 # shellcheck source=lib/cmd_api_config.sh
 source lib/cmd_api_config.sh
+# shellcheck source=lib/backup.sh
+source lib/backup.sh
 notify_trigger() { printf 'manual (tester)'; }
 
 PASSES=0
@@ -39,6 +41,7 @@ assert_json() {
     fi
 }
 
+assert_eq()   { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1 (expected '$2', got '$3')"; fi; }
 assert_ok()   { local d="$1"; shift; if ( "$@" ) >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 assert_fail() { local d="$1"; shift; if ( "$@" ) >/dev/null 2>&1; then bad "$d"; else ok "$d"; fi; }
 
@@ -125,6 +128,13 @@ for bad in 'BASE_DOMAIN=evil.com' 'SITES_ROOT=/tmp' 'DB_ADMIN_CREDENTIALS=/tmp/x
     assert_fail "config refuses ${bad}" api_config_validate "${bad%%=*}" "${bad#*=}"
 done
 assert_fail "config refuses a newline" api_config_validate CLIENT_MAX_BODY_SIZE $'64m\nid'
+
+echo "backup endpoint that already names the bucket"
+assert_eq "DO origin endpoint" "https://tor1.digitaloceanspaces.com" "$(backup_endpoint_with_bucket https://dev1-db.tor1.digitaloceanspaces.com dev1-db)"
+assert_eq "case-insensitive, trailing slash" "https://s3.us-east-1.amazonaws.com" "$(backup_endpoint_with_bucket https://My-Bucket.s3.us-east-1.amazonaws.com/ my-bucket)"
+assert_fail "region endpoint is fine" backup_endpoint_with_bucket https://tor1.digitaloceanspaces.com dev1-db
+assert_fail "bucket elsewhere in the host is fine" backup_endpoint_with_bucket https://s3.dev1-db.example.com dev1-db
+assert_fail "MinIO host:port is fine" backup_endpoint_with_bucket http://objectstore:9000 ddeploy-test
 
 echo "cmd_db.sh"
 assert_ok "snapshot id" validate_snapshot_id 20261002T143012Z-pre-import
