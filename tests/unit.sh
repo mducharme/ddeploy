@@ -24,6 +24,8 @@ source lib/cmd_api.sh
 source lib/cmd_api_config.sh
 # shellcheck source=lib/backup.sh
 source lib/backup.sh
+# shellcheck source=lib/cmd_fetch.sh
+source lib/cmd_fetch.sh
 notify_trigger() { printf 'manual (tester)'; }
 
 PASSES=0
@@ -135,6 +137,25 @@ assert_eq "case-insensitive, trailing slash" "https://s3.us-east-1.amazonaws.com
 assert_fail "region endpoint is fine" backup_endpoint_with_bucket https://tor1.digitaloceanspaces.com dev1-db
 assert_fail "bucket elsewhere in the host is fine" backup_endpoint_with_bucket https://s3.dev1-db.example.com dev1-db
 assert_fail "MinIO host:port is fine" backup_endpoint_with_bucket http://objectstore:9000 ddeploy-test
+
+echo "uploads-fetch sources (user@host:path)"
+for ok in "deploy@old.example.com:" "deploy@old.example.com:/var/www/site/uploads" "www-data@10.0.0.5:public_html/uploads" \
+          "u@h.example:~/uploads" "deploy@old.example.com:."; do
+    assert_ok "source accepted: $ok" fetch_parse_source "$ok" 22
+done
+# shellcheck disable=SC2016  # literal injection attempts, on purpose
+for bad in "old.example.com:/x" "deploy@-oProxyCommand=id:/x" "deploy@old.example.com:/x/../etc" "deploy@old.example.com:-e sh" \
+           'deploy@old.example.com:/x;id' 'deploy@old.example.com:/x$(id)' 'deploy@old.example.com:/x y' "Root@old.example.com:/x" \
+           "deploy@old_example.com:/x" 'deploy@old.example.com:`id`' "-l@old.example.com:/x"; do
+    assert_fail "source refused: $bad" fetch_parse_source "$bad" 22
+done
+assert_fail "port 0 refused" fetch_parse_source "deploy@old.example.com:" 0
+assert_fail "port 70000 refused" fetch_parse_source "deploy@old.example.com:" 70000
+assert_ok "port 2222 accepted" fetch_parse_source "deploy@old.example.com:" 2222
+assert_eq "rsync source, rrsync (empty path)" "deploy@h.example:./" "$(fetch_rsync_source deploy h.example 22 "")"
+assert_eq "rsync source, absolute path" "deploy@h.example:/var/www/up/" "$(fetch_rsync_source deploy h.example 22 /var/www/up/)"
+assert_eq "known_hosts id, port 22" "h.example" "$(fetch_host_id h.example 22)"
+assert_eq "known_hosts id, other port" "[h.example]:2222" "$(fetch_host_id h.example 2222)"
 
 echo "cmd_db.sh"
 assert_ok "snapshot id" validate_snapshot_id 20261002T143012Z-pre-import

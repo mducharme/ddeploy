@@ -96,10 +96,14 @@ source "$LIB_DIR/cmd_init_web.sh"
 source "$LIB_DIR/cmd_db.sh"
 # shellcheck source=lib/cmd_uploads.sh
 source "$LIB_DIR/cmd_uploads.sh"
+# shellcheck source=lib/cmd_fetch.sh
+source "$LIB_DIR/cmd_fetch.sh"
 # shellcheck source=lib/cmd_api.sh
 source "$LIB_DIR/cmd_api.sh"
 # shellcheck source=lib/cmd_api_config.sh
 source "$LIB_DIR/cmd_api_config.sh"
+# shellcheck source=lib/cmd_api_fetch.sh
+source "$LIB_DIR/cmd_api_fetch.sh"
 
 # Runs a deploy-type command ($3...) for site $2 and, if it fails, sends
 # a deploy-failure notification carrying the error it printed. The
@@ -253,6 +257,7 @@ commands:
   db-snapshot <name> [--list]   local safety dump of a site's DB (see -h)
   uploads-import <name> --dir <d> --from-file <archive> --yes   unpack files into an upload dir, snapshot first (see -h)
   uploads-snapshot <name> [--list]   hardlink snapshot of a site's upload dirs (see -h)
+  fetch-key [--forget <host>]   key for copying upload dirs from another server over SSH (see -h)
   provision-preview <project> <branch> [repo-url] [opts]   branch preview (see -h)
   deploy-preview <project> <branch>       pull + redeploy a preview
   remove-preview <project> <branch> [opts]   remove a preview (see -h)
@@ -325,6 +330,7 @@ main() {
         restore-database) cmd_restore_database "$@" ;;
         db-import)      run_notifying db-import "$(notify_site_arg site "$@")" cmd_db_import "$@" ;;
         uploads-import) run_notifying uploads-import "$(notify_site_arg site "$@")" cmd_uploads_import "$@" ;;
+        fetch-key)      cmd_fetch_key "$@" ;;
         uploads-snapshot)
             if [[ " $* " == *" --list "* ]]; then cmd_uploads_snapshot "$@"
             else run_notifying uploads-snapshot "$(notify_site_arg site "$@")" cmd_uploads_snapshot "$@"

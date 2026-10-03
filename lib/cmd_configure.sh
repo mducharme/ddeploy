@@ -135,6 +135,7 @@ cmd_configure_backups() {
     local staged; staged="$(mktemp)"
     cat > "$staged" <<EOF
 BACKUP_ENDPOINT="$endpoint"
+BACKUP_BUCKET="$bucket"
 BACKUP_ACCESS_KEY="$access_key"
 BACKUP_SECRET_KEY="$secret_key"
 EOF
@@ -182,7 +183,8 @@ EOF
     log_info "wrote $cred_path (chmod 600)"
 
     set_conf_value "$target" BACKUP_CREDENTIALS "$cred_path"
-    set_conf_value "$target" BACKUP_BUCKET "$bucket"
+    # The bucket now lives in the credentials file, with the endpoint.
+    grep -q '^BACKUP_BUCKET=' "$target" && set_conf_value "$target" BACKUP_BUCKET ""
 
     local yn
     read -rp "Enable uploads backup (BACKUP_ENABLED)? [Y/n]: " yn

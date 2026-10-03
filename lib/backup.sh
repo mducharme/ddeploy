@@ -12,7 +12,7 @@ require_rclone() {
 require_backup_credentials() {
     [[ -n "$BACKUP_CREDENTIALS" ]] || die "provisioner.conf: BACKUP_CREDENTIALS not set"
     [[ -f "$BACKUP_CREDENTIALS" ]] || die "BACKUP_CREDENTIALS file not found: $BACKUP_CREDENTIALS"
-    [[ -n "$BACKUP_BUCKET" ]] || die "provisioner.conf: BACKUP_BUCKET not set"
+    [[ -n "$BACKUP_BUCKET" ]] || die "BACKUP_BUCKET not set (in $BACKUP_CREDENTIALS, next to BACKUP_ENDPOINT)"
 }
 
 # Regenerates $RCLONE_CONFIG (lib/common.sh) from BACKUP_CREDENTIALS (a

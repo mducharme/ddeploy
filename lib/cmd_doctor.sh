@@ -168,8 +168,11 @@ doctor_check_infra() {
         if ! command -v rclone >/dev/null 2>&1; then
             doctor_result fail "object storage" "backup is enabled but rclone is not installed — re-run 'init'"
         elif [[ -z "$BACKUP_CREDENTIALS" || ! -f "$BACKUP_CREDENTIALS" || -z "$BACKUP_BUCKET" ]]; then
-            doctor_result fail "object storage" "BACKUP_CREDENTIALS/BACKUP_BUCKET not fully set in provisioner.conf"
+            doctor_result fail "object storage" "BACKUP_CREDENTIALS (provisioner.conf) or BACKUP_BUCKET (in that file) not set"
         else
+            if [[ -n "${BACKUP_BUCKET_CONF:-}" && "$BACKUP_BUCKET_CONF" != "$BACKUP_BUCKET" ]]; then
+                doctor_result warn "object storage" "BACKUP_BUCKET is '$BACKUP_BUCKET' in $BACKUP_CREDENTIALS (used) but '$BACKUP_BUCKET_CONF' in provisioner.conf (ignored) — remove the one in provisioner.conf"
+            fi
             local remote; remote="$(backup_remote_spec)"
             local fixed
             if fixed="$(backup_endpoint_with_bucket "$(backup_endpoint)" "$BACKUP_BUCKET")"; then

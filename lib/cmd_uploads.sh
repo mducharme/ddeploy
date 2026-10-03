@@ -22,6 +22,7 @@ UPLOADS_SNAPSHOT_ID_RE='^[0-9]{8}T[0-9]{6}Z-[a-z0-9-]{1,40}$'
 usage_uploads_import() {
     cat <<'EOF2'
 usage: ddeploy uploads-import <name> --dir <upload_dir> --from-file <archive> --yes [--mode merge|replace] [--strip auto|yes|no]
+       ddeploy uploads-import <name> --dir <upload_dir> --from-ssh <user@host:path> [--ssh-port <n>] --yes [--mode merge|replace]
        ddeploy uploads-import <name> --dir <upload_dir> --from-backup --yes [--version <run>]
        ddeploy uploads-import <name> --snapshot <id> --yes
 
@@ -33,6 +34,12 @@ declared in its config; `uploads-snapshot <name> --list` shows them).
   --mode replace   the folder becomes exactly the archive's contents
   --strip auto     (default) if everything is inside one folder named like
                    the upload dir (someone zipped the folder itself), unwrap it
+
+--from-ssh copies a folder from another server with rsync over SSH, using
+this server's fetch key (`fetch-key` shows it, and the authorized_keys line
+to add over there). The host's key must have been confirmed first (the web
+UI's "Test connection", or ssh-keyscan into /etc/ddeploy/fetch-known-hosts).
+With an rrsync-bound key, leave the path empty: user@host:
 
 --from-backup restores the folder from its object-storage backup: the
 mirror (replaces the folder), or with --version <run> the files that
@@ -195,7 +202,7 @@ cmd_uploads_import() {
     [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage_uploads_import; return 0; }
     load_conf
     require_root
-    local name="${1:-}" dir="" from_file="" snapshot="" mode=merge strip=auto confirm=0 delete_file=0 from_backup=0 version=""
+    local name="${1:-}" dir="" from_file="" snapshot="" mode=merge strip=auto confirm=0 delete_file=0 from_backup=0 version="" from_ssh="" ssh_port=22
     [[ -n "$name" ]] || { usage_uploads_import; die "site name required"; }
     shift
     validate_name "$name"
@@ -205,6 +212,8 @@ cmd_uploads_import() {
             --from-file) from_file="${2:-}"; shift ;;
             --snapshot) snapshot="${2:-}"; shift ;;
             --from-backup) from_backup=1 ;;
+            --from-ssh) from_ssh="${2:-}"; shift ;;
+            --ssh-port) ssh_port="${2:-}"; shift ;;
             --version) version="${2:-}"; shift ;;
             --mode) mode="${2:-}"; shift ;;
             --strip) strip="${2:-}"; shift ;;
@@ -222,7 +231,9 @@ cmd_uploads_import() {
     [[ -n "$from_file" ]] && sources=$((sources + 1))
     [[ -n "$snapshot" ]] && sources=$((sources + 1))
     [[ "$from_backup" -eq 1 ]] && sources=$((sources + 1))
-    [[ "$sources" -eq 1 ]] || die "give exactly one of --from-file <archive>, --snapshot <id>, --from-backup"
+    [[ -n "$from_ssh" ]] && sources=$((sources + 1))
+    [[ "$sources" -eq 1 ]] || die "give exactly one of --from-file <archive>, --snapshot <id>, --from-backup, --from-ssh <user@host:path>"
+    [[ -z "$from_ssh" ]] || fetch_parse_source "$from_ssh" "$ssh_port"
     [[ -z "$version" || "$from_backup" -eq 1 ]] || die "--version goes with --from-backup"
     [[ -z "$version" || "$version" =~ $UPLOADS_VERSION_ID_RE ]] || die "invalid backup version '$version'"
     is_provisioned "$name" || die "'$name' is not provisioned"
@@ -257,6 +268,13 @@ cmd_uploads_import() {
         if [[ -n "$version" ]]; then mode=merge; source_desc="backup version $version"; else mode=replace; source_desc="backup mirror"; fi
         [[ "$confirm" -eq 1 ]] || { log_warn "dry run — this would restore '$dir' from its $source_desc ($mode). Pass --yes."; return 0; }
         event_attr kind uploads-restore
+    elif [[ -n "$from_ssh" ]]; then
+        source_desc="$from_ssh"
+        [[ "$ssh_port" == 22 ]] || source_desc+=" (port $ssh_port)"
+        [[ -f "$FETCH_KEY" ]] || die "no fetch key yet — run 'ddeploy fetch-key' and add it on $FETCH_SRC_HOST"
+        command -v rsync >/dev/null 2>&1 || die "rsync isn't installed — re-run 'init'"
+        [[ "$confirm" -eq 1 ]] || { log_warn "dry run — this would copy $source_desc into '$dir' ($mode). Pass --yes."; return 0; }
+        event_attr kind uploads-fetch
     else
         [[ -f "$from_file" ]] || die "file not found: $from_file"
         source_desc="$(basename "$from_file")"
@@ -274,7 +292,13 @@ cmd_uploads_import() {
     (( avail > reserve )) || die "not enough free disk space on $(df --output=target "$base" | tail -n 1)"
     local staging="$base/.uploads-staging-${DDEPLOY_RUN_ID:-$(date +%s)}"
     rm -rf "$staging"
-    install -d -m 750 -o "$UPX_OWNER" -g www-data "$staging"
+    if [[ -n "$from_ssh" ]]; then
+        # rsync runs as root: root-only until it's done, so the site user
+        # can't plant links in it meanwhile. Handed over below.
+        install -d -m 700 -o root -g root "$staging"
+    else
+        install -d -m 750 -o "$UPX_OWNER" -g www-data "$staging"
+    fi
     # The spool file goes either way once this run is over: a refused
     # archive isn't worth keeping (it's not retried), an imported one is
     # done. Only ever inside DB_IMPORTS_DIR.
@@ -303,6 +327,14 @@ cmd_uploads_import() {
         # Into the empty staging folder: fresh files, never written over
         # live ones (which hardlink snapshots share).
         rclone copy "$src" "$staging" || die "download from $BACKUP_BUCKET failed — nothing was changed"
+    elif [[ -n "$from_ssh" ]]; then
+        log_info "listing $source_desc"
+        fetch_dry_run "$FETCH_SRC_USER" "$FETCH_SRC_HOST" "$ssh_port" "$FETCH_SRC_PATH" || die "$FETCH_ERROR — nothing was changed"
+        files="$FETCH_FILES" bytes="$FETCH_BYTES"
+        [[ "$files" != 0 ]] || die "no files in $source_desc — nothing was changed"
+        (( bytes < avail - reserve )) || die "$source_desc is $bytes bytes, more than the free disk space — nothing was changed"
+        log_info "copying $files file(s), $bytes bytes from $FETCH_SRC_HOST"
+        fetch_copy "$FETCH_SRC_USER" "$FETCH_SRC_HOST" "$ssh_port" "$FETCH_SRC_PATH" "$staging"
     else
         log_info "checking and unpacking $source_desc ($(stat -c %s "$from_file") bytes) as $UPX_OWNER"
         uploads_unpack "$from_file" "$staging" "$(( avail - reserve ))" "$strip" "$dir"
@@ -311,7 +343,7 @@ cmd_uploads_import() {
     local note=""
     [[ -n "$stripped" ]] && note+=" (unwrapped the '$stripped' folder)"
     [[ "$skipped" != 0 ]] && note+=", skipped $skipped junk file(s) (__MACOSX, .DS_Store...)"
-    log_info "$([[ "$from_backup" -eq 1 ]] && echo downloaded || echo unpacked) $files file(s), $bytes bytes$note"
+    log_info "$([[ "$from_backup" -eq 1 || -n "$from_ssh" ]] && echo copied || echo unpacked) $files file(s), $bytes bytes$note"
     chown -R "$UPX_OWNER:www-data" "$staging"
     # setgid on folders, like the persistent store's own: files PHP writes
     # into them later keep the www-data group nginx reads through.

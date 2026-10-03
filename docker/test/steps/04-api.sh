@@ -161,7 +161,7 @@ assert_contains "$(jq_py '[e["value"] for e in d["entries"] if e["key"] == "APP_
 assert_contains "$(jq_py '[e["key"] for e in d["entries"] if e["managed"]]' <<< "$out")" "DB_PASSWORD" "ddeploy-managed DB_* keys flagged"
 assert_contains "$(grep -c '^FEATURE_X=1$' /home/deploy/persistent/testsite/.env)" "1" "written to the persistent .env"
 assert_contains "$(stat -c '%U %a' /home/deploy/persistent/testsite/.env)" "www-testsite 600" ".env keeps its owner and mode"
-ddeploy api env testsite --apply --unset FEATURE_X --actor admin@example.com >/dev/null
+ddeploy api env testsite --apply --unset FEATURE_X --actor admin@example.com </dev/null >/dev/null
 assert_contains "$(grep -c '^FEATURE_X=' /home/deploy/persistent/testsite/.env || true)" "0" "--unset removes the key"
 out="$(echo 'BAD-KEY=1' | ddeploy api env testsite --apply --actor admin@example.com 2>/dev/null || true)"
 assert_contains "$out" '"code":"bad_request"' "invalid key refused"
@@ -311,6 +311,85 @@ assert_contains "$out" "isn't one of" "only the site's own upload dirs"
 out="$(echo hi | ddeploy api run start uploads-import testsite --dir web/uploads --actor admin@example.com 2>/dev/null || true)"
 assert_contains "$out" "isn't a .zip, .tar or .tar.gz" "non-archives refused up front"
 
+step "api: uploads — copy from another server over SSH (rsync, rrsync-bound key)"
+# The "old server" is this container's own sshd, as another account.
+id oldhost >/dev/null 2>&1 || useradd -m -s /bin/bash oldhost
+OLD=/home/oldhost/uploads
+rm -rf "$OLD"; mkdir -p "$OLD/sub"
+echo from-old > "$OLD/a.txt"; echo nested > "$OLD/sub/b.txt"
+echo '#!/bin/sh' > "$OLD/run.sh"; chmod 4755 "$OLD/run.sh"
+ln -sf /etc/shadow "$OLD/shadow-link"
+mkfifo "$OLD/pipe"
+chown -R oldhost:oldhost "$OLD"
+out="$(ddeploy api fetch-key)"
+pub="$(jq_py 'd["public_key"]' <<< "$out")"
+assert_contains "$pub" "ssh-ed25519 " "fetch key created on first use"
+assert_contains "$(stat -c '%a %U' /etc/ddeploy/fetch-key)" "600 root" "private key is root-only"
+assert_contains "$(jq_py 'd["authorized_keys"]' <<< "$out")" 'command="rrsync -ro' "authorized_keys line is read-only and folder-bound"
+install -d -m 700 -o oldhost -g oldhost /home/oldhost/.ssh
+printf 'command="rrsync -ro %s",restrict %s\n' "$OLD" "$pub" > /home/oldhost/.ssh/authorized_keys
+chown oldhost:oldhost /home/oldhost/.ssh/authorized_keys; chmod 600 /home/oldhost/.ssh/authorized_keys
+rm -f /etc/ddeploy/fetch-known-hosts
+
+SRC="oldhost@127.0.0.1:"
+out="$(ddeploy api fetch-test testsite --source "$SRC" --actor admin@example.com)"
+assert_contains "$(jq_py 'd["host_key"]["status"]' <<< "$out")" "unknown" "a new host's key is reported, not trusted"
+assert_contains "$(jq_py 'd["files"]' <<< "$out")" "null" "...and nothing is listed before it's confirmed"
+fp="$(jq_py '[f["fingerprint"] for f in d["host_key"]["fingerprints"] if f["type"] == "ED25519"][0]' <<< "$out")"
+if [[ "$fp" == SHA256:* ]]; then pass "fingerprint offered for confirmation ($fp)"; else fail "no fingerprint: $out"; fi
+out="$(ddeploy api run start uploads-fetch testsite --dir web/uploads --source "$SRC" --actor admin@example.com 2>/dev/null || true)"
+assert_contains "$out" "isn't confirmed" "a copy can't start before the host key is confirmed"
+out="$(ddeploy api fetch-test testsite --source "$SRC" --accept SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --actor admin@example.com)"
+assert_contains "$(jq_py 'd["error"]' <<< "$out")" "doesn't match" "a wrong fingerprint is refused"
+out="$(ddeploy api fetch-test testsite --source "$SRC" --accept "$fp" --actor admin@example.com)"
+assert_contains "$(jq_py 'd["host_key"]["status"]' <<< "$out")" "known" "confirmed fingerprint remembered"
+assert_contains "$(jq_py 'd["files"]' <<< "$out")" "3" "dry run counts the regular files only (no link, no fifo)"
+assert_contains "$(jq_py 'd["error"]' <<< "$out")" "null" "...without error"
+assert_contains "$(ddeploy api fetch-key | jq_py '[h["host"] for h in d["known_hosts"]]')" "127.0.0.1" "remembered hosts are listed"
+
+U=/home/deploy/persistent/testsite/web/uploads
+echo keep-me > "$U/existing.txt"; chown www-testsite:www-data "$U/existing.txt"
+id="$(ddeploy api run start uploads-fetch testsite --dir web/uploads --source "$SRC" --mode merge --actor admin@example.com | run_id_of)"
+assert_contains "$(wait_run "$id" 180)" "succeeded" "copy from the other server"
+assert_contains "$(cat "$U/a.txt" 2>/dev/null)" "from-old" "files arrived"
+assert_contains "$(cat "$U/sub/b.txt" 2>/dev/null)" "nested" "...with their folders"
+assert_file_exists "$U/existing.txt" "merge kept the files already there"
+assert_contains "$(stat -c '%U:%G' "$U/a.txt")" "www-testsite:www-data" "copied files belong to the site"
+assert_contains "$(stat -c '%a' "$U/run.sh")" "640" "no setuid or executable bit comes across"
+assert_file_absent "$U/shadow-link" "symlinks are not copied"
+assert_file_absent "$U/pipe" "special files are not copied"
+show="$(ddeploy api run show "$id")"
+assert_contains "$show" '"kind":"uploads-fetch"' "recorded as an uploads-fetch"
+assert_contains "$show" "oldhost@127.0.0.1:" "...naming the source"
+undo="$(grep -oE '[0-9]{8}T[0-9]{6}Z-pre-import-[a-z0-9-]+' <<< "$show" | head -n 1)"
+if [[ -n "$undo" ]]; then pass "a snapshot was taken first ($undo)"; else fail "no undo snapshot in: $show"; fi
+
+out="$(ddeploy api fetch-test testsite --source "oldhost@127.0.0.1:../../../etc" --actor admin@example.com 2>&1 || true)"
+assert_contains "$out" "may not contain '..'" "'..' paths refused before connecting"
+out="$(ddeploy api fetch-test testsite --source "oldhost@127.0.0.1:/etc" --actor admin@example.com)"
+assert_contains "$(jq_py 'd["error"]' <<< "$out")" "/home/oldhost/uploads/etc" "with rrsync, /etc means <bound folder>/etc — never the real /etc"
+out="$(ddeploy api fetch-test testsite --source "oldhost@127.0.0.1:/sub" --actor admin@example.com)"
+assert_contains "$(jq_py 'd["files"]' <<< "$out")" "1" "...and /sub is the bound folder's sub/"
+id nokey >/dev/null 2>&1 || useradd -m -s /bin/bash nokey
+out="$(ddeploy api fetch-test testsite --source "nokey@127.0.0.1:" --actor admin@example.com)"
+assert_contains "$(jq_py 'd["error"]' <<< "$out")" "refused the key" "an account without the key: explained"
+out="$(ddeploy api fetch-test testsite --source "oldhost@127.0.0.1:" --port 2299 --actor admin@example.com)"
+assert_contains "$(jq_py 'd["error"]' <<< "$out")" "can't reach 127.0.0.1:2299" "nothing listening: explained"
+
+# A reinstalled server presents a different key: refused until forgotten.
+ssh-keygen -q -t ed25519 -N '' -f /tmp/other-hostkey <<< y >/dev/null 2>&1
+printf '127.0.0.1 %s\n' "$(cut -d' ' -f1,2 /tmp/other-hostkey.pub)" > /etc/ddeploy/fetch-known-hosts
+rm -f /tmp/other-hostkey /tmp/other-hostkey.pub
+out="$(ddeploy api fetch-test testsite --source "$SRC" --actor admin@example.com)"
+assert_contains "$(jq_py 'd["host_key"]["status"]' <<< "$out")" "changed" "a changed host key is refused"
+out="$(ddeploy api run start uploads-fetch testsite --dir web/uploads --source "$SRC" --actor admin@example.com 2>/dev/null || true)"
+assert_contains "$out" "isn't confirmed (changed)" "...and no copy starts"
+ddeploy api fetch-key forget --host 127.0.0.1 --actor admin@example.com >/dev/null
+out="$(ddeploy api fetch-test testsite --source "$SRC" --actor admin@example.com)"
+assert_contains "$(jq_py 'd["host_key"]["status"]' <<< "$out")" "unknown" "forgotten: asks for confirmation again"
+assert_contains "$(tail -n 3 /var/log/ddeploy/server-config.log)" "forgot 127.0.0.1" "host-key decisions are logged"
+rm -f "$U/a.txt" "$U/run.sh" "$U/existing.txt"; rm -rf "$U/sub"
+
 step "api: backups — a site with nothing in object storage yet"
 # Earlier steps already backed testsite up: set its prefix aside, as if new.
 remote="$(cd /opt/ddeploy && bash -c 'source lib/common.sh; load_conf >/dev/null 2>&1; source lib/backup.sh; backup_remote_spec')"
@@ -335,6 +414,22 @@ out="$(ddeploy doctor --no-notify 2>&1 || true)"
 assert_contains "$out" "BACKUP_ENDPOINT includes the bucket name" "doctor fails on it"
 cp /tmp/creds.before "$creds"
 assert_contains "$(ddeploy api backups testsite | jq_py 'd["error"]')" "null" "fine again with the region endpoint"
+
+step "api: backups — BACKUP_BUCKET in the credentials file (next to the endpoint)"
+cp /etc/ddeploy/provisioner.conf /tmp/conf.bucket-before
+cp "$creds" /tmp/creds.bucket-before
+printf 'BACKUP_BUCKET="%s"\n' "$bucket" >> "$creds"
+sed -i 's/^BACKUP_BUCKET=.*/BACKUP_BUCKET=""/' /etc/ddeploy/provisioner.conf
+out="$(ddeploy api backups testsite)"
+assert_contains "$(jq_py 'd["bucket"]' <<< "$out")" "$bucket" "bucket read from the credentials file"
+assert_contains "$(jq_py 'd["error"]' <<< "$out")" "null" "...and listing works"
+assert_contains "$(ddeploy api config | jq_py 'd["readonly"]["BACKUP_BUCKET"]')" "$bucket" "server settings show it too"
+sed -i "s/^BACKUP_BUCKET=.*/BACKUP_BUCKET=\"some-other-bucket\"/" /etc/ddeploy/provisioner.conf
+assert_contains "$(ddeploy api backups testsite | jq_py 'd["bucket"]')" "$bucket" "the credentials file wins over provisioner.conf"
+assert_contains "$(ddeploy doctor --no-notify 2>&1 || true)" "ignored) — remove the one in provisioner.conf" "doctor warns when the two differ"
+cp /tmp/conf.bucket-before /etc/ddeploy/provisioner.conf
+cp /tmp/creds.bucket-before "$creds"
+assert_contains "$(ddeploy api backups testsite | jq_py 'd["bucket"]')" "$bucket" "provisioner.conf alone still works (older setups)"
 
 step "api: backups — run now, versions, restore, keep/delete, download"
 U=/home/deploy/persistent/testsite/web/uploads

@@ -52,6 +52,7 @@ read:
   uploads download <name> --dir <d>     a .tar.gz of one upload dir on stdout (not JSON)
   backups <name>                        object-storage backups: dumps, file mirror + versions, retention
   backups download <name> --file <dump> one backed-up dump on stdout (not JSON)
+  fetch-key                             the key for copying files from another server (created if missing)
 
 write (each needs --actor <email>):
   env <name> --apply [--unset KEY]...   set the KEY=value lines read from stdin
@@ -68,6 +69,10 @@ write (each needs --actor <email>):
   run start preview-remove <project> --branch <b> --actor <email>   (its files, and its DB if isolated)
   run start uploads-import <name> --dir <d> [--mode merge|replace] --actor <email>   archive on stdin
   run start uploads-restore <name> --snapshot <id> --actor <email>
+  run start uploads-fetch <name> --dir <d> --source <user@host:path> [--port n] [--mode merge|replace] --actor <email>
+  fetch-test <name> --source <user@host:path> [--port n] [--accept <SHA256:fp>] --actor <email>
+                                        check the host key (remember it with --accept) and dry-run
+  fetch-key forget --host <h> [--port n] --actor <email>
   run start uploads-snapshot <name> --actor <email>
   run start backup-database|backup-uploads <name> --actor <email>   back up now
   run start backup-restore-db <name> --file <dump> --actor <email>
@@ -142,7 +147,7 @@ api_valid() {
 api_dispatch() {
     local verb="$1"; shift
     case "$verb" in
-        info|sites|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db|uploads|backups|config) ;;
+        info|sites|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db|uploads|backups|config|fetch-key|fetch-test) ;;
         *) api_die unknown_verb "unknown api verb '$verb'" ;;
     esac
     load_conf
@@ -166,6 +171,8 @@ api_dispatch() {
         uploads)      api_uploads "$@" ;;
         backups)      api_backups "$@" ;;
         config)       api_config "$@" ;;
+        fetch-key)    api_fetch_key "$@" ;;
+        fetch-test)   api_fetch_test "$@" ;;
     esac
 }
 
@@ -817,12 +824,12 @@ api_run_start() {
     local actor="" name="" url=""
     local -a argv=() flags=()
     case "$kind" in
-        deploy|provision|rollback|db-import|db-restore|db-snapshot|preview-create|preview-deploy|preview-remove|uploads-import|uploads-restore|uploads-snapshot|backup-database|backup-uploads|backup-restore-db|backup-restore-uploads) ;;
+        deploy|provision|rollback|db-import|db-restore|db-snapshot|preview-create|preview-deploy|preview-remove|uploads-import|uploads-fetch|uploads-restore|uploads-snapshot|backup-database|backup-uploads|backup-restore-db|backup-restore-uploads) ;;
         *) api_die bad_request "run start: unknown kind '$kind'" ;;
     esac
     local preview=0
     [[ "$kind" == preview-* ]] && preview=1
-    local sha="" snapshot="" upload_dir="" upload_mode=merge backup_file="" backup_version=""
+    local sha="" snapshot="" upload_dir="" upload_mode=merge backup_file="" backup_version="" fetch_source="" fetch_port=22
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -833,21 +840,7 @@ api_run_start() {
                 sha="$2"; shift ;;
             --snapshot)
                 if [[ "$kind" == db-restore ]]; then api_valid validate_snapshot_id "${2:-}"
-                elif [[ "$kind" == backup-database || "$kind" == backup-uploads || "$kind" == backup-restore-db || "$kind" == backup-restore-uploads ]]; then
-        api_backups_require_target "$name" "$kind"
-        case "$kind" in
-            backup-database) argv=(backup-database "$name") ;;
-            backup-uploads) argv=(backup-uploads "$name") ;;
-            backup-restore-db)
-                [[ -n "$backup_file" ]] || api_die bad_request "--file <dump> required"
-                argv=(db-import "$name" --from-backup "$backup_file" --yes) ;;
-            backup-restore-uploads)
-                [[ -n "$upload_dir" ]] || api_die bad_request "--dir <upload dir> required"
-                ( uploads_resolve_site "$name" >/dev/null 2>&1 && uploads_require_dir "$upload_dir" >/dev/null 2>&1 ) \
-                    || api_die bad_request "'$upload_dir' isn't one of '$name's upload dirs"
-                argv=(uploads-import "$name" --dir "$upload_dir" --from-backup --yes ${backup_version:+--version "$backup_version"}) ;;
-        esac
-    elif [[ "$kind" == uploads-restore ]]; then api_valid validate_uploads_snapshot_id "${2:-}"
+                elif [[ "$kind" == uploads-restore ]]; then api_valid validate_uploads_snapshot_id "${2:-}"
                 else api_die bad_request "--snapshot is only for db-restore and uploads-restore"
                 fi
                 snapshot="$2"; shift ;;
@@ -859,12 +852,18 @@ api_run_start() {
                 [[ "$kind" == backup-restore-uploads ]] || api_die bad_request "--version is only for backup-restore-uploads"
                 [[ "${2:-}" =~ $UPLOADS_VERSION_ID_RE ]] || api_die bad_request "invalid backup version '${2:-}'"
                 backup_version="$2"; shift ;;
+            --source)
+                [[ "$kind" == uploads-fetch ]] || api_die bad_request "--source is only for uploads-fetch"
+                fetch_source="${2:-}"; shift ;;
+            --port)
+                [[ "$kind" == uploads-fetch ]] || api_die bad_request "--port is only for uploads-fetch"
+                fetch_port="${2:-}"; shift ;;
             --dir)
-                [[ "$kind" == uploads-import || "$kind" == backup-restore-uploads ]] || api_die bad_request "--dir is only for uploads-import and backup-restore-uploads"
+                [[ "$kind" == uploads-import || "$kind" == uploads-fetch || "$kind" == backup-restore-uploads ]] || api_die bad_request "--dir is only for uploads-import, uploads-fetch and backup-restore-uploads"
                 [[ "${2:-}" =~ ^[A-Za-z0-9._/-]{1,200}$ && "${2:-}" != /* ]] || api_die bad_request "--dir must be one of the site's upload dirs"
                 upload_dir="$2"; shift ;;
             --mode)
-                [[ "$kind" == uploads-import ]] || api_die bad_request "--mode is only for uploads-import"
+                [[ "$kind" == uploads-import || "$kind" == uploads-fetch ]] || api_die bad_request "--mode is only for uploads-import and uploads-fetch"
                 [[ "${2:-}" == merge || "${2:-}" == replace ]] || api_die bad_request "--mode is merge or replace"
                 upload_mode="$2"; shift ;;
             --shared|--isolated|--seed|--no-seed)
@@ -988,6 +987,18 @@ api_run_start() {
         local spool
         spool="$(api_spool_upload "$id")"
         argv=(uploads-import "$name" --dir "$upload_dir" --from-file "$spool" --mode "$upload_mode" --yes --delete-file)
+    elif [[ "$kind" == uploads-fetch ]]; then
+        [[ -n "$upload_dir" ]] || api_die bad_request "--dir <upload dir> required"
+        ( uploads_resolve_site "$name" >/dev/null 2>&1 && uploads_require_dir "$upload_dir" >/dev/null 2>&1 ) \
+            || api_die bad_request "'$upload_dir' isn't one of '$name's upload dirs"
+        api_valid fetch_parse_source "$fetch_source" "$fetch_port"
+        fetch_parse_source "$fetch_source" "$fetch_port"
+        # Started only for a host whose key was confirmed (fetch-test --accept).
+        local scan hstatus; scan="$(mktemp)"
+        hstatus="$(fetch_host_status "$FETCH_SRC_HOST" "$fetch_port" "$scan")"
+        rm -f "$scan"
+        [[ "$hstatus" == known ]] || api_die conflict "$FETCH_SRC_HOST's host key isn't confirmed ($hstatus) — test the connection first"
+        argv=(uploads-import "$name" --dir "$upload_dir" --from-ssh "$fetch_source" --ssh-port "$fetch_port" --mode "$upload_mode" --yes)
     elif [[ "$kind" == backup-database || "$kind" == backup-uploads || "$kind" == backup-restore-db || "$kind" == backup-restore-uploads ]]; then
         api_backups_require_target "$name" "$kind"
         case "$kind" in

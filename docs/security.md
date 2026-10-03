@@ -289,6 +289,22 @@ plus:
   `upload_dirs` can be targeted. Unpacking happens in a staging folder
   owned by `www-<site>`, so even a missed case can't write anything that
   user couldn't.
+- **Copying from another server only pulls, with a key that can only
+  read.** `uploads-fetch` runs rsync over an outgoing SSH connection, with
+  one root-only key (`/etc/ddeploy/fetch-key`) that the old server should
+  bind to one folder with `rrsync -ro` and `restrict`. The address is
+  argv end to end: `user@host:path` with a login, hostname and path
+  charset, no leading `-` (the `-oProxyCommand` trick), no `..`, and no
+  characters the remote shell or rrsync would interpret. Host keys are
+  checked strictly (`StrictHostKeyChecking=yes`, a dedicated known-hosts
+  file, never `accept-new`). A key is remembered only when an admin
+  confirms a fingerprint that matches what the host presents at that
+  moment; `run start uploads-fetch` refuses a host that isn't confirmed.
+  The files are untrusted, like an archive: rsync runs with
+  `--no-links --no-devices --no-specials --no-owner --no-group`, fixed
+  modes (no setuid or executable bits), into a staging folder that stays
+  root-only until the copy is done, after a dry run checks the total
+  size against free disk space.
 - **`db credentials` returns the site's own DB user**, never the admin
   account; the database isn't exposed publicly, so using them still takes
   an SSH tunnel through the server.

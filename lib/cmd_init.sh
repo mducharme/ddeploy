@@ -194,7 +194,7 @@ cmd_init() {
     apt-get update -y
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         nginx mariadb-server certbot python3-certbot-dns-cloudflare software-properties-common \
-        curl ufw apache2-utils python3 cron logrotate
+        curl ufw apache2-utils python3 cron logrotate rsync openssh-client
 
     log_info "== yq (must be the Go/mikefarah build, not the Python one) =="
     local yq_path

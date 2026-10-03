@@ -678,13 +678,13 @@ on a schedule, via `rclone`. Config in `provisioner.conf`:
 
 ```
 BACKUP_CREDENTIALS="..."   # path to a file (chmod 600), see below
-BACKUP_BUCKET="..."
 ```
 
 `BACKUP_CREDENTIALS` points at a file containing:
 
 ```
 BACKUP_ENDPOINT="https://nyc3.digitaloceanspaces.com"
+BACKUP_BUCKET="..."        # the bucket / Space name
 BACKUP_ACCESS_KEY="..."
 BACKUP_SECRET_KEY="..."
 ```
@@ -710,6 +710,8 @@ real bucket** (`rclone lsd`) before writing, then turns
   three fields.
 
 One set of credentials + one bucket covers every project.
+(`BACKUP_BUCKET` used to live in `provisioner.conf`; that still works, but
+the credentials file wins, and doctor warns if the two differ.)
 
 **Uploads** (`BACKUP_ENABLED`, `BACKUP_SCHEDULE`, default hourly):
 `upload_dirs` synced to `<bucket>/<name>/<dir>`. Sites with none
@@ -775,8 +777,10 @@ there changes the parent's. The web UI's Database tab drives exactly these
 
 ```
 uploads-import <name> --dir <upload_dir> --from-file <archive> --yes [--mode merge|replace]
+uploads-import <name> --dir <upload_dir> --from-ssh <user@host:path> [--ssh-port n] --yes [--mode merge|replace]
 uploads-import <name> --snapshot <id> --yes          put a folder back as it was
 uploads-snapshot <name> [--dir <upload_dir>]         hardlink snapshot (free until files change)
+fetch-key [--forget <host>]                          the key --from-ssh logs in with
 uploads-snapshot <name> --list
 ```
 
@@ -797,6 +801,27 @@ which is moved or hardlinked into place. `__MACOSX/`, `.DS_Store` and
 `Thumbs.db` are skipped. The web UI's Files tab uses the same command for
 dropped folders: the browser packs them into a tar, which arrives as a
 single upload.
+
+**Copying from another server** (`--from-ssh`, the Files tab's "Copy from
+another server"): this server pulls the folder with rsync over SSH. The
+connection goes out, like git and backups, so ddeploy's firewall needs
+nothing; the old server must accept SSH from this one. It logs in with
+one server-wide key, `/etc/ddeploy/fetch-key` (created by `fetch-key` or
+on first use). On the old server, bind it to the folder, read-only:
+
+```
+command="rrsync -ro /var/www/site/uploads",restrict ssh-ed25519 AAAA… ddeploy-fetch@<host>
+```
+
+`rrsync` ships with rsync 3.2.4+ (Ubuntu 22.04+, Debian 12+). With it, the
+copy's path is relative to that folder: give `user@host:` with an empty
+path. Host keys are never accepted blindly. The web UI shows the
+fingerprint, and the copy only runs once an admin has confirmed it
+(`/etc/ddeploy/fetch-known-hosts`). A different key later is refused
+until forgotten (`fetch-key --forget <host>`). rsync copies into a
+root-only staging folder with no links, devices or special files, and
+fixed modes (folders 2750, files 640), after a dry run checks the size
+against free disk space. Then the usual snapshot and merge/replace apply.
 
 ### Restoring
 
@@ -876,9 +901,11 @@ every verb. Usable from scripts too.
   `config` (server settings; secrets masked).
 - Write (each needs `--actor <email>`): `run start deploy|rollback|
   provision|db-import|db-restore|db-snapshot|preview-create|
-  preview-deploy|preview-remove|uploads-import|uploads-restore|
+  preview-deploy|preview-remove|uploads-import|uploads-fetch|uploads-restore|
   uploads-snapshot|backup-database|backup-uploads|backup-restore-db|
-  backup-restore-uploads`, `backups keep|unkeep|delete`, `run cancel <id>`, `env
+  backup-restore-uploads`, `fetch-test` (host-key check, `--accept
+  <fingerprint>` to remember it, then a dry run), `fetch-key forget`,
+  `backups keep|unkeep|delete`, `run cancel <id>`, `env
   <name> --apply` (values on stdin, never argv), `settings <name>`
   (operator overrides and the tracked branch — every `override` key except
   `db_env_scheme` and `persistent_files`), `config set` (`KEY=value` lines

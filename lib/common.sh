@@ -135,6 +135,16 @@ load_conf() {
     BACKUP_ENABLED="${BACKUP_ENABLED:-false}"
     BACKUP_CREDENTIALS="${BACKUP_CREDENTIALS:-}"
     BACKUP_BUCKET="${BACKUP_BUCKET:-}"
+    # The bucket belongs with the endpoint and keys: BACKUP_BUCKET in the
+    # BACKUP_CREDENTIALS file wins; provisioner.conf's is the fallback
+    # (older setups). Read in a subshell: the keys don't land in this one.
+    BACKUP_BUCKET_CONF="$BACKUP_BUCKET"
+    if [[ -n "$BACKUP_CREDENTIALS" && -r "$BACKUP_CREDENTIALS" ]]; then
+        local bucket_from_creds
+        # shellcheck source=/dev/null
+        bucket_from_creds="$(unset BACKUP_BUCKET; source "$BACKUP_CREDENTIALS" >/dev/null 2>&1; printf '%s' "${BACKUP_BUCKET:-}")"
+        [[ -n "$bucket_from_creds" ]] && BACKUP_BUCKET="$bucket_from_creds"
+    fi
     BACKUP_SCHEDULE="${BACKUP_SCHEDULE:-17 * * * *}"
     DB_BACKUP_ENABLED="${DB_BACKUP_ENABLED:-false}"
     DB_BACKUP_SCHEDULE="${DB_BACKUP_SCHEDULE:-23 * * * *}"
