@@ -709,11 +709,37 @@ One set of credentials + one bucket covers every project.
 **Uploads** (`BACKUP_ENABLED`, `BACKUP_SCHEDULE`, default hourly):
 `upload_dirs` synced to `<bucket>/<name>/<dir>`. Sites with none
 declared are skipped. `backup-uploads [name]` to sync on demand.
+**Versioned:** whatever a sync would overwrite or delete in that mirror is
+moved to `<bucket>/<name>/.versions/<run>/<dir>/` instead. A file deleted
+or broken on the site is still recoverable from the run that caught it,
+for `UPLOADS_BACKUP_VERSIONS_DAYS` (default 30; `0` = plain mirror, as
+before). Without this, a deletion reached the backup within the hour.
 
 **Database** (`DB_BACKUP_ENABLED`, `DB_BACKUP_SCHEDULE`, default hourly):
 `mysqldump --single-transaction`, gzipped, to `<bucket>/<name>/db/`.
-Dumps older than `DB_BACKUP_RETENTION_DAYS` (default 7) pruned each run.
+Dumps older than `DB_BACKUP_RETENTION_DAYS` (default 7; per site:
+`db_backup_retention_days`) pruned each run. Dumps moved to
+`<bucket>/<name>/db-kept/` ("keep" in the web UI) are never pruned.
 `backup-database [name]` to dump on demand.
+
+**History.** Every site's backup, scheduled or on demand, is an event
+in its history (`backup-database` / `backup-uploads`, with the dump name
+or what was synced, or the error). With a site name,
+`backup-database <name>` and `backup-uploads <name>` are full runs, with
+their own output log.
+
+**Restoring from a backup**, each taking a local snapshot first so it can be
+undone:
+
+```
+db-import <name> --from-backup <dump> --yes                    database from a dump (db/ or db-kept/)
+uploads-import <name> --dir <d> --from-backup --yes            folder from the mirror (replaces it)
+uploads-import <name> --dir <d> --from-backup --version <run> --yes   files that run overwrote/deleted (merged back)
+```
+
+Downloads go into a staging folder owned by the site and are then
+moved into place, so restored files belong to the site's user.
+(`restore-uploads` / `restore-database` still work as before.)
 
 `init` installs `rclone`/`cron` and writes
 `/etc/cron.d/ddeploy-backup-uploads` / `-database` (root). Not in
@@ -840,11 +866,13 @@ every verb. Usable from scripts too.
   `doctor [name]`, `logs [<name>]`, `inspect-repo <url>`, `env <name>`,
   `branches <name>`, `commits <name> <from> <to>`, `db info|credentials
   <name>`, `db dump <name>` (gzipped SQL on stdout), `uploads <name>`,
-  `uploads download <name> --dir <d>` (.tar.gz on stdout), `run show|log <id>`.
+  `uploads download <name> --dir <d>` (.tar.gz on stdout), `backups
+  <name>`, `backups download <name> --file <dump>`, `run show|log <id>`.
 - Write (each needs `--actor <email>`): `run start deploy|rollback|
   provision|db-import|db-restore|db-snapshot|preview-create|
   preview-deploy|preview-remove|uploads-import|uploads-restore|
-  uploads-snapshot`, `run cancel <id>`, `env
+  uploads-snapshot|backup-database|backup-uploads|backup-restore-db|
+  backup-restore-uploads`, `backups keep|unkeep|delete`, `run cancel <id>`, `env
   <name> --apply` (values on stdin, never argv), `settings <name>`
   (operator overrides and the tracked branch — every `override` key except
   `db_env_scheme` and `persistent_files`). Provision takes a fixed flag set

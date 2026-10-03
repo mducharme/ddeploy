@@ -45,6 +45,8 @@ backup_site_database() {
         return 1
     fi
 
+    BACKUP_LAST_DUMP="$(basename "$dump")"
+    BACKUP_LAST_DUMP_BYTES="$(stat -c %s "$dump" 2>/dev/null || echo 0)"
     log_info "backup: $name: uploading $(basename "$dump") -> $BACKUP_BUCKET/$name/db/"
     local uploaded=1
     rclone copy "$dump" "${remote}/$name/db/" || uploaded=0
@@ -62,6 +64,8 @@ backup_site_database() {
 
 # Deletes dumps older than $3 (days, defaults to the server-wide
 # DB_BACKUP_RETENTION_DAYS) from object storage.
+# Dumps moved to <site>/db-kept/ ("keep" in the web UI, or by hand) are
+# outside this prefix and never pruned.
 prune_database_backups() {
     local name="$1" remote="$2"
     local days="${3:-${DB_BACKUP_RETENTION_DAYS:-7}}"

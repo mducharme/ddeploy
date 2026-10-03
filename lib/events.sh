@@ -105,3 +105,17 @@ prune_run_logs() {
     find "$RUNS_LOG_DIR" -maxdepth 1 -type f -name '*.log' -mtime +"$days" -delete 2>/dev/null || true
     find "$RUNS_META_DIR" -maxdepth 1 -type f \( -name '*.json' -o -name '*.cancelled' \) -mtime +"$days" -delete 2>/dev/null || true
 }
+
+# A backup of one site, from inside the fleet-wide backup-uploads /
+# backup-database loop: its own event (cron runs have no run of their
+# own), or — when the whole command is a single-site run under
+# run_notifying (`api run start backup-*`) — details for that run's event.
+backup_event() {
+    local site="$1" kind="$2" phase="$3"; shift 3
+    if [[ -n "${DDEPLOY_EVENT_ATTRS:-}" ]]; then
+        local kv
+        for kv in "$@"; do [[ "$kv" == subject=* ]] && event_attr subject "${kv#subject=}"; done
+        return 0
+    fi
+    event_record "$site" "$kind" "$phase" "$@"
+}

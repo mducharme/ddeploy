@@ -22,6 +22,7 @@ UPLOADS_SNAPSHOT_ID_RE='^[0-9]{8}T[0-9]{6}Z-[a-z0-9-]{1,40}$'
 usage_uploads_import() {
     cat <<'EOF2'
 usage: ddeploy uploads-import <name> --dir <upload_dir> --from-file <archive> --yes [--mode merge|replace] [--strip auto|yes|no]
+       ddeploy uploads-import <name> --dir <upload_dir> --from-backup --yes [--version <run>]
        ddeploy uploads-import <name> --snapshot <id> --yes
 
 Unpacks a .zip, .tar or .tar.gz into one of <name>'s upload_dirs (as
@@ -32,6 +33,11 @@ declared in its config; `uploads-snapshot <name> --list` shows them).
   --mode replace   the folder becomes exactly the archive's contents
   --strip auto     (default) if everything is inside one folder named like
                    the upload dir (someone zipped the folder itself), unwrap it
+
+--from-backup restores the folder from its object-storage backup: the
+mirror (replaces the folder), or with --version <run> the files that
+backup run overwrote or deleted (merged back in) — see
+UPLOADS_BACKUP_VERSIONS_DAYS.
 
 Either way a snapshot is taken first; undo with --snapshot <id> (printed at
 the end). Only plain files and folders are accepted — no links, no absolute
@@ -162,11 +168,34 @@ cmd_uploads_snapshot() {
     event_attr subject "${taken:-nothing to snapshot}"
 }
 
+# Checks and unpacks archive $1 into staging folder $2 as the site's user
+# (lib/uploads_extract.py): at most $3 bytes, --strip $4, target dir $5.
+# Sets UNPACKED_FILES/BYTES/SKIPPED/STRIPPED; dies, changing nothing, on a
+# refused archive.
+uploads_unpack() {
+    local archive="$1" staging="$2" max="$3" strip="$4" dir="$5"
+    local summary errf rc=0
+    errf="$(mktemp)"
+    summary="$(sudo -u "$UPX_OWNER" -- python3 "$PROVISIONER_DIR/lib/uploads_extract.py" "$staging" \
+        --max-bytes "$max" --strip "$strip" --expect-top "$(basename "$dir")" \
+        < "$archive" 2>"$errf")" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        local why; why="$(sed 's/^refused: //' "$errf" | tail -n 1)"
+        rm -f "$errf"
+        die "${why:-unpacking failed (exit $rc)} — nothing was changed"
+    fi
+    rm -f "$errf"
+    UNPACKED_FILES="$(sed -E 's/.*"files": ([0-9]+).*/\1/' <<< "$summary")"
+    UNPACKED_BYTES="$(sed -E 's/.*"bytes": ([0-9]+).*/\1/' <<< "$summary")"
+    UNPACKED_SKIPPED="$(sed -E 's/.*"skipped": ([0-9]+).*/\1/' <<< "$summary")"
+    UNPACKED_STRIPPED="$(sed -E 's/.*"stripped": "([^"]*)".*/\1/' <<< "$summary")"
+}
+
 cmd_uploads_import() {
     [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage_uploads_import; return 0; }
     load_conf
     require_root
-    local name="${1:-}" dir="" from_file="" snapshot="" mode=merge strip=auto confirm=0 delete_file=0
+    local name="${1:-}" dir="" from_file="" snapshot="" mode=merge strip=auto confirm=0 delete_file=0 from_backup=0 version=""
     [[ -n "$name" ]] || { usage_uploads_import; die "site name required"; }
     shift
     validate_name "$name"
@@ -175,6 +204,8 @@ cmd_uploads_import() {
             --dir) dir="${2:-}"; shift ;;
             --from-file) from_file="${2:-}"; shift ;;
             --snapshot) snapshot="${2:-}"; shift ;;
+            --from-backup) from_backup=1 ;;
+            --version) version="${2:-}"; shift ;;
             --mode) mode="${2:-}"; shift ;;
             --strip) strip="${2:-}"; shift ;;
             --yes) confirm=1 ;;
@@ -187,8 +218,13 @@ cmd_uploads_import() {
     done
     [[ "$mode" == merge || "$mode" == replace ]] || die "--mode is merge or replace"
     [[ "$strip" == auto || "$strip" == yes || "$strip" == no ]] || die "--strip is auto, yes or no"
-    [[ -n "$from_file" || -n "$snapshot" ]] || die "give --from-file <archive> or --snapshot <id>"
-    [[ -z "$from_file" || -z "$snapshot" ]] || die "--from-file and --snapshot are mutually exclusive"
+    local sources=0
+    [[ -n "$from_file" ]] && sources=$((sources + 1))
+    [[ -n "$snapshot" ]] && sources=$((sources + 1))
+    [[ "$from_backup" -eq 1 ]] && sources=$((sources + 1))
+    [[ "$sources" -eq 1 ]] || die "give exactly one of --from-file <archive>, --snapshot <id>, --from-backup"
+    [[ -z "$version" || "$from_backup" -eq 1 ]] || die "--version goes with --from-backup"
+    [[ -z "$version" || "$version" =~ $UPLOADS_VERSION_ID_RE ]] || die "invalid backup version '$version'"
     is_provisioned "$name" || die "'$name' is not provisioned"
     uploads_resolve_site "$name"
     [[ "$UPX_TARGET" == "$name" ]] || log_warn "'$name' is a shared-mode preview of '$UPX_TARGET' — these are '$UPX_TARGET's own upload folders"
@@ -213,9 +249,20 @@ cmd_uploads_import() {
 
     [[ -n "$dir" ]] || die "--dir <upload_dir> required (one of: ${UPLOAD_DIRS[*]:-none declared})"
     uploads_require_dir "$dir"
-    [[ -f "$from_file" ]] || die "file not found: $from_file"
-    [[ "$confirm" -eq 1 ]] || { log_warn "dry run — this would unpack $(basename "$from_file") into '$dir' ($mode). Pass --yes."; return 0; }
-    event_attr kind uploads-import
+    local source_desc
+    if [[ "$from_backup" -eq 1 ]]; then
+        # The mirror is the folder's backed-up state: it replaces the
+        # folder. A version holds only the files that run overwrote or
+        # deleted: they're merged back in.
+        if [[ -n "$version" ]]; then mode=merge; source_desc="backup version $version"; else mode=replace; source_desc="backup mirror"; fi
+        [[ "$confirm" -eq 1 ]] || { log_warn "dry run — this would restore '$dir' from its $source_desc ($mode). Pass --yes."; return 0; }
+        event_attr kind uploads-restore
+    else
+        [[ -f "$from_file" ]] || die "file not found: $from_file"
+        source_desc="$(basename "$from_file")"
+        [[ "$confirm" -eq 1 ]] || { log_warn "dry run — this would unpack $source_desc into '$dir' ($mode). Pass --yes."; return 0; }
+        event_attr kind uploads-import
+    fi
 
     local live; live="$(uploads_path "$dir")"
     local base="$PERSISTENT_ROOT/$UPX_TARGET"
@@ -239,27 +286,32 @@ cmd_uploads_import() {
     # shellcheck disable=SC2064  # paths are ours, expand them now
     trap "rm -rf '$staging' ${spool_rm:+'$spool_rm'}" EXIT
 
-    log_info "checking and unpacking $(basename "$from_file") ($(stat -c %s "$from_file") bytes) as $UPX_OWNER"
-    local summary errf rc=0
-    errf="$(mktemp)"
-    summary="$(sudo -u "$UPX_OWNER" -- python3 "$PROVISIONER_DIR/lib/uploads_extract.py" "$staging" \
-        --max-bytes "$(( avail - reserve ))" --strip "$strip" --expect-top "$(basename "$dir")" \
-        < "$from_file" 2>"$errf")" || rc=$?
-    if [[ "$rc" -ne 0 ]]; then
-        local why; why="$(sed 's/^refused: //' "$errf" | tail -n 1)"
-        rm -f "$errf"
-        die "${why:-unpacking failed (exit $rc)} — nothing was changed"
+    local files bytes skipped=0 stripped=""
+    if [[ "$from_backup" -eq 1 ]]; then
+        require_rclone
+        require_backup_credentials
+        local remote; remote="$(backup_remote_spec)"
+        local src="${remote}/$UPX_TARGET/$dir"
+        [[ -n "$version" ]] && src="${remote}/$UPX_TARGET/.versions/$version/$dir"
+        local size_json
+        size_json="$(timeout 120 rclone size --json "$src" 2>/dev/null || true)"
+        files="$(sed -nE 's/.*"count": ?([0-9]+).*/\1/p' <<< "$size_json")"
+        bytes="$(sed -nE 's/.*"bytes": ?([0-9]+).*/\1/p' <<< "$size_json")"
+        [[ -n "$files" && "$files" != 0 ]] || die "nothing in the $source_desc of '$dir' — nothing was changed"
+        (( bytes < avail - reserve )) || die "the $source_desc of '$dir' is $bytes bytes, more than the free disk space — nothing was changed"
+        log_info "downloading the $source_desc of '$dir' ($files file(s), $bytes bytes)"
+        # Into the empty staging folder: fresh files, never written over
+        # live ones (which hardlink snapshots share).
+        rclone copy "$src" "$staging" || die "download from $BACKUP_BUCKET failed — nothing was changed"
+    else
+        log_info "checking and unpacking $source_desc ($(stat -c %s "$from_file") bytes) as $UPX_OWNER"
+        uploads_unpack "$from_file" "$staging" "$(( avail - reserve ))" "$strip" "$dir"
+        files="$UNPACKED_FILES" bytes="$UNPACKED_BYTES" skipped="$UNPACKED_SKIPPED" stripped="$UNPACKED_STRIPPED"
     fi
-    rm -f "$errf"
-    local files bytes skipped stripped
-    files="$(sed -E 's/.*"files": ([0-9]+).*/\1/' <<< "$summary")"
-    bytes="$(sed -E 's/.*"bytes": ([0-9]+).*/\1/' <<< "$summary")"
-    skipped="$(sed -E 's/.*"skipped": ([0-9]+).*/\1/' <<< "$summary")"
-    stripped="$(sed -E 's/.*"stripped": "([^"]*)".*/\1/' <<< "$summary")"
     local note=""
     [[ -n "$stripped" ]] && note+=" (unwrapped the '$stripped' folder)"
     [[ "$skipped" != 0 ]] && note+=", skipped $skipped junk file(s) (__MACOSX, .DS_Store...)"
-    log_info "unpacked $files file(s), $bytes bytes$note"
+    log_info "$([[ "$from_backup" -eq 1 ]] && echo downloaded || echo unpacked) $files file(s), $bytes bytes$note"
     chown -R "$UPX_OWNER:www-data" "$staging"
     # setgid on folders, like the persistent store's own: files PHP writes
     # into them later keep the www-data group nginx reads through.
@@ -284,7 +336,7 @@ cmd_uploads_import() {
     rm -rf "$staging" ${spool_rm:+"$spool_rm"}
     trap - EXIT
     log_info "'$dir': $mode done${undo:+ — undo with: ddeploy uploads-import $name --snapshot $undo --yes}"
-    event_attr subject "$files file(s) into $dir ($mode)${undo:+ (undo: $undo)}"
-    site_log "$name" "uploads-import: $files file(s), $bytes bytes into $dir ($mode, $(notify_trigger))${undo:+ — undo snapshot $undo}"
+    event_attr subject "$files file(s) into $dir from $source_desc ($mode)${undo:+ (undo: $undo)}"
+    site_log "$name" "uploads-import: $files file(s), $bytes bytes into $dir from $source_desc ($mode, $(notify_trigger))${undo:+ — undo snapshot $undo}"
 
 }

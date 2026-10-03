@@ -309,8 +309,16 @@ main() {
         list)           cmd_list "$@" ;;
         provision-all)  cmd_provision_all "$@" ;;
         deploy-all)     cmd_deploy_all "$@" ;;
-        backup-uploads) cmd_backup_uploads "$@" ;;
-        backup-database) cmd_backup_database "$@" ;;
+        # One site: a run of its own (events, output log); none: the
+        # fleet-wide cron job, which records an event per site itself.
+        backup-uploads)
+            if [[ -n "${1:-}" && "$1" != -* ]]; then run_notifying backup-uploads "$1" cmd_backup_uploads "$@"
+            else cmd_backup_uploads "$@"
+            fi ;;
+        backup-database)
+            if [[ -n "${1:-}" && "$1" != -* ]]; then run_notifying backup-database "$1" cmd_backup_database "$@"
+            else cmd_backup_database "$@"
+            fi ;;
         restore-uploads) cmd_restore_uploads "$@" ;;
         restore-database) cmd_restore_database "$@" ;;
         db-import)      run_notifying db-import "$(notify_site_arg site "$@")" cmd_db_import "$@" ;;

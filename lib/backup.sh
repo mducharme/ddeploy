@@ -85,12 +85,38 @@ backup_site_uploads() {
             continue
         fi
         log_info "backup: $name: $d -> $BACKUP_BUCKET/$name/$d"
-        if ! rclone sync "$src" "${remote}/$name/$d" --checksum "${exclude_args[@]}"; then
+        # Versioned: whatever this sync would overwrite or delete in the
+        # mirror is moved to <site>/.versions/<run>/<dir>/ instead, so a
+        # file deleted (or broken) on the site is still recoverable for
+        # UPLOADS_BACKUP_VERSIONS_DAYS. 0 = plain mirror, as before.
+        local -a version_args=()
+        if [[ "${UPLOADS_BACKUP_VERSIONS_DAYS:-30}" != 0 ]]; then
+            version_args=(--backup-dir "${remote}/$name/.versions/${BACKUP_RUN_TS:-$(date -u +%Y%m%dT%H%M%SZ)}/$d")
+        fi
+        if ! rclone sync "$src" "${remote}/$name/$d" --checksum "${exclude_args[@]}" "${version_args[@]}"; then
             log_warn "backup: $name: $d failed to sync"
             failures=$((failures + 1))
         fi
     done
+    [[ "$failures" -eq 0 ]] && prune_uploads_versions "$name" "$remote"
     [[ "$failures" -eq 0 ]]
+}
+
+# Version folders are named by run (UTC timestamp): drops those older than
+# UPLOADS_BACKUP_VERSIONS_DAYS.
+UPLOADS_VERSION_ID_RE='^[0-9]{8}T[0-9]{6}Z$'
+prune_uploads_versions() {
+    local name="$1" remote="$2"
+    local days="${UPLOADS_BACKUP_VERSIONS_DAYS:-30}"
+    [[ "$days" =~ ^[1-9][0-9]{0,3}$ ]] || return 0
+    local cutoff; cutoff="$(date -u -d "-${days} days" +%Y%m%dT%H%M%SZ)"
+    local v
+    while IFS= read -r v; do
+        v="${v%/}"
+        [[ "$v" =~ $UPLOADS_VERSION_ID_RE && "$v" < "$cutoff" ]] || continue
+        rclone purge "${remote}/$name/.versions/$v" 2>/dev/null || log_warn "backup: $name: couldn't prune version $v"
+    done < <(rclone lsf --dirs-only "${remote}/$name/.versions/" 2>/dev/null)
+    return 0
 }
 
 # The reverse of backup_site_uploads: downloads the current backed-up

@@ -10,6 +10,8 @@ cmd_backup_uploads() {
     log_timestamps_unless_tty
     local started="$SECONDS"
     log_info "backup-uploads: started${1:+ ($1)}"
+    # One version folder per run, shared by every site's sync.
+    BACKUP_RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
 
     local only="${1:-}" failures=0 ok=0
     local site_path name
@@ -43,17 +45,21 @@ cmd_backup_uploads() {
         # One site's failure (network blip, bad credentials, whatever)
         # must not stop every other site from being backed up this run —
         # a bare call here would abort the whole loop under set -e.
+        local site_started="$SECONDS"
         if ! backup_site_uploads "$name" "$(site_dir "$name")" "${UPLOAD_DIRS[@]}"; then
             log_error "backup-uploads failed for $name"
             failures=$((failures + 1))
             failed_names+=("$name")
+            backup_event "$name" backup-uploads failed "duration_s=$((SECONDS - site_started))" "error=backup-uploads failed for $name"
         else
             ok=$((ok + 1))
+            backup_event "$name" backup-uploads succeeded "duration_s=$((SECONDS - site_started))" "subject=${UPLOAD_DIRS[*]} synced"
         fi
     done
     log_info "backup-uploads: done in $((SECONDS - started))s — $ok site(s) backed up, $failures failed"
     if [[ "$failures" -ne 0 ]]; then
-        notify_failure backup-uploads "" "${failures} site(s): ${failed_names[*]}"
+        # One site, from `api run start`: run_notifying reports the failure.
+        [[ -n "${DDEPLOY_EVENT_ATTRS:-}" ]] || notify_failure backup-uploads "" "${failures} site(s): ${failed_names[*]}"
         die "$failures site(s) failed to back up"
     fi
 }

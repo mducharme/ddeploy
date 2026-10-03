@@ -30,14 +30,15 @@ EOF2
 
 usage_db_import() {
     cat <<'EOF2'
-usage: ddeploy db-import <name> (--from-file <path> | --snapshot <id>) --yes [--no-snapshot] [--keep-existing]
+usage: ddeploy db-import <name> (--from-file <path> | --snapshot <id> | --from-backup <dump>) --yes [--no-snapshot] [--keep-existing]
 
 Replaces <name>'s database with a .sql or .sql.gz dump: takes a snapshot
 of what's there now (skip with --no-snapshot) so it can be undone with
 `db-import <name> --snapshot <id>`, drops every table and view, then
 loads the dump. --keep-existing loads over the current tables instead of
 dropping them first. Imported as the site's own DB user, like
-restore-database --from-file.
+restore-database --from-file. --from-backup takes a dump from object storage
+(a filename as `ddeploy api backups <name>` lists it, in db/ or db-kept/).
 EOF2
 }
 
@@ -155,7 +156,7 @@ cmd_db_import() {
     [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage_db_import; return 0; }
     load_conf
     require_root
-    local name="${1:-}" from_file="" snapshot_id="" confirm=0 take_snapshot=1 delete_file=0 keep_existing=0
+    local name="${1:-}" from_file="" snapshot_id="" from_backup="" confirm=0 take_snapshot=1 delete_file=0 keep_existing=0
     [[ -n "$name" ]] || { usage_db_import; die "site name required"; }
     shift
     validate_name "$name"
@@ -163,6 +164,7 @@ cmd_db_import() {
         case "$1" in
             --from-file) from_file="${2:-}"; shift ;;
             --snapshot) snapshot_id="${2:-}"; shift ;;
+            --from-backup) from_backup="${2:-}"; shift ;;
             --yes) confirm=1 ;;
             --no-snapshot) take_snapshot=0 ;;
             --keep-existing) keep_existing=1 ;;
@@ -173,15 +175,33 @@ cmd_db_import() {
         esac
         shift
     done
-    [[ -n "$from_file" || -n "$snapshot_id" ]] || die "give --from-file <path> or --snapshot <id>"
-    [[ -z "$from_file" || -z "$snapshot_id" ]] || die "--from-file and --snapshot are mutually exclusive"
+    local sources=0
+    [[ -n "$from_file" ]] && sources=$((sources + 1))
+    [[ -n "$snapshot_id" ]] && sources=$((sources + 1))
+    [[ -n "$from_backup" ]] && sources=$((sources + 1))
+    [[ "$sources" -eq 1 ]] || die "give exactly one of --from-file <path>, --snapshot <id>, --from-backup <dump>"
     is_provisioned "$name" || die "'$name' is not provisioned"
     db_resolve_site "$name"
     [[ -n "$DBX_PASS" ]] || die "no existing DB credentials found for '$DBX_TARGET' — provision it first"
     [[ "$DBX_TARGET" == "$name" ]] || log_warn "'$name' is a shared-mode preview of '$DBX_TARGET' — importing into '$DBX_TARGET's database, which every preview of it shares"
 
     local label
-    if [[ -n "$snapshot_id" ]]; then
+    if [[ -n "$from_backup" ]]; then
+        validate_backup_dump_name "$from_backup"
+        require_rclone
+        require_backup_credentials
+        local remote; remote="$(backup_remote_spec)"
+        local prefix; prefix="$(backup_dump_prefix "$remote" "$DBX_TARGET" "$from_backup")" \
+            || die "no backup '$from_backup' for '$DBX_TARGET' in $BACKUP_BUCKET"
+        local dl; dl="$(mktemp -d)"
+        # shellcheck disable=SC2064  # expand now
+        trap "rm -rf '$dl'" EXIT
+        log_info "downloading $prefix/$from_backup from $BACKUP_BUCKET"
+        rclone copy "${remote}/$DBX_TARGET/$prefix/$from_backup" "$dl/" || die "download of $from_backup failed — nothing was changed"
+        from_file="$dl/$from_backup"
+        label="backup $from_backup"
+        event_attr kind db-restore
+    elif [[ -n "$snapshot_id" ]]; then
         validate_snapshot_id "$snapshot_id"
         from_file="$(db_snapshot_dir "$DBX_TARGET")/$snapshot_id.sql.gz"
         [[ -f "$from_file" ]] || die "no snapshot '$snapshot_id' for '$DBX_TARGET'"
@@ -221,4 +241,22 @@ cmd_db_import() {
     site_log "$name" "db-import: loaded $label into '$DBX_NAME' ($(notify_trigger))${undo:+ — undo snapshot $undo}"
     log_info "imported $label into '$DBX_NAME'"
 
+}
+
+# A dump filename as backup_site_database writes them (<db>-YYYYMMDD-HHMMSS.sql.gz),
+# or anything else safe someone put in db-kept/ by hand.
+validate_backup_dump_name() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}\.sql(\.gz)?$ ]] || die "invalid backup name '$1'"
+}
+
+# Prints db or db-kept: where dump $3 of site $2 lives; fails if neither.
+backup_dump_prefix() {
+    local remote="$1" site="$2" file="$3" p
+    for p in db db-kept; do
+        if rclone lsf "${remote}/$site/$p/" 2>/dev/null | grep -qxF "$file"; then
+            printf '%s' "$p"
+            return 0
+        fi
+    done
+    return 1
 }

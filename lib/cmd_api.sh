@@ -50,6 +50,8 @@ read:
   db dump <name> [--snapshot <id>]      gzipped SQL on stdout (not JSON)
   uploads <name>                        upload dirs (size, file count) and their snapshots
   uploads download <name> --dir <d>     a .tar.gz of one upload dir on stdout (not JSON)
+  backups <name>                        object-storage backups: dumps, file mirror + versions, retention
+  backups download <name> --file <dump> one backed-up dump on stdout (not JSON)
 
 write (each needs --actor <email>):
   env <name> --apply [--unset KEY]...   set the KEY=value lines read from stdin
@@ -67,6 +69,10 @@ write (each needs --actor <email>):
   run start uploads-import <name> --dir <d> [--mode merge|replace] --actor <email>   archive on stdin
   run start uploads-restore <name> --snapshot <id> --actor <email>
   run start uploads-snapshot <name> --actor <email>
+  run start backup-database|backup-uploads <name> --actor <email>   back up now
+  run start backup-restore-db <name> --file <dump> --actor <email>
+  run start backup-restore-uploads <name> --dir <d> [--version <run>] --actor <email>
+  backups keep|unkeep|delete <name> --file <dump> --actor <email>   keep = never pruned
   run start provision <name> <repo-url> --actor <email> [--branch b] [--php X.Y]
       [--docroot p] [--db name] [--hostnames "a b"] [--custom-domains "a b"]
       [--upload-dirs "a b"] [--auth|--no-auth] [--node v] [--build|--no-build]
@@ -81,6 +87,11 @@ cmd_api() {
     if [[ "${1:-}" == db && "${2:-}" == dump ]]; then
         shift 2
         api_db_dump "$@"
+        return
+    fi
+    if [[ "${1:-}" == backups && "${2:-}" == download ]]; then
+        shift 2
+        api_backups_download "$@"
         return
     fi
     if [[ "${1:-}" == uploads && "${2:-}" == download ]]; then
@@ -129,7 +140,7 @@ api_valid() {
 api_dispatch() {
     local verb="$1"; shift
     case "$verb" in
-        info|sites|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db|uploads) ;;
+        info|sites|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db|uploads|backups) ;;
         *) api_die unknown_verb "unknown api verb '$verb'" ;;
     esac
     load_conf
@@ -151,6 +162,7 @@ api_dispatch() {
         commits)      api_commits "$@" ;;
         db)           api_db "$@" ;;
         uploads)      api_uploads "$@" ;;
+        backups)      api_backups "$@" ;;
     esac
 }
 
@@ -193,6 +205,9 @@ api_info() {
     printf ',"defaults":{"client_max_body_size":%s,"fpm_max_children":%s,"db_backup_retention_days":%s}' \
         "$(json_str "$CLIENT_MAX_BODY_SIZE")" "$(json_str "$FPM_MAX_CHILDREN")" "$(json_str "$DB_BACKUP_RETENTION_DAYS")"
     printf ',"limits":{"db_import_max_bytes":%s,"uploads_import_max_bytes":%s}' "$(api_import_max_bytes)" "$(api_upload_max_bytes)"
+    printf ',"backups":{"bucket":%s,"database":{"enabled":%s,"schedule":%s,"retention_days":%s},"uploads":{"enabled":%s,"schedule":%s,"versions_days":%s}}' \
+        "$(json_str_or_null "$BACKUP_BUCKET")" "$(json_bool "$DB_BACKUP_ENABLED")" "$(json_str "$DB_BACKUP_SCHEDULE")" "$(json_num "$DB_BACKUP_RETENTION_DAYS")" \
+        "$(json_bool "$BACKUP_ENABLED")" "$(json_str "$BACKUP_SCHEDULE")" "$(json_num "$UPLOADS_BACKUP_VERSIONS_DAYS")"
     printf '}\n'
 }
 
@@ -245,7 +260,7 @@ api_site_summary() {
     if [[ -s "$f" ]]; then
         last_event="$(tail -n 1 "$f")"
         # Config changes are events but not runs: "last run" skips them.
-        last_run="$(grep -v -e '"kind":"env-change"' -e '"kind":"settings-change"' "$f" | tail -n 1 || true)"
+        last_run="$(grep -v -e '"kind":"env-change"' -e '"kind":"settings-change"' -e '"kind":"backup-' "$f" | tail -n 1 || true)"
         last_deploy="$(grep -E '"kind":"(deploy|rollback|provision|provision-preview|deploy-preview)","phase":"succeeded"' "$f" | tail -n 1 || true)"
         [[ -n "$last_run" ]] || last_run=null
         [[ -n "$last_deploy" ]] || last_deploy=null
@@ -269,7 +284,15 @@ api_site_summary() {
     printf ',"sha":%s,"committed_at":%s,"subject":%s,"repo":%s,"preview":%s,"last_event":%s' \
         "$(json_str_or_null "$full_sha")" "$(json_str_or_null "$committed_at")" "$(json_str_or_null "$subject")" \
         "$(json_str_or_null "$repo")" "$preview_json" "$last_event"
-    printf ',"last_run":%s,"last_deploy":%s,"deployed_at":%s}\n' "$last_run" "$last_deploy" "$(json_str_or_null "$deployed_at")"
+    local last_db_backup=null last_up_backup=null
+    if [[ -s "$f" ]]; then
+        last_db_backup="$(grep -E '"kind":"backup-database","phase":"(succeeded|failed)"' "$f" | tail -n 1 || true)"
+        last_up_backup="$(grep -E '"kind":"backup-uploads","phase":"(succeeded|failed)"' "$f" | tail -n 1 || true)"
+        [[ -n "$last_db_backup" ]] || last_db_backup=null
+        [[ -n "$last_up_backup" ]] || last_up_backup=null
+    fi
+    printf ',"last_run":%s,"last_deploy":%s,"deployed_at":%s' "$last_run" "$last_deploy" "$(json_str_or_null "$deployed_at")"
+    printf ',"last_backups":{"database":%s,"uploads":%s}}\n' "$last_db_backup" "$last_up_backup"
 }
 
 api_sites() {
@@ -791,12 +814,12 @@ api_run_start() {
     local actor="" name="" url=""
     local -a argv=() flags=()
     case "$kind" in
-        deploy|provision|rollback|db-import|db-restore|db-snapshot|preview-create|preview-deploy|preview-remove|uploads-import|uploads-restore|uploads-snapshot) ;;
+        deploy|provision|rollback|db-import|db-restore|db-snapshot|preview-create|preview-deploy|preview-remove|uploads-import|uploads-restore|uploads-snapshot|backup-database|backup-uploads|backup-restore-db|backup-restore-uploads) ;;
         *) api_die bad_request "run start: unknown kind '$kind'" ;;
     esac
     local preview=0
     [[ "$kind" == preview-* ]] && preview=1
-    local sha="" snapshot="" upload_dir="" upload_mode=merge
+    local sha="" snapshot="" upload_dir="" upload_mode=merge backup_file="" backup_version=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -807,12 +830,34 @@ api_run_start() {
                 sha="$2"; shift ;;
             --snapshot)
                 if [[ "$kind" == db-restore ]]; then api_valid validate_snapshot_id "${2:-}"
-                elif [[ "$kind" == uploads-restore ]]; then api_valid validate_uploads_snapshot_id "${2:-}"
+                elif [[ "$kind" == backup-database || "$kind" == backup-uploads || "$kind" == backup-restore-db || "$kind" == backup-restore-uploads ]]; then
+        api_backups_require_target "$name" "$kind"
+        case "$kind" in
+            backup-database) argv=(backup-database "$name") ;;
+            backup-uploads) argv=(backup-uploads "$name") ;;
+            backup-restore-db)
+                [[ -n "$backup_file" ]] || api_die bad_request "--file <dump> required"
+                argv=(db-import "$name" --from-backup "$backup_file" --yes) ;;
+            backup-restore-uploads)
+                [[ -n "$upload_dir" ]] || api_die bad_request "--dir <upload dir> required"
+                ( uploads_resolve_site "$name" >/dev/null 2>&1 && uploads_require_dir "$upload_dir" >/dev/null 2>&1 ) \
+                    || api_die bad_request "'$upload_dir' isn't one of '$name's upload dirs"
+                argv=(uploads-import "$name" --dir "$upload_dir" --from-backup --yes ${backup_version:+--version "$backup_version"}) ;;
+        esac
+    elif [[ "$kind" == uploads-restore ]]; then api_valid validate_uploads_snapshot_id "${2:-}"
                 else api_die bad_request "--snapshot is only for db-restore and uploads-restore"
                 fi
                 snapshot="$2"; shift ;;
+            --file)
+                [[ "$kind" == backup-restore-db ]] || api_die bad_request "--file is only for backup-restore-db"
+                api_valid validate_backup_dump_name "${2:-}"
+                backup_file="$2"; shift ;;
+            --version)
+                [[ "$kind" == backup-restore-uploads ]] || api_die bad_request "--version is only for backup-restore-uploads"
+                [[ "${2:-}" =~ $UPLOADS_VERSION_ID_RE ]] || api_die bad_request "invalid backup version '${2:-}'"
+                backup_version="$2"; shift ;;
             --dir)
-                [[ "$kind" == uploads-import ]] || api_die bad_request "--dir is only for uploads-import"
+                [[ "$kind" == uploads-import || "$kind" == backup-restore-uploads ]] || api_die bad_request "--dir is only for uploads-import and backup-restore-uploads"
                 [[ "${2:-}" =~ ^[A-Za-z0-9._/-]{1,200}$ && "${2:-}" != /* ]] || api_die bad_request "--dir must be one of the site's upload dirs"
                 upload_dir="$2"; shift ;;
             --mode)
@@ -940,6 +985,20 @@ api_run_start() {
         local spool
         spool="$(api_spool_upload "$id")"
         argv=(uploads-import "$name" --dir "$upload_dir" --from-file "$spool" --mode "$upload_mode" --yes --delete-file)
+    elif [[ "$kind" == backup-database || "$kind" == backup-uploads || "$kind" == backup-restore-db || "$kind" == backup-restore-uploads ]]; then
+        api_backups_require_target "$name" "$kind"
+        case "$kind" in
+            backup-database) argv=(backup-database "$name") ;;
+            backup-uploads) argv=(backup-uploads "$name") ;;
+            backup-restore-db)
+                [[ -n "$backup_file" ]] || api_die bad_request "--file <dump> required"
+                argv=(db-import "$name" --from-backup "$backup_file" --yes) ;;
+            backup-restore-uploads)
+                [[ -n "$upload_dir" ]] || api_die bad_request "--dir <upload dir> required"
+                ( uploads_resolve_site "$name" >/dev/null 2>&1 && uploads_require_dir "$upload_dir" >/dev/null 2>&1 ) \
+                    || api_die bad_request "'$upload_dir' isn't one of '$name's upload dirs"
+                argv=(uploads-import "$name" --dir "$upload_dir" --from-backup --yes ${backup_version:+--version "$backup_version"}) ;;
+        esac
     elif [[ "$kind" == uploads-restore ]]; then
         [[ -n "$snapshot" ]] || api_die bad_request "--snapshot <id> required"
         argv=(uploads-import "$name" --snapshot "$snapshot" --yes)
@@ -1506,4 +1565,195 @@ api_uploads_download() {
     fi
     rm -f "$errf" "$errf.code"
     tar -czf - -C "$path" .
+}
+
+# --- backups (object storage) -------------------------------------------
+
+# Dies unless backups are set up, and the site has its own backups:
+# a shared-mode preview's data — and so its backups — are its parent's.
+api_backups_require_target() {
+    local name="$1" kind="${2:-}"
+    if is_preview "$name" && read_preview_meta "$name" && [[ "$PREVIEW_MODE" == shared ]]; then
+        api_die bad_request "'$name' is a shared-mode preview: its database and files are '$PREVIEW_PROJECT's — use '$PREVIEW_PROJECT's backups"
+    fi
+    case "$kind" in
+        backup-database|backup-restore-db) [[ "$DB_BACKUP_ENABLED" == true ]] || api_die bad_request "database backups are off on this server (DB_BACKUP_ENABLED)" ;;
+        backup-uploads|backup-restore-uploads) [[ "$BACKUP_ENABLED" == true ]] || api_die bad_request "uploads backups are off on this server (BACKUP_ENABLED)" ;;
+    esac
+    [[ -n "$BACKUP_CREDENTIALS" && -f "$BACKUP_CREDENTIALS" && -n "$BACKUP_BUCKET" ]] \
+        || api_die bad_request "object storage isn't configured (BACKUP_CREDENTIALS, BACKUP_BUCKET)"
+}
+
+# rclone lsjson output (one prefix) -> {"file","bytes","created_at","kept"} lines.
+api_backup_dump_rows() {
+    local kept="$1"
+    python3 -c '
+import json, sys, re
+kept = sys.argv[1] == "true"
+for e in json.load(sys.stdin):
+    if e.get("IsDir"):
+        continue
+    name = e["Name"]
+    m = re.search(r"(\d{8})-(\d{6})", name)
+    created = (f"{m[1][:4]}-{m[1][4:6]}-{m[1][6:]}T{m[2][:2]}:{m[2][2:4]}:{m[2][4:]}Z" if m else e.get("ModTime"))
+    print(json.dumps({"file": name, "bytes": e.get("Size"), "created_at": created, "kept": kept}))
+' "$kept"
+}
+
+api_backups() {
+    local sub="${1:-}"
+    case "$sub" in
+        keep|unkeep|delete) shift; api_backups_manage "$sub" "$@"; return ;;
+    esac
+    local name="${1:-}"
+    [[ $# -le 1 ]] || api_die bad_request "backups takes one site name"
+    api_require_site "$name"
+    local target; target="$(restore_target "$name")"
+    local configured=false
+    [[ -n "$BACKUP_CREDENTIALS" && -f "$BACKUP_CREDENTIALS" && -n "$BACKUP_BUCKET" ]] && command -v rclone >/dev/null 2>&1 && configured=true
+
+    # Effective retention: the site's own db_backup_retention_days, else
+    # the server's. Read the same way backup-database does.
+    local retention="$DB_BACKUP_RETENTION_DAYS" retention_source=server
+    if ( uploads_resolve_site "$name" ) >/dev/null 2>&1; then
+        uploads_resolve_site "$name" >/dev/null 2>&1
+        if [[ -n "${DB_BACKUP_RETENTION_DAYS_CONFIG:-}" ]]; then retention="$DB_BACKUP_RETENTION_DAYS_CONFIG"; retention_source=site; fi
+    fi
+
+    local dumps="[]" mirror="[]" versions="[]" error=""
+    if [[ "$configured" == true ]]; then
+        local remote; remote="$(backup_remote_spec)"
+        local raw rows=""
+        if raw="$(timeout 60 rclone lsjson "${remote}/$target/db/" 2>&1)"; then
+            rows+="$(api_backup_dump_rows false <<< "$raw")"$'\n'
+        elif [[ "$raw" != *"directory not found"* ]]; then
+            error="couldn't list $BACKUP_BUCKET: $(tail -n 1 <<< "$raw")"
+        fi
+        if raw="$(timeout 60 rclone lsjson "${remote}/$target/db-kept/" 2>/dev/null)"; then
+            rows+="$(api_backup_dump_rows true <<< "$raw")"
+        fi
+        dumps="$(grep -v '^$' <<< "$rows" | sort -r | json_lines_to_array)"
+
+        local -a dirs_json=()
+        local d size_json count bytes
+        for d in "${UPLOAD_DIRS[@]}"; do
+            size_json="$(timeout 30 rclone size --json "${remote}/$target/$d" 2>/dev/null || true)"
+            count="$(sed -nE 's/.*"count": ?([0-9]+).*/\1/p' <<< "$size_json")"
+            bytes="$(sed -nE 's/.*"bytes": ?([0-9]+).*/\1/p' <<< "$size_json")"
+            dirs_json+=("{\"dir\":$(json_str "$d"),\"files\":$(json_num "$count"),\"bytes\":$(json_num "$bytes")}")
+        done
+        mirror="$(printf '%s\n' "${dirs_json[@]}" | json_lines_to_array)"
+
+        local v first=1
+        versions="["
+        while IFS= read -r v; do
+            v="${v%/}"
+            [[ "$v" =~ $UPLOADS_VERSION_ID_RE ]] || continue
+            local vdirs; vdirs="$(timeout 20 rclone lsf --dirs-only -R --max-depth 4 "${remote}/$target/.versions/$v/" 2>/dev/null | sed 's#/$##' || true)"
+            local -a in_version=()
+            for d in "${UPLOAD_DIRS[@]}"; do grep -qxF "$d" <<< "$vdirs" && in_version+=("$d"); done
+            [[ "$first" -eq 1 ]] || versions+=","
+            first=0
+            versions+="{\"id\":$(json_str "$v"),\"created_at\":$(json_str "${v:0:4}-${v:4:2}-${v:6:2}T${v:9:2}:${v:11:2}:${v:13:2}Z"),\"dirs\":$(json_str_array "${in_version[@]}")}"
+        done < <(timeout 30 rclone lsf --dirs-only "${remote}/$target/.versions/" 2>/dev/null | sort -r)
+        versions+="]"
+    fi
+
+    # Last backup runs, from this site's history.
+    local f="$EVENTS_DIR/$target.jsonl" last_db=null last_up=null
+    if [[ -s "$f" ]]; then
+        last_db="$(grep -E '"kind":"backup-database","phase":"(succeeded|failed)"' "$f" | tail -n 1 || true)"
+        last_up="$(grep -E '"kind":"backup-uploads","phase":"(succeeded|failed)"' "$f" | tail -n 1 || true)"
+        [[ -n "$last_db" ]] || last_db=null
+        [[ -n "$last_up" ]] || last_up=null
+    fi
+    local shared=false
+    [[ "$target" != "$name" ]] && shared=true
+
+    api_header
+    printf ',"site":%s,"target":%s,"shared_with_parent":%s,"configured":%s,"bucket":%s,"error":%s' \
+        "$(json_str "$name")" "$(json_str "$target")" "$shared" "$configured" "$(json_str_or_null "$BACKUP_BUCKET")" "$(json_str_or_null "$error")"
+    printf ',"database":{"enabled":%s,"schedule":%s,"retention_days":%s,"retention_source":%s,"dumps":%s,"last_run":%s}' \
+        "$(json_bool "$DB_BACKUP_ENABLED")" "$(json_str "$DB_BACKUP_SCHEDULE")" "$(json_num "$retention")" "$(json_str "$retention_source")" "$dumps" "$last_db"
+    printf ',"uploads":{"enabled":%s,"schedule":%s,"versions_days":%s,"mirror":%s,"versions":%s,"last_run":%s}}\n' \
+        "$(json_bool "$BACKUP_ENABLED")" "$(json_str "$BACKUP_SCHEDULE")" "$(json_num "$UPLOADS_BACKUP_VERSIONS_DAYS")" "$mirror" "$versions" "$last_up"
+}
+
+# keep: move a dump to db-kept/ (never pruned); unkeep: back to db/
+# (pruned by age again); delete: remove it.
+api_backups_manage() {
+    local action="$1" name="${2:-}" file="" actor=""
+    shift 2 || true
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --file) file="${2:-}"; shift ;;
+            --actor) actor="${2:-}"; shift ;;
+            *) api_die bad_request "backups $action: unexpected argument '$1'" ;;
+        esac
+        shift
+    done
+    api_require_site "$name"
+    api_valid api_valid_actor "$actor"
+    api_valid validate_backup_dump_name "$file"
+    api_backups_require_target "$name"
+    local target; target="$(restore_target "$name")"
+    local remote; remote="$(backup_remote_spec)"
+    local prefix; prefix="$(backup_dump_prefix "$remote" "$target" "$file")" || api_die not_found "no backup '$file' for '$target'"
+    case "$action" in
+        keep)
+            [[ "$prefix" == db ]] || api_die conflict "'$file' is already kept"
+            rclone moveto "${remote}/$target/db/$file" "${remote}/$target/db-kept/$file" || api_die unavailable "couldn't move '$file'" ;;
+        unkeep)
+            [[ "$prefix" == db-kept ]] || api_die conflict "'$file' isn't kept"
+            rclone moveto "${remote}/$target/db-kept/$file" "${remote}/$target/db/$file" || api_die unavailable "couldn't move '$file'" ;;
+        delete)
+            rclone deletefile "${remote}/$target/$prefix/$file" || api_die unavailable "couldn't delete '$file'" ;;
+    esac
+    DDEPLOY_TRIGGER="web ($actor)" site_log "$target" "backups: $action $file (web ($actor))"
+    DDEPLOY_TRIGGER="web ($actor)" event_record "$target" "backup-$action" succeeded "subject=$file"
+    api_header
+    printf ',"file":%s,"action":%s}\n' "$(json_str "$file")" "$(json_str "$action")"
+}
+
+# Streams one backed-up dump. Validation errors are the usual JSON error,
+# before any output.
+api_backups_download() {
+    local errf; errf="$(mktemp)"
+    local name="${1:-}" file=""
+    shift || true
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --file) file="${2:-}"; shift ;;
+            *) file="?$1" ;;
+        esac
+        shift
+    done
+    local rc=0 src=""
+    set +e
+    src="$( {
+        set -e
+        API_ERR_CODE_FILE="$errf.code"
+        [[ "$file" != \?* ]] || api_die bad_request "backups download: unexpected argument '${file#\?}'"
+        load_conf
+        require_root
+        api_require_site "$name"
+        api_valid validate_backup_dump_name "$file"
+        api_backups_require_target "$name"
+        local target; target="$(restore_target "$name")"
+        local remote; remote="$(backup_remote_spec)"
+        local prefix; prefix="$(backup_dump_prefix "$remote" "$target" "$file")" || api_die not_found "no backup '$file' for '$target'"
+        printf '%s' "${remote}/$target/$prefix/$file"
+    } 2>"$errf" )"
+    rc=$?
+    set -e
+    if [[ "$rc" -ne 0 ]]; then
+        local msg; msg="$(grep -E '^\[error\]' "$errf" | tail -n 1 | sed 's/^\[error\] *//' || true)"
+        printf '{"api_version":%s,"error":{"code":%s,"message":%s}}\n' "$API_VERSION" \
+            "$(json_str "$(cat "$errf.code" 2>/dev/null || echo error)")" "$(json_str "${msg:-backups download failed}")"
+        rm -f "$errf" "$errf.code"
+        return 1
+    fi
+    rm -f "$errf" "$errf.code"
+    load_conf
+    rclone cat "$src"
 }

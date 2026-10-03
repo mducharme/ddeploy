@@ -311,6 +311,50 @@ assert_contains "$out" "isn't one of" "only the site's own upload dirs"
 out="$(echo hi | ddeploy api run start uploads-import testsite --dir web/uploads --actor admin@example.com 2>/dev/null || true)"
 assert_contains "$out" "isn't a .zip, .tar or .tar.gz" "non-archives refused up front"
 
+step "api: backups — run now, versions, restore, keep/delete, download"
+U=/home/deploy/persistent/testsite/web/uploads
+echo v1 > "$U/doc.txt"; echo keep > "$U/keep.txt"; chown www-testsite:www-data "$U/doc.txt" "$U/keep.txt"
+id="$(ddeploy api run start backup-uploads testsite --actor admin@example.com | run_id_of)"
+assert_contains "$(wait_run "$id" 180)" "succeeded" "uploads backed up on demand"
+sleep 1
+echo v2 > "$U/doc.txt"; rm "$U/keep.txt"
+id="$(ddeploy api run start backup-uploads testsite --actor admin@example.com | run_id_of)"
+assert_contains "$(wait_run "$id" 180)" "succeeded" "second uploads backup"
+out="$(ddeploy api backups testsite)"
+version="$(jq_py 'd["uploads"]["versions"][0]["id"]' <<< "$out")"
+if [[ "$version" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then pass "the second backup kept what it overwrote/deleted as version $version"; else fail "no uploads version: $out"; fi
+assert_contains "$(jq_py 'd["uploads"]["last_run"]["trigger"]' <<< "$out")" "web (admin@example.com)" "last uploads backup attributed"
+id="$(ddeploy api run start backup-restore-uploads testsite --dir web/uploads --version "$version" --actor admin@example.com | run_id_of)"
+assert_contains "$(wait_run "$id" 180)" "succeeded" "restore from a version"
+assert_file_exists "$U/keep.txt" "a file deleted since the previous backup is back"
+assert_contains "$(cat "$U/doc.txt")" "v1" "an overwritten file is back to its previous content"
+assert_contains "$(stat -c '%U:%G' "$U/keep.txt")" "www-testsite:www-data" "restored files belong to the site, not root"
+echo junk > "$U/junk.txt"
+id="$(ddeploy api run start backup-restore-uploads testsite --dir web/uploads --actor admin@example.com | run_id_of)"
+assert_contains "$(wait_run "$id" 180)" "succeeded" "restore from the mirror"
+assert_file_absent "$U/junk.txt" "the mirror restore replaced the folder"
+assert_contains "$(cat "$U/doc.txt")" "v2" "...with the backed-up content"
+DBA=(mysql --defaults-extra-file=/etc/ddeploy/db-admin.cnf -h dbhost testsite)
+"${DBA[@]}" -e "CREATE TABLE IF NOT EXISTS backup_probe (id int); INSERT INTO backup_probe VALUES (1);"
+id="$(ddeploy api run start backup-database testsite --actor admin@example.com | run_id_of)"
+assert_contains "$(wait_run "$id" 180)" "succeeded" "database backed up on demand"
+dump="$(ddeploy api backups testsite | jq_py 'd["database"]["dumps"][0]["file"]')"
+assert_contains "$dump" ".sql.gz" "the new dump is listed first ($dump)"
+"${DBA[@]}" -e "DROP TABLE backup_probe; CREATE TABLE after_backup (id int);"
+id="$(ddeploy api run start backup-restore-db testsite --file "$dump" --actor admin@example.com | run_id_of)"
+assert_contains "$(wait_run "$id" 180)" "succeeded" "database restored from the backup"
+tables="$("${DBA[@]}" -N -e 'SHOW TABLES')"
+assert_contains "$tables" "backup_probe" "the backed-up table is back"
+assert_not_contains "$tables" "after_backup" "and tables created since are gone"
+ddeploy api backups keep testsite --file "$dump" --actor admin@example.com >/dev/null
+assert_contains "$(ddeploy api backups testsite | jq_py 'd["database"]["dumps"][0]["kept"]')" "true" "kept dump is marked kept"
+assert_contains "$(ddeploy api backups download testsite --file "$dump" | gunzip)" "CREATE TABLE \`backup_probe\`" "a kept dump downloads"
+ddeploy api backups delete testsite --file "$dump" --actor admin@example.com >/dev/null
+assert_not_contains "$(ddeploy api backups testsite | jq_py '[x["file"] for x in d["database"]["dumps"]]')" "$dump" "deleted dump is gone"
+out="$(ddeploy api backups delete testsite --file ../../etc/passwd --actor admin@example.com 2>/dev/null || true)"
+assert_contains "$out" "invalid backup name" "path-like dump names refused"
+assert_contains "$(ddeploy api sites | jq_py '[s["last_backups"]["database"]["phase"] for s in d["sites"] if s["name"] == "testsite"]')" "succeeded" "the site list shows the last backup"
+
 step "init-web: the web UI's sudoers rule is api-only"
 ddeploy init-web >/dev/null 2>&1
 assert_file_exists /etc/sudoers.d/ddeploy-web

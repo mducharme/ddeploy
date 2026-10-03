@@ -43,17 +43,21 @@ cmd_backup_database() {
         # One site's dump failing must not stop every other site from
         # being backed up this run — a bare call here would abort the
         # whole loop under set -e.
+        local site_started="$SECONDS"
         if ! backup_site_database "$name" "$DB_NAME"; then
             log_error "backup-database failed for $name"
             failures=$((failures + 1))
             failed_names+=("$name")
+            backup_event "$name" backup-database failed "duration_s=$((SECONDS - site_started))" "error=backup-database failed for $name"
         else
             ok=$((ok + 1))
+            backup_event "$name" backup-database succeeded "duration_s=$((SECONDS - site_started))" "subject=${BACKUP_LAST_DUMP:-dump} ($(numfmt --to=iec --suffix=B "${BACKUP_LAST_DUMP_BYTES:-0}" 2>/dev/null || echo "${BACKUP_LAST_DUMP_BYTES:-0} bytes"))"
         fi
     done
     log_info "backup-database: done in $((SECONDS - started))s — $ok site(s) backed up, $failures failed"
     if [[ "$failures" -ne 0 ]]; then
-        notify_failure backup-database "" "${failures} site(s): ${failed_names[*]}"
+        # One site, from `api run start`: run_notifying reports the failure.
+        [[ -n "${DDEPLOY_EVENT_ATTRS:-}" ]] || notify_failure backup-database "" "${failures} site(s): ${failed_names[*]}"
         die "$failures site(s) failed to back up"
     fi
 }
