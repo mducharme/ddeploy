@@ -73,6 +73,8 @@ write (each needs --actor <email>):
   run start backup-restore-db <name> --file <dump> --actor <email>
   run start backup-restore-uploads <name> --dir <d> [--version <run>] --actor <email>
   backups keep|unkeep|delete <name> --file <dump> --actor <email>   keep = never pruned
+  config                                server settings the web UI may change (provisioner.conf)
+  config set --actor <email>            KEY=value lines on stdin; validated, backed up, applied
   run start provision <name> <repo-url> --actor <email> [--branch b] [--php X.Y]
       [--docroot p] [--db name] [--hostnames "a b"] [--custom-domains "a b"]
       [--upload-dirs "a b"] [--auth|--no-auth] [--node v] [--build|--no-build]
@@ -140,7 +142,7 @@ api_valid() {
 api_dispatch() {
     local verb="$1"; shift
     case "$verb" in
-        info|sites|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db|uploads|backups) ;;
+        info|sites|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db|uploads|backups|config) ;;
         *) api_die unknown_verb "unknown api verb '$verb'" ;;
     esac
     load_conf
@@ -163,6 +165,7 @@ api_dispatch() {
         db)           api_db "$@" ;;
         uploads)      api_uploads "$@" ;;
         backups)      api_backups "$@" ;;
+        config)       api_config "$@" ;;
     esac
 }
 
@@ -648,7 +651,7 @@ api_logs() {
             [[ "$name" =~ $NAME_RE ]] || continue
             case "$name" in
                 webhook|webhook-other) kind=webhook ;;
-                backup-uploads|backup-database|prune-previews) kind=fleet ;;
+                backup-uploads|backup-database|prune-previews|server-config) kind=fleet ;;
                 *) kind=site ;;
             esac
             local site="" label="ddeploy"

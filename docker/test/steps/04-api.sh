@@ -355,12 +355,35 @@ out="$(ddeploy api backups delete testsite --file ../../etc/passwd --actor admin
 assert_contains "$out" "invalid backup name" "path-like dump names refused"
 assert_contains "$(ddeploy api sites | jq_py '[s["last_backups"]["database"]["phase"] for s in d["sites"] if s["name"] == "testsite"]')" "succeeded" "the site list shows the last backup"
 
+step "api: server settings (provisioner.conf, sourced by root)"
+cp /etc/ddeploy/provisioner.conf /tmp/provisioner.conf.before
+out="$(printf 'FPM_MAX_CHILDREN=8\nBACKUP_SCHEDULE=42 * * * *\nNOTIFY_EVENTS=deploy-failure\n' | ddeploy api config set --actor root@example.com)"
+assert_contains "$(jq_py '[s["value"] for s in d["settings"] if s["key"] == "FPM_MAX_CHILDREN"]' <<< "$out")" '"8"' "setting saved"
+assert_contains "$(cat /etc/cron.d/ddeploy-backup-uploads)" "42 * * * *" "a changed schedule rewrites the cron job"
+assert_contains "$(grep -c '^FPM_MAX_CHILDREN=' /etc/ddeploy/provisioner.conf)" "1" "one line per key"
+assert_contains "$(tail -n 1 /var/log/ddeploy/server-config.log)" "web (root@example.com)" "change logged with who made it"
+assert_contains "$(find /etc/ddeploy -maxdepth 1 -name 'provisioner.conf.bak-*' | wc -l)" "1" "the previous file was backed up"
+# shellcheck disable=SC2016  # literal injection attempts, on purpose
+for bad in 'BASE_DOMAIN=evil.test' 'FPM_MAX_CHILDREN=$(touch /tmp/pwned)' 'DEFAULT_PHP=8.3`touch /tmp/pwned`' 'BACKUP_SCHEDULE=* * * * * root touch /tmp/pwned'; do
+    out="$(echo "$bad" | ddeploy api config set --actor root@example.com 2>/dev/null || true)"
+    assert_contains "$out" '"code":"bad_request"' "refused: ${bad%%=*}=…"
+done
+ddeploy list >/dev/null 2>&1 || true
+assert_file_absent /tmp/pwned "nothing injected ran (the file is sourced by every command)"
+assert_cmd_ok "provisioner.conf still loads" bash -c 'source /opt/ddeploy/lib/common.sh && load_conf'
+cat /tmp/provisioner.conf.before > /etc/ddeploy/provisioner.conf
+printf 'BACKUP_SCHEDULE=17 * * * *\n' | ddeploy api config set --actor root@example.com >/dev/null
+
 step "init-web: the web UI's sudoers rule is api-only"
 ddeploy init-web >/dev/null 2>&1
 assert_file_exists /etc/sudoers.d/ddeploy-web
 assert_file_exists /etc/nginx/sites-enabled/ddeploy-web.conf
 assert_cmd_ok "nginx accepts the web UI vhost" nginx -t
 assert_cmd_ok "sudoers rule passes visudo" visudo -cqf /etc/sudoers.d/ddeploy-web
+printf 'WEB_UPLOAD_MAX_MB=777\n' | ddeploy api config set --actor root@example.com >/dev/null
+assert_contains "$(cat /etc/nginx/sites-available/ddeploy-web.conf)" "client_max_body_size 777m" "a changed upload limit re-renders the web UI vhost"
+assert_cmd_ok "nginx still accepts it" nginx -t
+printf 'WEB_UPLOAD_MAX_MB=10240\n' | ddeploy api config set --actor root@example.com >/dev/null
 out="$(sudo -u "$WEB_USER" sudo -n /opt/ddeploy/provision.sh api info)"
 assert_contains "$out" '"api_version":1' "$WEB_USER can run provision.sh api"
 assert_cmd_fails "$WEB_USER can't run any other command" sudo -u "$WEB_USER" sudo -n /opt/ddeploy/provision.sh list

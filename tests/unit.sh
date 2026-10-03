@@ -20,6 +20,8 @@ source lib/config.sh
 source lib/cmd_db.sh
 # shellcheck source=lib/cmd_api.sh
 source lib/cmd_api.sh
+# shellcheck source=lib/cmd_api_config.sh
+source lib/cmd_api_config.sh
 notify_trigger() { printf 'manual (tester)'; }
 
 PASSES=0
@@ -108,6 +110,21 @@ done
 for bad in '../etc/passwd' 'testsite.access.log' 'nginx_../x' 'php8.3_fpm/../../etc' 'Testsite' 'site.debug'; do
     assert_fail "log name '$bad' refused" api_log_path "$bad"
 done
+
+echo "api config validation (provisioner.conf is sourced by root)"
+for ok in "FPM_MAX_CHILDREN=8" "BASIC_AUTH_DEFAULT=true" "BACKUP_SCHEDULE=*/15 * * * *" "PREVIEW_BRANCHES=feature/* fix/*" \
+          "NOTIFY_WEBHOOK=https://hooks.slack.com/services/T0/B0/xyz" "NOTIFY_WEBHOOK=" "NOTIFY_EVENTS=deploy-failure webhook-rejected" \
+          "UPLOADS_BACKUP_VERSIONS_DAYS=0" "NODE_BUILD_MEMORY_MAX=1536M" "DEFAULT_PHP=8.4" "PREVIEW_DB_MODE=isolated" "RELEASES_KEEP=08"; do
+    assert_ok "config accepts ${ok}" api_config_validate "${ok%%=*}" "${ok#*=}"
+done
+# shellcheck disable=SC2016,SC1003  # literal injection attempts, on purpose
+for bad in 'BASE_DOMAIN=evil.com' 'SITES_ROOT=/tmp' 'DB_ADMIN_CREDENTIALS=/tmp/x' 'FPM_MAX_CHILDREN=$(id)' 'FPM_MAX_CHILDREN=`id`' \
+           'DEFAULT_PHP=8.3"; id; "' "DEFAULT_PHP=8.3' x" 'NOTIFY_WEBHOOK=https://x/$(id)' 'NOTIFY_WEBHOOK=http://insecure' \
+           'BACKUP_SCHEDULE=* * * * * root id' 'RELEASES_KEEP=0' 'RELEASES_KEEP=099' 'BASIC_AUTH_DEFAULT=yes' 'NOTIFY_EVENTS=everything' \
+           'PREVIEW_DB_MODE=both' 'NODE_BUILD_MEMORY_MAX=lots' 'FPM_MAX_CHILDREN=5\'; do
+    assert_fail "config refuses ${bad}" api_config_validate "${bad%%=*}" "${bad#*=}"
+done
+assert_fail "config refuses a newline" api_config_validate CLIENT_MAX_BODY_SIZE $'64m\nid'
 
 echo "cmd_db.sh"
 assert_ok "snapshot id" validate_snapshot_id 20261002T143012Z-pre-import

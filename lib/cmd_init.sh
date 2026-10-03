@@ -370,6 +370,18 @@ EOF
         chmod 600 "$BACKUP_CREDENTIALS"
     fi
 
+    install_cron_jobs
+
+    log_info "== ddeploy command =="
+    install_cli
+
+    log_info "init complete — from here on, 'ddeploy <command>' works from anywhere (e.g. ddeploy provision <name> <repo-url>)"
+}
+
+# The root cron jobs for backups and preview pruning, from provisioner.conf
+# — written or removed per their *_ENABLED flag. Called by init, and by
+# `api config set` when a schedule or flag changes.
+install_cron_jobs() {
     if [[ "$BACKUP_ENABLED" == "true" ]]; then
         cat > /etc/cron.d/ddeploy-backup-uploads <<EOF
 $BACKUP_SCHEDULE root $PROVISIONER_DIR/provision.sh backup-uploads >> $LOG_DIR/backup-uploads.log 2>&1
@@ -402,9 +414,4 @@ EOF
         rm -f /etc/cron.d/ddeploy-prune-previews
         log_info "PREVIEW_PRUNE_ENABLED=false — skipping preview-prune cron"
     fi
-
-    log_info "== ddeploy command =="
-    install_cli
-
-    log_info "init complete — from here on, 'ddeploy <command>' works from anywhere (e.g. ddeploy provision <name> <repo-url>)"
 }

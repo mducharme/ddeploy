@@ -867,7 +867,8 @@ every verb. Usable from scripts too.
   `branches <name>`, `commits <name> <from> <to>`, `db info|credentials
   <name>`, `db dump <name>` (gzipped SQL on stdout), `uploads <name>`,
   `uploads download <name> --dir <d>` (.tar.gz on stdout), `backups
-  <name>`, `backups download <name> --file <dump>`, `run show|log <id>`.
+  <name>`, `backups download <name> --file <dump>`, `run show|log <id>`,
+  `config` (server settings; secrets masked).
 - Write (each needs `--actor <email>`): `run start deploy|rollback|
   provision|db-import|db-restore|db-snapshot|preview-create|
   preview-deploy|preview-remove|uploads-import|uploads-restore|
@@ -875,8 +876,13 @@ every verb. Usable from scripts too.
   backup-restore-uploads`, `backups keep|unkeep|delete`, `run cancel <id>`, `env
   <name> --apply` (values on stdin, never argv), `settings <name>`
   (operator overrides and the tracked branch — every `override` key except
-  `db_env_scheme` and `persistent_files`). Provision takes a fixed flag set
-  (no `--deploy-cmd`).
+  `db_env_scheme` and `persistent_files`), `config set` (`KEY=value` lines
+  on stdin: an allowlist of `provisioner.conf` keys — site defaults,
+  previews, backup schedules and retention, notifications, limits — each
+  validated; the file is backed up to `provisioner.conf.bak-<time>` first
+  and restored if it no longer loads; cron and the web vhost are rewritten
+  when a key needs it; changes logged to `server-config.log`). Provision
+  takes a fixed flag set (no `--deploy-cmd`).
 
 **Runs and history** (CLI, webhook and web alike — not just the UI):
 

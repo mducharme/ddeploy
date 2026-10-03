@@ -292,6 +292,14 @@ plus:
 - **`db credentials` returns the site's own DB user**, never the admin
   account; the database isn't exposed publicly, so using them still takes
   an SSH tunnel through the server.
+- **`config set` changes an allowlist of `provisioner.conf` keys, never
+  code.** The file is `source`d by root, so every value is refused if it
+  holds `$`, a backtick, `\`, a quote or a newline, then checked by its
+  own validator (`lib/cmd_api_config.sh`, `API_CONFIG_KEYS`). Paths,
+  hostnames, database and object-storage credentials aren't on the list.
+  The file is backed up first and restored if it no longer loads; the
+  webhook URL (a secret) arrives on stdin and is masked on the way out.
+  The web UI only lets super-admins reach it.
 - **`run cancel` only stops runs the api started** (it needs their
   metadata file), never a CLI or webhook run.
 

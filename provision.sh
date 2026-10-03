@@ -98,6 +98,8 @@ source "$LIB_DIR/cmd_db.sh"
 source "$LIB_DIR/cmd_uploads.sh"
 # shellcheck source=lib/cmd_api.sh
 source "$LIB_DIR/cmd_api.sh"
+# shellcheck source=lib/cmd_api_config.sh
+source "$LIB_DIR/cmd_api_config.sh"
 
 # Runs a deploy-type command ($3...) for site $2 and, if it fails, sends
 # a deploy-failure notification carrying the error it printed. The
