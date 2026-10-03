@@ -399,6 +399,20 @@ if out="$(ddeploy api backups testsite)"; then pass "api backups works with no b
 assert_contains "$(jq_py 'len(d["database"]["dumps"])' <<< "$out")" "0" "...no dumps"
 assert_contains "$(jq_py 'd["error"]' <<< "$out")" "null" "...and no error"
 assert_contains "$(jq_py 'len(d["uploads"]["versions"])' <<< "$out")" "0" "...no versions"
+upl_check() { ddeploy api doctor testsite | jq_py '[c["status"] + " " + c["detail"] for s in d["sites"] for c in s["checks"] if c["check"] == "uploads backup"][0]'; }
+P=/home/deploy/persistent/testsite
+mkdir -p /tmp/upl-aside && rm -rf /tmp/upl-aside/*
+for d in web/uploads private-uploads; do
+    [[ -d "$P/$d" ]] && mkdir -p "/tmp/upl-aside/$(dirname "$d")" && mv "$P/$d" "/tmp/upl-aside/$d"
+    install -d -o www-testsite -g www-data -m 2750 "$P/$d"
+done
+assert_contains "$(upl_check)" "ok upload folders are empty" "doctor: empty upload folders have nothing to back up (ok)"
+echo x > "$P/web/uploads/new.txt"
+assert_contains "$(upl_check)" "warn 'web/uploads' has files but none in" "doctor: files locally, none in the bucket (warn)"
+for d in web/uploads private-uploads; do
+    rm -rf "${P:?}/$d"
+    [[ -d "/tmp/upl-aside/$d" ]] && mv "/tmp/upl-aside/$d" "$P/$d"
+done
 rclone moveto "$remote/zz-aside-testsite" "$remote/testsite" >/dev/null 2>&1 || true
 assert_contains "$(ddeploy api backups testsite | jq_py 'len(d["database"]["dumps"]) > 0')" "true" "backups back in place"
 

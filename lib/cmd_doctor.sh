@@ -322,19 +322,41 @@ doctor_check_db_backup() {
 # a live mirror, not a dated series, so a remote file's timestamp
 # doesn't reliably indicate staleness (nothing changing locally also
 # means nothing changing remotely, even with sync working perfectly).
-# "has anything ever synced at all" is what's actually checkable here.
+# Checkable: the last backup-uploads run's outcome, and that a folder
+# with files locally has synced content. Empty folders have nothing to
+# back up, so they aren't "not backed up yet".
 doctor_check_uploads_backup() {
     local name="$1"
     command -v rclone >/dev/null 2>&1 || return 0
     [[ -n "$BACKUP_CREDENTIALS" && -f "$BACKUP_CREDENTIALS" && -n "$BACKUP_BUCKET" ]] || return 0
     [[ "${#UPLOAD_DIRS[@]}" -gt 0 ]] || return 0
 
-    local remote; remote="$(backup_remote_spec)"
     local target; target="$(restore_target "$name")"
-    local dir="${UPLOAD_DIRS[0]}"
-    local suffix=""
-    [[ "${#UPLOAD_DIRS[@]}" -gt 1 ]] && suffix=" (checked 1 of ${#UPLOAD_DIRS[@]} upload_dirs)"
+    local last=""
+    [[ -f "$EVENTS_DIR/$target.jsonl" ]] \
+        && last="$(grep -E '"kind":"backup-uploads","phase":"(succeeded|failed)"' "$EVENTS_DIR/$target.jsonl" | tail -n 1 || true)"
+    if [[ "$last" == *'"phase":"failed"'* ]]; then
+        local why; why="$(sed -nE 's/.*"error":"([^"]*)".*/\1/p' <<< "$last")"
+        doctor_result warn "uploads backup" "the last files backup failed${why:+: ${why:0:200}}"
+        return
+    fi
 
+    # The first upload dir with files in it; none: nothing to back up.
+    local d dir="" with_files=0
+    for d in "${UPLOAD_DIRS[@]}"; do
+        if [[ -n "$(find "$PERSISTENT_ROOT/$target/$d" -type f -print -quit 2>/dev/null)" ]]; then
+            with_files=$((with_files + 1))
+            [[ -n "$dir" ]] || dir="$d"
+        fi
+    done
+    if [[ -z "$dir" ]]; then
+        doctor_result ok "uploads backup" "upload folders are empty — nothing to back up yet"
+        return
+    fi
+    local suffix=""
+    [[ "$with_files" -gt 1 ]] && suffix=" (checked 1 of $with_files folders with files)"
+
+    local remote; remote="$(backup_remote_spec)"
     # lsf doesn't recurse: one level of a large uploads folder, not all of it.
     local raw rc=0
     raw="$(timeout 30 rclone lsf "${remote}/${target}/${dir}/" 2>&1)" || rc=$?
@@ -345,7 +367,7 @@ doctor_check_uploads_backup() {
     elif grep -q 'ERROR\|Failed' <<< "$raw" && ! grep -q 'directory not found' <<< "$raw"; then
         doctor_result warn "uploads backup" "couldn't list $BACKUP_BUCKET/$target/$dir/: $(grep 'ERROR\|Failed' <<< "$raw" | tail -n 1 | cut -c1-200)$suffix"
     else
-        doctor_result warn "uploads backup" "'$dir' has no synced content in $BACKUP_BUCKET/$target/$dir/ yet — has backup-uploads run yet?$suffix"
+        doctor_result warn "uploads backup" "'$dir' has files but none in $BACKUP_BUCKET/$target/$dir/ yet — has backup-uploads run yet?$suffix"
     fi
 }
 
