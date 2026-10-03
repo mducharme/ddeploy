@@ -64,6 +64,19 @@ wait_for "dbhost systemd" 60 systemd_ready dbhost
 wait_for "web systemd" 60 systemd_ready web
 wait_for "minio health" 60 "${COMPOSE[@]}" exec -T web curl -fsS http://objectstore:9000/minio/health/live
 
+# The bucket exists before ddeploy sees it, like a real Space/bucket (rclone
+# runs with no_check_bucket: it never creates one). Plus a key limited to
+# that bucket — no bucket creation, like DigitalOcean's per-Space keys —
+# which 04-api.sh backs up with.
+"${COMPOSE[@]}" exec -T objectstore sh -c '
+    mc alias set local http://localhost:9000 ddeployminio ddeployminiosecret >/dev/null
+    mc mb --ignore-existing local/ddeploy-test >/dev/null
+    printf "%s" "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"s3:ListBucket\",\"s3:GetBucketLocation\"],\"Resource\":[\"arn:aws:s3:::ddeploy-test\"]},{\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:PutObject\",\"s3:DeleteObject\"],\"Resource\":[\"arn:aws:s3:::ddeploy-test/*\"]}]}" > /tmp/limited.json
+    mc admin policy create local ddeploy-limited /tmp/limited.json >/dev/null
+    mc admin user add local limitedkey limitedsecret123 >/dev/null
+    mc admin policy attach local ddeploy-limited --user limitedkey >/dev/null 2>&1 || true
+' || { log "could not prepare the object store"; exit 1; }
+
 # --- wire the two containers together, like a real provisioner.conf would --
 
 WEB_ID="$("${COMPOSE[@]}" ps -q web)"

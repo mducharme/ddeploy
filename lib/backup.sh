@@ -52,6 +52,10 @@ backup_endpoint_with_bucket() {
     printf '%s%s%s\n' "$scheme" "${host#*.}" "${path%/}"
 }
 
+# no_check_bucket: rclone otherwise checks (and tries to create) the
+# bucket before uploading, which a key limited to one bucket isn't allowed
+# to do (DigitalOcean's per-Space keys: listing works, every upload gets
+# AccessDenied). ddeploy never creates the bucket; it must already exist.
 backup_remote_spec() {
     # shellcheck source=/dev/null
     source "$BACKUP_CREDENTIALS"
@@ -68,6 +72,7 @@ env_auth = false
 access_key_id = $BACKUP_ACCESS_KEY
 secret_access_key = $BACKUP_SECRET_KEY
 endpoint = $BACKUP_ENDPOINT
+no_check_bucket = true
 EOF
     chmod 600 "$tmp"
     mv "$tmp" "$RCLONE_CONFIG"

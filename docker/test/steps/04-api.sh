@@ -431,6 +431,15 @@ cp /tmp/conf.bucket-before /etc/ddeploy/provisioner.conf
 cp /tmp/creds.bucket-before "$creds"
 assert_contains "$(ddeploy api backups testsite | jq_py 'd["bucket"]')" "$bucket" "provisioner.conf alone still works (older setups)"
 
+step "api: backups — a key limited to the bucket (no bucket creation) can back up"
+cp "$creds" /tmp/creds.limited-before
+sed -i 's/^BACKUP_ACCESS_KEY=.*/BACKUP_ACCESS_KEY="limitedkey"/; s/^BACKUP_SECRET_KEY=.*/BACKUP_SECRET_KEY="limitedsecret123"/' "$creds"
+id="$(ddeploy api run start backup-database testsite --actor admin@example.com | run_id_of)"
+assert_contains "$(wait_run "$id" 180)" "succeeded" "database backup with a bucket-limited key"
+assert_not_contains "$(ddeploy api run log "$id")" "AccessDenied" "...no AccessDenied on upload"
+assert_contains "$(ddeploy api backups testsite | jq_py 'd["error"]')" "null" "...and it lists"
+cp /tmp/creds.limited-before "$creds"
+
 step "api: backups — run now, versions, restore, keep/delete, download"
 U=/home/deploy/persistent/testsite/web/uploads
 echo v1 > "$U/doc.txt"; echo keep > "$U/keep.txt"; chown www-testsite:www-data "$U/doc.txt" "$U/keep.txt"

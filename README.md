@@ -709,7 +709,10 @@ real bucket** (`rclone lsd`) before writing, then turns
 - **Any other S3-compatible** (MinIO, Backblaze B2, Wasabi, ...): same
   three fields.
 
-One set of credentials + one bucket covers every project.
+One set of credentials + one bucket covers every project. Create the
+bucket (Space) first: ddeploy never creates it. That way a key limited to
+that one bucket works (DigitalOcean's per-Space keys, an S3 policy without
+`CreateBucket`). The key needs to list, read, write and delete objects in it.
 (`BACKUP_BUCKET` used to live in `provisioner.conf`; that still works, but
 the credentials file wins, and doctor warns if the two differ.)
 
