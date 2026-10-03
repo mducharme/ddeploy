@@ -153,14 +153,14 @@ run_notifying() {
     # so bash runs this as soon as they've exited. A release that wasn't
     # switched in yet is discarded by cmd_deploy's own EXIT trap.
     # shellcheck disable=SC2064  # expand $site/$label/$started now
-    trap "[[ \$EUID -eq 0 ]] && event_record '$site' \"\$(event_attr_get \"\$DDEPLOY_EVENT_ATTRS\" kind '$label')\" failed \"duration_s=\$((SECONDS - $started))\" 'error=interrupted (stopped before it finished)'; rm -f \"\$DDEPLOY_EVENT_ATTRS\"; exit 143" TERM INT HUP
+    trap "[[ \$EUID -eq 0 ]] && event_record '$site' \"\$(event_attr_get \"\$DDEPLOY_EVENT_ATTRS\" kind '$label')\" failed \"duration_s=\$((SECONDS - $started))\" 'error=interrupted (stopped before it finished)'; rm -f \"\$DDEPLOY_EVENT_ATTRS\" '$errlog'; exit 143" TERM INT HUP
     set +e
     { ( set -e; "$@" ) 2>&1 1>&3 3>&- | tee -a "$errlog" "$runlog" >&2; } 3>&1
     rc="${PIPESTATUS[0]}"
     set -e
     trap - TERM INT HUP
     local -a end_attrs=("${start_attrs[@]}") key
-    for key in from_sha to_sha subject branch project; do
+    for key in from_sha to_sha subject author branch project; do
         end_attrs+=("$key=$(event_attr_get "$DDEPLOY_EVENT_ATTRS" "$key")")
     done
     end_attrs+=("duration_s=$((SECONDS - started))")

@@ -8,6 +8,12 @@ server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
     server_name {{SERVER_NAMES}};
+    # This site's own logs (`ddeploy api logs <name>.access|.error`, the web
+    # UI's Logs page); PHP errors land in the error log too — nginx records
+    # what PHP-FPM writes to stderr. Rotated with the rest of
+    # /var/log/nginx/*.log by the nginx package's logrotate.
+    access_log /var/log/nginx/{{NAME}}.access.log;
+    error_log /var/log/nginx/{{NAME}}.error.log;
     root {{ROOT}};
     index index.php;
     client_max_body_size {{MAX_BODY_SIZE}};

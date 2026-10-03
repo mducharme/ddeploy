@@ -192,6 +192,7 @@ cmd_provision_preview() {
     site_log "$name" "provision-preview: started ($(notify_trigger)) — $project / $branch, mode=$mode, php=$PHP_VERSION, at $(git -c safe.directory='*' -C "$dir" log -1 --format='%h "%s"' | cut -c1-120)"
     event_attr to_sha "$(git -c safe.directory='*' -C "$dir" log -1 --format=%H 2>/dev/null || true)"
     event_attr subject "$(git -c safe.directory='*' -C "$dir" log -1 --format=%s 2>/dev/null | cut -c1-200 || true)"
+    event_attr author "$(git -c safe.directory='*' -C "$dir" log -1 --format=%an 2>/dev/null | cut -c1-100 || true)"
 
     log_info "running first deploy for $name"
     start_deploy_ssh_agent "$exec_user"
@@ -269,6 +270,7 @@ cmd_deploy_preview() {
     site_log "$name" "deploy-preview: started ($(notify_trigger)) — ${before:-?} -> $(git -c safe.directory='*' -C "$dir" log -1 --format='%h "%s"' | cut -c1-120)"
     event_attr to_sha "$(git -c safe.directory='*' -C "$dir" log -1 --format=%H 2>/dev/null || true)"
     event_attr subject "$(git -c safe.directory='*' -C "$dir" log -1 --format=%s 2>/dev/null | cut -c1-200 || true)"
+    event_attr author "$(git -c safe.directory='*' -C "$dir" log -1 --format=%an 2>/dev/null | cut -c1-100 || true)"
 
     resolve_preview_config "$name" "$PREVIEW_PROJECT" "$PREVIEW_MODE"
     ensure_php_installed "$PHP_VERSION"

@@ -50,6 +50,11 @@ out="$(ddeploy api run log ../../../etc/shadow 2>/dev/null || true)"
 assert_contains "$out" "invalid run id" "path traversal in a run id refused"
 assert_cmd_fails "api exits nonzero on error" ddeploy api site nope
 
+step "api: filters that match nothing are empty results, not errors"
+assert_contains "$(ddeploy api events --project no-such-project)" '"events":[]' "events --project with no previews"
+assert_contains "$(ddeploy api events --run 20990101T000000Z-abcdef)" '"events":[]' "events --run with no match"
+assert_contains "$(ddeploy api previews no-such-project)" '"previews":[]' "previews of a project with none"
+
 step "api: info"
 out="$(ddeploy api info)"
 assert_contains "$(jq_py 'd["api_version"]' <<< "$out")" "1" "api_version is 1"
@@ -226,6 +231,21 @@ assert_contains "$(ddeploy api run show "$id" | jq_py 'd["events"][-1]["error"],
 rm -f /etc/ddeploy/hooks/post-deploy.d/99-slow.sh
 out="$(ddeploy api run cancel "$id" --actor boss@example.com 2>/dev/null || true)"
 assert_contains "$out" '"code":"conflict"' "cancelling a finished run is a conflict"
+
+step "api: deploy date, last run, per-site nginx logs, server logs"
+out="$(ddeploy api sites)"
+assert_contains "$(jq_py 'd["sites"][0]["deployed_at"] is not None' <<< "$out")" "true" "deployed_at reported"
+assert_contains "$(jq_py 'd["sites"][0]["last_run"]["kind"] not in ("env-change", "settings-change")' <<< "$out")" "true" "last_run skips config changes"
+curl_site testsite.staging.ddeploy.test -o /dev/null || true
+curl -sk -o /dev/null --resolve testsite.staging.ddeploy.test:443:127.0.0.1 https://testsite.staging.ddeploy.test/no-such-page || true
+assert_file_exists /var/log/nginx/testsite.access.log "the site has its own nginx access log"
+out="$(ddeploy api logs)"
+assert_contains "$(jq_py '[l["name"] for l in d["logs"]]' <<< "$out")" "testsite.access" "per-site nginx logs listed"
+assert_contains "$(jq_py '[l["name"] for l in d["logs"] if l["kind"] == "server"]' <<< "$out")" "_fpm" "PHP-FPM log listed"
+assert_contains "$(ddeploy api logs testsite.access --lines 5 | jq_py 'd["text"]')" "/no-such-page" "per-site access log readable"
+assert_contains "$(ddeploy api logs nginx_error --lines 1 | jq_py 'd["name"]')" "nginx_error" "server-wide nginx error log readable"
+out="$(ddeploy api logs ../../etc/shadow 2>/dev/null || true)"
+assert_contains "$out" "invalid log name" "log path traversal refused"
 
 step "init-web: the web UI's sudoers rule is api-only"
 ddeploy init-web >/dev/null 2>&1

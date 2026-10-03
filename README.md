@@ -106,7 +106,7 @@ configure                     create/update provisioner.conf (see -h)
 init                          set up a web server (packages, PHP, TLS, firewall)
 init-db                       set up a dedicated database server
 provision <name> [repo-url]   add a site
-deploy <name> [--rollback [<sha>]] [--history] [--if-changed]   new release + re-apply vhost/FPM config + run deploy steps (see -h)
+deploy <name> [--rollback [<sha>] | --force] [--history] [--if-changed]   new release + re-apply vhost/FPM config + run deploy steps (see -h)
 remove <name> [--purge-db] [--purge-files] [--purge-persistent]
 list                          table of provisioned sites
 provision-all                 provision every site in ./manifest
@@ -578,6 +578,24 @@ clones that branch directly. Manifest onboarding takes it as an optional
 3rd column: `<name> <repo-url> [branch]`. Branch previews are
 unaffected — always pinned to their own PR branch.
 
+### Force-pushed branches
+
+A deploy fast-forwards to the branch's tip. If the branch was rewritten
+since the last deploy (force-push, rebase, amend), the live commit is no
+longer on it, and the deploy fails without touching what's live:
+
+```
+'mysite': origin/main was force-pushed (live f24c640 is no longer on it, tip is now 9a1b2c3) — …
+```
+
+`deploy <name> --force` deploys the new tip anyway. On a staging server,
+where branches are rewritten routinely, `ALLOW_FORCE_PUSH="true"` in
+`provisioner.conf` does that on every deploy, webhook ones included —
+with a `[warn]` and a line in the site log each time. Either way it's an
+ordinary new release: the previous one stays on disk, so
+`deploy <name> --rollback` returns to the pre-force-push commit.
+Previews always follow force-pushes.
+
 ### Rolling back
 
 ```
@@ -822,6 +840,14 @@ every verb. Usable from scripts too.
   events too (`env-change`, `settings-change`, keys only — never values),
   so a site's history shows who changed what alongside its deploys.
 - Event files are trimmed to their newest 4000 lines past 2 MB.
+- **Per-site web server logs.** Each site's vhost writes its own
+  `/var/log/nginx/<name>.access.log` and `<name>.error.log` (from the
+  site's next deploy on). PHP errors land in the error log too, since nginx
+  records what PHP-FPM writes to stderr. They're rotated with the rest of
+  `/var/log/nginx/*.log`. `ddeploy api logs` reads them as
+  `<name>.access` / `<name>.error`, plus the server-wide
+  `nginx_access`, `nginx_error` and `phpX.Y_fpm` (pool warnings like
+  "max_children reached").
 - **Runs on one site are serialized**, whoever starts them: `provision`,
   `deploy`, `remove` and the preview commands take the site's lock (the
   one webhook deploys always took). A second run waits, and says so in its

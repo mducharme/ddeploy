@@ -185,9 +185,13 @@ hook_verify_and_process() {
 
     local job_file="$claimed.job"
     printf '%s' "$report" | yq -p=json -o=json -I=0 eval '.job' - > "$job_file"
-    # Seen by every provision.sh this job runs, for their own logs and
-    # Slack messages ("deployed by webhook [id]").
-    export DDEPLOY_TRIGGER="webhook [$WEBHOOK_LOG_ID]"
+    # Seen by every provision.sh this job runs, for their own logs, Slack
+    # messages and run history ("webhook [id] by <who pushed>"). The actor
+    # is already log-safe (verify_and_spool.py _clean); the charset check
+    # here is belt-and-braces before it becomes part of every event line.
+    local actor; actor="$(hook_report_field "$report" '.meta.actor')"
+    [[ "$actor" =~ ^[A-Za-z0-9._@+-]{1,100}$ ]] || actor=""
+    export DDEPLOY_TRIGGER="webhook [$WEBHOOK_LOG_ID]${actor:+ by $actor}"
     if ! hook_process_job "$job_file"; then
         hook_log error "job failed — kept at $failed/$(basename "$job_file") for inspection"
         mv -f "$job_file" "$failed/" || rm -f "$job_file"

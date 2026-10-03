@@ -7,7 +7,8 @@
 #     {ts, run_id, site, kind, phase, trigger, ...}
 #     kind   deploy|rollback|provision|provision-preview|deploy-preview|remove-preview
 #     phase  started|succeeded|failed|skipped
-#     extra  from_sha to_sha subject branch project duration_s error
+#     extra  from_sha to_sha subject author branch project duration_s error
+#            (author: the deployed commit's git author)
 #   $RUNS_LOG_DIR/<run-id>.log  the run's full output (stdout + stderr)
 #   $RUNS_META_DIR/<run-id>.json  only for runs started through
 #                               `api run start` (who asked, for what)

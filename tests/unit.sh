@@ -97,6 +97,18 @@ assert_ok "small files left alone" bash -c "[[ \$(wc -l < '$trimf') -eq 10 ]]"
 rm -f "$trimf"
 assert_ok "event_record refuses a path-like site name" bash -c "source lib/common.sh; source lib/json.sh; source lib/events.sh; notify_trigger() { :; }; EVENTS_DIR=\$(mktemp -d); event_record '../x' deploy started; [[ -z \$(ls -A \$EVENTS_DIR) && ! -e \$EVENTS_DIR/../x.jsonl ]]"
 
+echo "api log names"
+LOG_DIR=/var/log/ddeploy
+for pair in "testsite:/var/log/ddeploy/testsite.log" "webhook:/var/log/ddeploy/webhook.log" \
+            "testsite.access:/var/log/nginx/testsite.access.log" "testsite.error:/var/log/nginx/testsite.error.log" \
+            "nginx_access:/var/log/nginx/access.log" "nginx_error:/var/log/nginx/error.log" \
+            "php8.3_fpm:/var/log/php8.3-fpm.log"; do
+    assert_ok "log ${pair%%:*} -> ${pair#*:}" bash -c "source lib/common.sh; source lib/json.sh; source lib/cmd_api.sh; LOG_DIR=/var/log/ddeploy; [[ \$(api_log_path '${pair%%:*}') == '${pair#*:}' ]]"
+done
+for bad in '../etc/passwd' 'testsite.access.log' 'nginx_../x' 'php8.3_fpm/../../etc' 'Testsite' 'site.debug'; do
+    assert_fail "log name '$bad' refused" api_log_path "$bad"
+done
+
 echo "cmd_db.sh"
 assert_ok "snapshot id" validate_snapshot_id 20261002T143012Z-pre-import
 assert_fail "snapshot id with a path" validate_snapshot_id '20261002T143012Z-../../x'

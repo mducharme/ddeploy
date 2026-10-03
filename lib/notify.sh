@@ -223,7 +223,7 @@ notify_log_snippet() {
 }
 
 # Human description of who/what started this run, for messages:
-# "webhook [ab12cd34]" (set by hook-worker), else the sudo user.
+# "webhook [ab12cd34] by <who pushed>" (set by hook-worker), else the sudo user.
 notify_trigger() {
     if [[ -n "${DDEPLOY_TRIGGER:-}" ]]; then
         printf '%s' "$DDEPLOY_TRIGGER"

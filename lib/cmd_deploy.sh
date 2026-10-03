@@ -9,7 +9,7 @@
 
 usage_deploy() {
     cat <<'EOF'
-usage: ddeploy deploy <name> [--rollback [<sha>] | --if-changed]
+usage: ddeploy deploy <name> [--rollback [<sha>] | --force] [--if-changed]
        ddeploy deploy <name> --history
 
 options:
@@ -19,6 +19,11 @@ options:
                         new release directory has to be built. See README
                         "Rolling back" for what this does and does NOT
                         undo (database migrations are not reversed)
+  --force               if the branch was force-pushed (history
+                        rewritten), deploy origin's new tip anyway instead
+                        of failing (ALLOW_FORCE_PUSH=true in
+                        provisioner.conf does this on every deploy). The
+                        previous release stays for --rollback
   --history             print this site's deploy history (newest last) and
                         exit — use a SHA from here with --rollback
   --if-changed          do nothing if the live release is already at the
@@ -43,7 +48,7 @@ cmd_deploy() {
         die "'$name' is a preview — use deploy-preview, not deploy"
     fi
 
-    local rollback=0 rollback_sha="" history=0 if_changed=0
+    local rollback=0 rollback_sha="" history=0 if_changed=0 force=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --rollback)
@@ -52,11 +57,14 @@ cmd_deploy() {
                 ;;
             --history) history=1 ;;
             --if-changed) if_changed=1 ;;
+            --force) force=1 ;;
             -h|--help) usage_deploy; return 0 ;;
             *) die "unknown option: $1" ;;
         esac
         shift
     done
+
+    [[ "$rollback" -eq 1 && "$force" -eq 1 ]] && die "--force and --rollback don't go together (--rollback never pulls)"
 
     ensure_releases_layout "$name"
 
@@ -112,7 +120,7 @@ cmd_deploy() {
         dest="$(prepare_rollback_release "$name" "$target")"
         [[ "$ROLLBACK_RELEASE_KIND" == "existing" ]] && run_hooks=0
     else
-        dest="$(prepare_forward_release "$name")"
+        dest="$(prepare_forward_release "$name" "$force")"
     fi
     local verb=deploy
     [[ "$rollback" -eq 1 ]] && verb=rollback
@@ -121,6 +129,7 @@ cmd_deploy() {
     event_attr from_sha "$current_sha"
     event_attr to_sha "$(git -C "$dest" log -1 --format=%H 2>/dev/null || true)"
     event_attr subject "$(git -C "$dest" log -1 --format=%s 2>/dev/null | cut -c1-200 || true)"
+    event_attr author "$(git -C "$dest" log -1 --format=%an 2>/dev/null | cut -c1-100 || true)"
     event_attr branch "$(git -C "$dest" symbolic-ref --short -q HEAD 2>/dev/null || true)"
 
     # Discard this release on any failure before switch_current, so a

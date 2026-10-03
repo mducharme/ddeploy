@@ -210,10 +210,14 @@ clone_into_release() {
 
 # Next forward deploy: clone the live tree (local, fast), restore origin
 # to the real remote (git clone of a path would otherwise set origin to
-# that path), pull --ff-only as the site user. Prints the new release
+# that path), then fast-forward to origin's tip. Prints the new release
 # path. Leaves current untouched; caller switches after hooks succeed.
+# $2=1 (`deploy --force`) or ALLOW_FORCE_PUSH=true: a branch whose
+# history was rewritten (force-push, rebase) is reset to origin's tip
+# instead of failing. The live release keeps the old commit, so
+# --rollback can still go back to it.
 prepare_forward_release() {
-    local name="$1"
+    local name="$1" force="${2:-0}"
     local root; root="$(site_root "$name")"
     local live; live="$(current_release_real "$name")"
     [[ -d "$live/.git" ]] || die "$root/current is not a git repo — provision it first"
@@ -266,9 +270,32 @@ prepare_forward_release() {
         run_captured "$out" git -c safe.directory='*' -C "$staging" checkout -B "$target_branch" "origin/$target_branch" \
             || git_failed "$name" "$out" "$staging" "failed to switch to deploy_branch '$target_branch'"
     else
-        log_info "git pull --ff-only ($name)"
-        run_captured "$out" env GIT_SSH_COMMAND="$(git_ssh_command)" git -c safe.directory='*' -C "$staging" pull --ff-only \
-            || git_failed "$name" "$out" "$staging" "git pull --ff-only failed — live tree left unchanged (a force-push on the branch? see 'ddeploy logs $name')"
+        # Fetch, then decide — not `pull --ff-only`, which can't tell a
+        # rewritten branch apart from any other failure.
+        [[ -n "$current_branch" && "$current_branch" != "HEAD" ]] \
+            || git_failed "$name" "$out" "$staging" "the live release isn't on a branch (detached HEAD) — pin one with 'provision $name --branch <branch>'"
+        run_captured "$out" env GIT_SSH_COMMAND="$(git_ssh_command)" git -c safe.directory='*' -C "$staging" fetch --quiet origin "$current_branch" \
+            || git_failed "$name" "$out" "$staging" "failed to fetch origin/$current_branch — live tree left unchanged"
+        local head tip
+        head="$(git -c safe.directory='*' -C "$staging" rev-parse HEAD)"
+        tip="$(git -c safe.directory='*' -C "$staging" rev-parse FETCH_HEAD)"
+        if git -c safe.directory='*' -C "$staging" merge-base --is-ancestor "$head" "$tip"; then
+            log_info "git fast-forward to ${tip:0:7} ($name)"
+            run_captured "$out" git -c safe.directory='*' -C "$staging" merge --ff-only --quiet "$tip" \
+                || git_failed "$name" "$out" "$staging" "fast-forward to ${tip:0:7} failed — live tree left unchanged"
+        else
+            local rewritten="origin/$current_branch was force-pushed (live ${head:0:7} is no longer on it, tip is now ${tip:0:7})"
+            local why=""
+            if [[ "$force" == "1" ]]; then why="--force"
+            elif [[ "$ALLOW_FORCE_PUSH" == "true" ]]; then why="ALLOW_FORCE_PUSH"
+            fi
+            [[ -n "$why" ]] \
+                || git_failed "$name" "$out" "$staging" "$rewritten — live tree left unchanged; 'ddeploy deploy $name --force' deploys the new tip (or set ALLOW_FORCE_PUSH=true in provisioner.conf to always follow force-pushes)"
+            log_warn "'$name': $rewritten — resetting to it ($why); 'deploy $name --rollback' goes back"
+            site_log "$name" "deploy: $rewritten — reset to it ($why)"
+            run_captured "$out" git -c safe.directory='*' -C "$staging" reset --hard --quiet "$tip" \
+                || git_failed "$name" "$out" "$staging" "git reset --hard to ${tip:0:7} failed — live tree left unchanged"
+        fi
     fi
     rm -f "$out"
     finalize_staging "$staging"

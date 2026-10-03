@@ -36,7 +36,8 @@ read:
                                         deploy/preview event log, oldest first
   previews <project>                    active previews of a project
   doctor [name]                         health checks (never pages NOTIFY_WEBHOOK)
-  logs [<name> [--lines N | --offset B]]   list logs, or read one
+  logs [<name> [--lines N | --offset B]]   list logs, or read one: <site>, <site>.access,
+                                        <site>.error, nginx_access, nginx_error, phpX.Y_fpm, webhook...
   inspect-repo <url> [--branch b]       what provision would find in a repo
   run show <id>                         a run's metadata, events and unit state
   run log <id> [--lines N | --offset B] a run's full output
@@ -220,16 +221,35 @@ api_site_summary() {
         preview_json="{\"project\":$(json_str "$PREVIEW_PROJECT"),\"branch\":$(json_str "$PREVIEW_BRANCH"),\"mode\":$(json_str "$PREVIEW_MODE")}"
     fi
 
-    local last_event=null f="$EVENTS_DIR/$name.jsonl"
-    [[ -s "$f" ]] && last_event="$(tail -n 1 "$f")"
+    local last_event=null last_run=null last_deploy=null f="$EVENTS_DIR/$name.jsonl"
+    if [[ -s "$f" ]]; then
+        last_event="$(tail -n 1 "$f")"
+        # Config changes are events but not runs: "last run" skips them.
+        last_run="$(grep -v -e '"kind":"env-change"' -e '"kind":"settings-change"' "$f" | tail -n 1 || true)"
+        last_deploy="$(grep -E '"kind":"(deploy|rollback|provision|provision-preview|deploy-preview)","phase":"succeeded"' "$f" | tail -n 1 || true)"
+        [[ -n "$last_run" ]] || last_run=null
+        [[ -n "$last_deploy" ]] || last_deploy=null
+    fi
+    # When the live code went live: the newest successful deploy event,
+    # else (history from before the event log) .deploys' newest entry, or
+    # a preview's deployed-sha marker.
+    local deployed_at=""
+    if [[ "$last_deploy" != null ]]; then
+        deployed_at="$(sed -E 's/^\{"ts":"([^"]+)".*/\1/' <<< "$last_deploy")"
+    elif [[ -s "$(deploy_history_path "$name")" ]]; then
+        deployed_at="$(tail -n 1 "$(deploy_history_path "$name")" | cut -f1)"
+    elif [[ -f "$(preview_deployed_path "$name")" ]]; then
+        deployed_at="$(date -u -d "@$(stat -c %Y "$(preview_deployed_path "$name")")" +%Y-%m-%dT%H:%M:%SZ)"
+    fi
 
     printf '{"name":%s,"url":%s,"php":%s,"node":%s,"build":%s,"docroot":%s,"db":%s,"branch":%s' \
         "$(json_str "$name")" "$(json_str "https://$name.$BASE_DOMAIN")" "$(json_str_or_null "$php")" \
         "$(json_str_or_null "$node_spec")" "$build" "$(json_str "${docroot:-.}")" "$(json_str_or_null "$db")" \
         "$(json_str_or_null "$branch")"
-    printf ',"sha":%s,"committed_at":%s,"subject":%s,"repo":%s,"preview":%s,"last_event":%s}\n' \
+    printf ',"sha":%s,"committed_at":%s,"subject":%s,"repo":%s,"preview":%s,"last_event":%s' \
         "$(json_str_or_null "$full_sha")" "$(json_str_or_null "$committed_at")" "$(json_str_or_null "$subject")" \
         "$(json_str_or_null "$repo")" "$preview_json" "$last_event"
+    printf ',"last_run":%s,"last_deploy":%s,"deployed_at":%s}\n' "$last_run" "$last_deploy" "$(json_str_or_null "$deployed_at")"
 }
 
 api_sites() {
@@ -411,7 +431,7 @@ api_events() {
             { if [[ -n "$project" ]]; then grep -F "\"project\":\"$project\"" "$f" || true; else cat "$f"; fi; } \
                 | { if [[ -n "$run" ]]; then grep -F "\"run_id\":\"$run\"" || true; else cat; fi; } \
                 | tail -n "$limit"
-        done | grep '^{"ts":' | sort -s -t, -k1,1 | tail -n "$limit" | json_lines_to_array
+        done | { grep '^{"ts":' || true; } | sort -s -t, -k1,1 | tail -n "$limit" | json_lines_to_array
     fi
     printf '}\n'
 }
@@ -512,9 +532,12 @@ api_read_file() {
         tail -c +"$((offset + 1))" "$file" 2>/dev/null | head -c "$((size - offset))" | head -c "$API_MAX_READ_BYTES" > "$tmp" || true
         start="$offset"
     else
-        # Only up to the size measured above, so next_offset can't skip
-        # anything appended in between.
-        head -c "$size" "$file" | tail -n "$lines" | tail -c "$API_MAX_READ_BYTES" > "$tmp" || true
+        # The last lines of (at most) the last API_MAX_READ_BYTES bytes, up
+        # to the size measured above — so next_offset can't skip anything
+        # appended in between. tail -c +N seeks: a multi-GB access log
+        # costs no more than a small one.
+        local from=$(( size > API_MAX_READ_BYTES ? size - API_MAX_READ_BYTES : 0 ))
+        tail -c +"$((from + 1))" "$file" 2>/dev/null | head -c "$((size - from))" | tail -n "$lines" > "$tmp" || true
         start=$(( size - $(wc -c < "$tmp") ))
     fi
     local got; got="$(wc -c < "$tmp")"
@@ -541,6 +564,37 @@ api_parse_read_opts() {
     [[ "$API_READ_LINES" -gt 0 ]] || API_READ_LINES=200
 }
 
+# Log names the api reads, each mapped to one fixed path — never a path
+# built from free text:
+#   <site>                $LOG_DIR/<site>.log   ddeploy's own (deploys, previews...)
+#   webhook, backup-*...  $LOG_DIR/<name>.log   fleet logs (same charset as a site)
+#   <site>.access|error   /var/log/nginx/<site>.access|error.log   per-site nginx (+ PHP errors)
+#   nginx_access|error    /var/log/nginx/access|error.log          server-wide nginx
+#   phpX.Y_fpm            /var/log/phpX.Y-fpm.log                  PHP-FPM master (pool warnings)
+# '.' and '_' never appear in a site name, so none of these can collide.
+API_LOG_NAME_RE='^([a-z0-9][a-z0-9-]{0,27}(\.(access|error))?|nginx_(access|error)|php[0-9]\.[0-9]{1,2}_fpm)$'
+
+api_log_path() {
+    local name="$1"
+    [[ "$name" =~ $API_LOG_NAME_RE ]] || die "invalid log name '$name'"
+    case "$name" in
+        nginx_access) echo /var/log/nginx/access.log ;;
+        nginx_error)  echo /var/log/nginx/error.log ;;
+        php*_fpm)     echo "/var/log/${name%_fpm}-fpm.log" ;;
+        *.access|*.error) echo "/var/log/nginx/$name.log" ;;
+        *)            echo "$LOG_DIR/$name.log" ;;
+    esac
+}
+
+# One {"name","kind","site","label","size","modified_at"} object for log
+# file $2 named $1.
+api_log_entry() {
+    local name="$1" file="$2" kind="$3" site="$4" label="$5"
+    printf '{"name":%s,"kind":%s,"site":%s,"label":%s,"size":%s,"modified_at":%s}' \
+        "$(json_str "$name")" "$(json_str "$kind")" "$(json_str_or_null "$site")" "$(json_str "$label")" \
+        "$(json_num "$(stat -c %s "$file")")" "$(json_str "$(date -u -d "@$(stat -c %Y "$file")" +%Y-%m-%dT%H:%M:%SZ)")"
+}
+
 api_logs() {
     if [[ $# -eq 0 ]]; then
         local -a objs=()
@@ -554,7 +608,21 @@ api_logs() {
                 backup-uploads|backup-database|prune-previews) kind=fleet ;;
                 *) kind=site ;;
             esac
-            objs+=("{\"name\":$(json_str "$name"),\"kind\":$(json_str "$kind"),\"size\":$(json_num "$(stat -c %s "$f")"),\"modified_at\":$(json_str "$(date -u -d "@$(stat -c %Y "$f")" +%Y-%m-%dT%H:%M:%SZ)")}")
+            local site="" label="ddeploy"
+            if [[ "$kind" == site ]]; then site="$name"; label="ddeploy (deploys, previews)"; fi
+            objs+=("$(api_log_entry "$name" "$f" "$kind" "$site" "$label")")
+        done
+        local site_name
+        while IFS= read -r site_name; do
+            [[ -f "/var/log/nginx/$site_name.error.log" ]] && objs+=("$(api_log_entry "$site_name.error" "/var/log/nginx/$site_name.error.log" nginx "$site_name" "nginx errors + PHP")")
+            [[ -f "/var/log/nginx/$site_name.access.log" ]] && objs+=("$(api_log_entry "$site_name.access" "/var/log/nginx/$site_name.access.log" nginx "$site_name" "nginx access")")
+        done < <(provisioned_site_names)
+        [[ -f /var/log/nginx/error.log ]] && objs+=("$(api_log_entry nginx_error /var/log/nginx/error.log server "" "nginx errors (all sites)")")
+        [[ -f /var/log/nginx/access.log ]] && objs+=("$(api_log_entry nginx_access /var/log/nginx/access.log server "" "nginx access (all sites)")")
+        for f in /var/log/php*-fpm.log; do
+            [[ -f "$f" ]] || continue
+            name="$(basename "$f" -fpm.log)_fpm"
+            [[ "$name" =~ $API_LOG_NAME_RE ]] && objs+=("$(api_log_entry "$name" "$f" server "" "PHP-FPM ${name%_fpm}")")
         done
         api_header
         printf ',"logs":'
@@ -563,9 +631,9 @@ api_logs() {
         return 0
     fi
     local name="$1"; shift
-    api_valid validate_name "$name"
+    local file
+    file="$( (api_log_path "$name") 2>/dev/null )" || api_die bad_request "invalid log name '$name'"
     api_parse_read_opts "$@"
-    local file="$LOG_DIR/$name.log"
     [[ -f "$file" ]] || api_die not_found "no log named '$name'"
     api_header
     printf ',"name":%s' "$(json_str "$name")"
@@ -606,7 +674,7 @@ api_inspect_repo() {
     local refs errf
     errf="$(mktemp)"
     if ! refs="$(GIT_SSH_COMMAND="$ssh_cmd" GIT_TERMINAL_PROMPT=0 timeout 30 git ls-remote --symref "$url" HEAD 'refs/heads/*' 2>"$errf")"; then
-        local err; err="$(grep -v '^$' "$errf" | tail -n 2 | tr '\n' ' ')"
+        local err; err="$(grep -v '^$' "$errf" | tail -n 2 | tr '\n' ' ' || true)"
         rm -f "$errf"
         api_header
         printf ',"url":%s,"reachable":false,"error":%s}\n' "$(json_str "$url")" "$(json_str "${err:-git ls-remote failed}")"

@@ -52,6 +52,7 @@ print(json.dumps({
     "ref": "refs/heads/" + branch,
     "after": "0" * 40,
     "deleted": False,
+    "pusher": {"name": "octo-pusher"},
     "repository": {
         "clone_url": clone,
         "ssh_url": "ssh://gitfixture@127.0.0.1/srv/git/testsite.git",
@@ -1152,6 +1153,11 @@ assert_contains "$out" "MARKER=v2" "webhook deploy pulled the new commit (GIT_DE
 wlog="$(./provision.sh logs webhook -n 50)"
 assert_contains "$wlog" "deploy testsite: OK @ $(git -C "$LIVE" log -1 --format=%h)" "webhook log records the deploy with its new sha"
 assert_contains "$(notify_sink)" "webhook [" "deploy notification says the webhook triggered it"
+assert_contains "$(notify_sink)" "by octo-pusher" "...and who pushed"
+last_event="$(grep '"kind":"deploy","phase":"succeeded"' /var/lib/ddeploy/events/testsite.jsonl | tail -n 1)"
+assert_contains "$last_event" '"trigger":"webhook [' "deploy event attributed to the webhook"
+assert_contains "$last_event" 'by octo-pusher"' "deploy event names who pushed"
+assert_contains "$last_event" '"author":"ddeploy test"' "deploy event names the commit's git author"
 V2_RELEASE="$(readlink -f "$LIVE")"
 assert_cmd_ok "v2 is a distinct release directory" test -d "$V2_RELEASE"
 
@@ -1195,6 +1201,43 @@ assert_contains "$out" "MARKER=v1" "deploy --rollback <sha> (explicit) works too
 sleep 1
 out="$(curl_site testsite.staging.ddeploy.test)"
 assert_contains "$out" "MARKER=v2" "a plain deploy after a rollback pulls forward again"
+
+step "force-pushed branch: deploy refuses; --force / ALLOW_FORCE_PUSH follow it"
+# Rewrites main's tip (amend: same content, so later steps still see
+# MARKER=v2) and force-pushes it, the way a rebase on a staging branch
+# would. $1 tags the rewrite so each one is a distinct commit.
+force_push_main() {
+    local work; work="$(mktemp -d)"
+    git clone -q "$BARE" "$work"
+    git -C "$work" config user.email 'test@ddeploy.test'
+    git -C "$work" config user.name 'ddeploy test'
+    echo "$1" > "$work/rewrite.txt"
+    git -C "$work" add rewrite.txt
+    git -C "$work" commit -q --amend -m "v2 (rewritten: $1)"
+    git -C "$work" push -q --force origin main
+    rm -rf "$work"
+}
+PRE_FORCE_SHA="$(git -C "$LIVE" rev-parse HEAD)"
+PRE_FORCE_RELEASE="$(readlink -f "$LIVE")"
+force_push_main rewrite-1
+force_out="$(./provision.sh deploy testsite 2>&1)" && force_rc=0 || force_rc=$?
+[[ "$force_rc" -ne 0 ]] && pass "a plain deploy refuses a force-pushed branch" || fail "deploy of a force-pushed branch exited 0"
+assert_contains "$force_out" "was force-pushed" "the failure says the branch was force-pushed"
+assert_contains "$force_out" "deploy testsite --force" "...and how to deploy it anyway"
+assert_cmd_ok "the refused deploy left current alone" test "$PRE_FORCE_RELEASE" = "$(readlink -f "$LIVE")"
+
+./provision.sh deploy testsite --force
+assert_cmd_ok "deploy --force is at origin's rewritten tip" test "$(git -C "$LIVE" rev-parse HEAD)" = "$(git -C "$BARE" rev-parse main)"
+assert_contains "$(curl_site testsite.staging.ddeploy.test)" "MARKER=v2" "the site serves after deploy --force"
+assert_cmd_ok "the pre-force-push commit is still there for --rollback" git -C "$LIVE" cat-file -e "$PRE_FORCE_SHA^{commit}"
+assert_cmd_fails "--force and --rollback are rejected together" ./provision.sh deploy testsite --force --rollback
+
+force_push_main rewrite-2
+echo 'ALLOW_FORCE_PUSH="true"' >> /etc/ddeploy/provisioner.conf
+allow_out="$(./provision.sh deploy testsite 2>&1)"
+sed -i '/^ALLOW_FORCE_PUSH=/d' /etc/ddeploy/provisioner.conf
+assert_contains "$allow_out" "(ALLOW_FORCE_PUSH)" "ALLOW_FORCE_PUSH=true: a plain deploy follows the force-push, and says why"
+assert_cmd_ok "...to origin's new tip" test "$(git -C "$LIVE" rev-parse HEAD)" = "$(git -C "$BARE" rev-parse main)"
 
 step "deploy_branch: operator-side branch override (provision --branch)"
 

@@ -145,6 +145,7 @@ load_conf() {
     NOTIFY_EVENTS="${NOTIFY_EVENTS:-deploy-success deploy-failure preview-created preview-removed webhook-rejected}"
     PREVIEW_COMMENT_CREDENTIALS="${PREVIEW_COMMENT_CREDENTIALS:-}"
     RELEASES_KEEP="${RELEASES_KEEP:-5}"
+    ALLOW_FORCE_PUSH="${ALLOW_FORCE_PUSH:-false}"
     NODE_ENABLED="${NODE_ENABLED:-true}"
     NVM_ROOT="${NVM_ROOT:-/opt/nvm}"
     BASELINE_NODE="${BASELINE_NODE:-22}"
