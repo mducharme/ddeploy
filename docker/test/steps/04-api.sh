@@ -503,6 +503,7 @@ cp /etc/ddeploy/provisioner.conf /tmp/provisioner.conf.before
 out="$(printf 'FPM_MAX_CHILDREN=8\nBACKUP_SCHEDULE=42 * * * *\nNOTIFY_EVENTS=deploy-failure\n' | ddeploy api config set --actor root@example.com)"
 assert_contains "$(jq_py '[s["value"] for s in d["settings"] if s["key"] == "FPM_MAX_CHILDREN"]' <<< "$out")" '"8"' "setting saved"
 assert_contains "$(cat /etc/cron.d/ddeploy-backup-uploads)" "42 * * * *" "a changed schedule rewrites the cron job"
+assert_contains "$(cat /etc/cron.d/ddeploy-backup-uploads)" "root DDEPLOY_TRIGGER=schedule " "scheduled runs are attributed to the schedule, not 'manual'"
 assert_contains "$(grep -c '^FPM_MAX_CHILDREN=' /etc/ddeploy/provisioner.conf)" "1" "one line per key"
 assert_contains "$(tail -n 1 /var/log/ddeploy/server-config.log)" "web (root@example.com)" "change logged with who made it"
 # The newest backup is the file as it was before this change (earlier runs may have left others).

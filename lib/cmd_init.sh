@@ -384,7 +384,7 @@ EOF
 install_cron_jobs() {
     if [[ "$BACKUP_ENABLED" == "true" ]]; then
         cat > /etc/cron.d/ddeploy-backup-uploads <<EOF
-$BACKUP_SCHEDULE root $PROVISIONER_DIR/provision.sh backup-uploads >> $LOG_DIR/backup-uploads.log 2>&1
+$BACKUP_SCHEDULE root DDEPLOY_TRIGGER=schedule $PROVISIONER_DIR/provision.sh backup-uploads >> $LOG_DIR/backup-uploads.log 2>&1
 EOF
         chmod 644 /etc/cron.d/ddeploy-backup-uploads
         log_info "cron: backup-uploads runs on schedule '$BACKUP_SCHEDULE' as root, via /etc/cron.d/ddeploy-backup-uploads — this is NOT in 'crontab -l' for any user, that only shows per-user crontabs"
@@ -395,7 +395,7 @@ EOF
 
     if [[ "$DB_BACKUP_ENABLED" == "true" ]]; then
         cat > /etc/cron.d/ddeploy-backup-database <<EOF
-$DB_BACKUP_SCHEDULE root $PROVISIONER_DIR/provision.sh backup-database >> $LOG_DIR/backup-database.log 2>&1
+$DB_BACKUP_SCHEDULE root DDEPLOY_TRIGGER=schedule $PROVISIONER_DIR/provision.sh backup-database >> $LOG_DIR/backup-database.log 2>&1
 EOF
         chmod 644 /etc/cron.d/ddeploy-backup-database
         log_info "cron: backup-database runs on schedule '$DB_BACKUP_SCHEDULE' as root, via /etc/cron.d/ddeploy-backup-database"
@@ -406,7 +406,7 @@ EOF
 
     if [[ "$PREVIEW_PRUNE_ENABLED" == "true" ]]; then
         cat > /etc/cron.d/ddeploy-prune-previews <<EOF
-$PREVIEW_PRUNE_SCHEDULE root $PROVISIONER_DIR/provision.sh prune-previews >> $LOG_DIR/prune-previews.log 2>&1
+$PREVIEW_PRUNE_SCHEDULE root DDEPLOY_TRIGGER=schedule $PROVISIONER_DIR/provision.sh prune-previews >> $LOG_DIR/prune-previews.log 2>&1
 EOF
         chmod 644 /etc/cron.d/ddeploy-prune-previews
         log_info "cron: prune-previews runs on schedule '$PREVIEW_PRUNE_SCHEDULE' as root, via /etc/cron.d/ddeploy-prune-previews"
