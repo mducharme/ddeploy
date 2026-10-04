@@ -901,13 +901,19 @@ every verb. Usable from scripts too.
   <name>`, `db dump <name>` (gzipped SQL on stdout), `uploads <name>`,
   `uploads download <name> --dir <d>` (.tar.gz on stdout), `backups
   <name>`, `backups download <name> --file <dump>`, `run show|log <id>`,
-  `config` (server settings; secrets masked).
+  `config` (server settings; secrets masked), `files <name> [--read
+  <path>]` (the persistent config files: charcoal's
+  `config/config.local.json`, `persistent_files` — not `.env`).
 - Write (each needs `--actor <email>`): `run start deploy|rollback|
   provision|db-import|db-restore|db-snapshot|preview-create|
   preview-deploy|preview-remove|uploads-import|uploads-fetch|uploads-restore|
   uploads-snapshot|backup-database|backup-uploads|backup-restore-db|
   backup-restore-uploads`, `fetch-test` (host-key check, `--accept
   <fingerprint>` to remember it, then a dry run), `fetch-key forget`,
+  `files <name> --write <path>` (content on stdin; checked as
+  JSON/YAML/`php -l`/env, refused if it changed since `--expect-sha`,
+  previous version kept root-only under `/var/lib/ddeploy/file-versions/`)
+  and `files --restore`,
   `backups keep|unkeep|delete`, `run cancel <id>`, `env
   <name> --apply` (values on stdin, never argv), `settings <name>`
   (operator overrides and the tracked branch — every `override` key except

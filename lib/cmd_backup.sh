@@ -46,11 +46,12 @@ cmd_backup_uploads() {
         # must not stop every other site from being backed up this run —
         # a bare call here would abort the whole loop under set -e.
         local site_started="$SECONDS"
+        BACKUP_LAST_ERROR=""
         if ! backup_site_uploads "$name" "$(site_dir "$name")" "${UPLOAD_DIRS[@]}"; then
-            log_error "backup-uploads failed for $name"
+            log_error "backup-uploads failed for $name${BACKUP_LAST_ERROR:+: $BACKUP_LAST_ERROR}"
             failures=$((failures + 1))
             failed_names+=("$name")
-            backup_event "$name" backup-uploads failed "duration_s=$((SECONDS - site_started))" "error=backup-uploads failed for $name"
+            backup_event "$name" backup-uploads failed "duration_s=$((SECONDS - site_started))" "error=${BACKUP_LAST_ERROR:-backup-uploads failed for $name}"
         else
             ok=$((ok + 1))
             backup_event "$name" backup-uploads succeeded "duration_s=$((SECONDS - site_started))" "subject=${UPLOAD_DIRS[*]} synced"
@@ -60,6 +61,8 @@ cmd_backup_uploads() {
     if [[ "$failures" -ne 0 ]]; then
         # One site, from `api run start`: run_notifying reports the failure.
         [[ -n "${DDEPLOY_EVENT_ATTRS:-}" ]] || notify_failure backup-uploads "" "${failures} site(s): ${failed_names[*]}"
+        # One site: its reason is the error (what the web UI and its notification show).
+        [[ "$failures" -eq 1 && -n "$only" ]] && die "${BACKUP_LAST_ERROR:-backup of ${failed_names[0]} failed}"
         die "$failures site(s) failed to back up"
     fi
 }

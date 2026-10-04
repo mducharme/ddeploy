@@ -26,6 +26,8 @@ source lib/cmd_api_config.sh
 source lib/backup.sh
 # shellcheck source=lib/cmd_fetch.sh
 source lib/cmd_fetch.sh
+# shellcheck source=lib/cmd_api_files.sh
+source lib/cmd_api_files.sh
 notify_trigger() { printf 'manual (tester)'; }
 
 PASSES=0
@@ -156,6 +158,28 @@ assert_eq "rsync source, rrsync (empty path)" "deploy@h.example:./" "$(fetch_rsy
 assert_eq "rsync source, absolute path" "deploy@h.example:/var/www/up/" "$(fetch_rsync_source deploy h.example 22 /var/www/up/)"
 assert_eq "known_hosts id, port 22" "h.example" "$(fetch_host_id h.example 22)"
 assert_eq "known_hosts id, other port" "[h.example]:2222" "$(fetch_host_id h.example 2222)"
+
+echo "rclone_reason (why a backup failed)"
+rr="$(mktemp)"
+printf '2026/10/04 03:38:19 NOTICE : something\n2026/10/04 03:38:19 ERROR : a.sql.gz: Failed to copy: AccessDenied: Access Denied.\n2026/10/04 03:38:19 Failed to copy: AccessDenied: Access Denied.\n' > "$rr"
+assert_eq "last error line, without rclone's timestamp" "Failed to copy: AccessDenied: Access Denied." "$(rclone_reason "$rr")"
+: > "$rr"
+assert_eq "nothing to say: empty" "" "$(rclone_reason "$rr")"
+rm -f "$rr"
+
+echo "config files: format and checks"
+assert_eq "json" json "$(api_file_format config/config.local.json)"
+assert_eq "php" php "$(api_file_format wp-config.php)"
+assert_eq "yaml" yaml "$(api_file_format config/app.YML)"
+assert_eq "env" env "$(api_file_format .env.local)"
+assert_eq "other" text "$(api_file_format robots.txt)"
+cf="$(mktemp)"
+printf '{"a": 1}' > "$cf"; assert_eq "valid JSON passes" "" "$(api_files_check "$cf" json)"
+printf '{"a": }' > "$cf"; assert_ok "invalid JSON explained" grep -q "invalid JSON" <(api_files_check "$cf" json)
+printf 'A=1\n# c\nexport B="x"\n' > "$cf"; assert_eq "env passes" "" "$(api_files_check "$cf" env)"
+printf 'A=1\nnot a pair\n' > "$cf"; assert_ok "env: the bad line named" grep -q "line 2" <(api_files_check "$cf" env)
+printf 'a\0b' > "$cf"; assert_ok "binary refused" grep -q "UTF-8" <(api_files_check "$cf" text)
+rm -f "$cf"
 
 echo "cmd_db.sh"
 assert_ok "snapshot id" validate_snapshot_id 20261002T143012Z-pre-import

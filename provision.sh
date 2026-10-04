@@ -104,6 +104,8 @@ source "$LIB_DIR/cmd_api.sh"
 source "$LIB_DIR/cmd_api_config.sh"
 # shellcheck source=lib/cmd_api_fetch.sh
 source "$LIB_DIR/cmd_api_fetch.sh"
+# shellcheck source=lib/cmd_api_files.sh
+source "$LIB_DIR/cmd_api_files.sh"
 
 # Runs a deploy-type command ($3...) for site $2 and, if it fails, sends
 # a deploy-failure notification carrying the error it printed. The
@@ -178,7 +180,8 @@ run_notifying() {
         end_phase="$(event_attr_get "$DDEPLOY_EVENT_ATTRS" phase succeeded)"
     else
         end_phase=failed
-        end_attrs+=("error=$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | grep -E '^\[error\]' | tail -n 1 | sed 's/^\[error\] *//' | cut -c1-300 || true)")
+        # [error] at the start of a line, or after log_timestamps' prefix (cron, backups).
+        end_attrs+=("error=$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | grep -E '^([0-9T:-]+Z )?\[error\]' | tail -n 1 | sed -E 's/^([0-9T:-]+Z )?\[error\] *//' | cut -c1-300 || true)")
     fi
     [[ "$EUID" -eq 0 ]] && event_record "$site" "$end_kind" "$end_phase" "${end_attrs[@]}"
     rm -f "$DDEPLOY_EVENT_ATTRS"
@@ -187,7 +190,7 @@ run_notifying() {
         # under pipefail + set -e that alone would kill the script here,
         # before the notification is sent.
         local err
-        err="$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | grep -E '^\[error\]' | tail -n 2 | cut -c1-300 || true)"
+        err="$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | grep -E '^([0-9T:-]+Z )?\[error\]' | tail -n 2 | cut -c1-300 || true)"
         [[ -n "$err" ]] || err="$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | tail -n 3 | cut -c1-300 || true)"
         (
             load_conf

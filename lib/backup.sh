@@ -27,6 +27,13 @@ require_backup_credentials() {
 # string (see RCLONE_CONFIG's own comment for why that was a problem).
 BACKUP_RCLONE_REMOTE="ddeploy-backup"
 
+# rclone's reason for failing, from its stderr in file $1: the last
+# "ERROR :" / "Failed to" line, without rclone's own timestamp.
+rclone_reason() {
+    grep -E 'ERROR :|Failed to|error' "$1" 2>/dev/null | tail -n 1 \
+        | sed -E 's#^[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9:]{8} ((ERROR|NOTICE) : )?##' | cut -c1-200 || true
+}
+
 # BACKUP_ENDPOINT from the credentials file. (backup_remote_spec sources it
 # too, but callers run that in $(...), so the variable stays in the subshell.)
 backup_endpoint() {
@@ -123,10 +130,16 @@ backup_site_uploads() {
         if [[ "${UPLOADS_BACKUP_VERSIONS_DAYS:-30}" != 0 ]]; then
             version_args=(--backup-dir "${remote}/$name/.versions/${BACKUP_RUN_TS:-$(date -u +%Y%m%dT%H%M%SZ)}/$d")
         fi
-        if ! rclone sync "$src" "${remote}/$name/$d" --checksum "${exclude_args[@]}" "${version_args[@]}"; then
-            log_warn "backup: $name: $d failed to sync"
+        local rerr; rerr="$(mktemp)"
+        if ! rclone sync "$src" "${remote}/$name/$d" --checksum "${exclude_args[@]}" "${version_args[@]}" 2>"$rerr"; then
+            cat "$rerr" >&2
+            BACKUP_LAST_ERROR="sync of $d to $BACKUP_BUCKET failed: $(rclone_reason "$rerr")"
+            log_error "backup: $name: $BACKUP_LAST_ERROR"
             failures=$((failures + 1))
+        else
+            cat "$rerr" >&2
         fi
+        rm -f "$rerr"
     done
     [[ "$failures" -eq 0 ]] && prune_uploads_versions "$name" "$remote"
     [[ "$failures" -eq 0 ]]

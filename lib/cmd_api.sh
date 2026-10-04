@@ -53,6 +53,7 @@ read:
   backups <name>                        object-storage backups: dumps, file mirror + versions, retention
   backups download <name> --file <dump> one backed-up dump on stdout (not JSON)
   fetch-key                             the key for copying files from another server (created if missing)
+  files <name> [--read <path>]          persistent config files (charcoal's config.local.json, persistent_files)
 
 write (each needs --actor <email>):
   env <name> --apply [--unset KEY]...   set the KEY=value lines read from stdin
@@ -73,6 +74,8 @@ write (each needs --actor <email>):
   fetch-test <name> --source <user@host:path> [--port n] [--accept <SHA256:fp>] --actor <email>
                                         check the host key (remember it with --accept) and dry-run
   fetch-key forget --host <h> [--port n] --actor <email>
+  files <name> --write <path> [--expect-sha s] --actor <email>   new content on stdin; checked, previous kept
+  files <name> --restore <path> --version <id> --actor <email>
   run start uploads-snapshot <name> --actor <email>
   run start backup-database|backup-uploads <name> --actor <email>   back up now
   run start backup-restore-db <name> --file <dump> --actor <email>
@@ -147,7 +150,7 @@ api_valid() {
 api_dispatch() {
     local verb="$1"; shift
     case "$verb" in
-        info|sites|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db|uploads|backups|config|fetch-key|fetch-test) ;;
+        info|sites|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db|uploads|backups|config|fetch-key|fetch-test|files) ;;
         *) api_die unknown_verb "unknown api verb '$verb'" ;;
     esac
     load_conf
@@ -173,6 +176,7 @@ api_dispatch() {
         config)       api_config "$@" ;;
         fetch-key)    api_fetch_key "$@" ;;
         fetch-test)   api_fetch_test "$@" ;;
+        files)        api_files "$@" ;;
     esac
 }
 
@@ -270,7 +274,7 @@ api_site_summary() {
     if [[ -s "$f" ]]; then
         last_event="$(tail -n 1 "$f")"
         # Config changes are events but not runs: "last run" skips them.
-        last_run="$(grep -v -e '"kind":"env-change"' -e '"kind":"settings-change"' -e '"kind":"backup-' "$f" | tail -n 1 || true)"
+        last_run="$(grep -v -e '"kind":"env-change"' -e '"kind":"settings-change"' -e '"kind":"file-change"' -e '"kind":"backup-' "$f" | tail -n 1 || true)"
         last_deploy="$(grep -E '"kind":"(deploy|rollback|provision|provision-preview|deploy-preview)","phase":"succeeded"' "$f" | tail -n 1 || true)"
         [[ -n "$last_run" ]] || last_run=null
         [[ -n "$last_deploy" ]] || last_deploy=null

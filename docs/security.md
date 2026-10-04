@@ -305,6 +305,16 @@ plus:
   modes (no setuid or executable bits), into a staging folder that stays
   root-only until the copy is done, after a dry run checks the total
   size against free disk space.
+- **Config files are read and written as the site's own user, or not
+  through a link.** `api files` only reaches the files a site declares
+  (its credential file when that isn't `.env`, and `persistent_files`).
+  The store belongs to the site user, who could swap a file for a
+  symlink, so every read runs as that user. A write runs as that user
+  too when any folder on the way is theirs; otherwise root writes a temp
+  file in the folder and renames it over the file, which replaces the
+  entry and never follows it. A symlink among the folders is refused. PHP
+  files are checked with `php -l`, which parses and runs nothing.
+  Previous versions are kept root-only, outside the store.
 - **`db credentials` returns the site's own DB user**, never the admin
   account; the database isn't exposed publicly, so using them still takes
   an SSH tunnel through the server.

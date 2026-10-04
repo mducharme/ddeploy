@@ -390,6 +390,48 @@ assert_contains "$(jq_py 'd["host_key"]["status"]' <<< "$out")" "unknown" "forgo
 assert_contains "$(tail -n 3 /var/log/ddeploy/server-config.log)" "forgot 127.0.0.1" "host-key decisions are logged"
 rm -f "$U/a.txt" "$U/run.sh" "$U/existing.txt"; rm -rf "$U/sub"
 
+step "api: config files (persistent_files, charcoal's config.local.json) — read, edit, restore"
+ddeploy override testsite persistent_files="config/app.json wp-config.php" >/dev/null 2>&1
+id="$(ddeploy api run start deploy testsite --actor admin@example.com | run_id_of)"
+assert_contains "$(wait_run "$id" 300)" "succeeded" "deploy links the declared persistent files"
+P=/home/deploy/persistent/testsite
+printf '{"name":"x"}\n' > "$P/config/app.json"; printf '<?php\ndefine("A", 1);\n' > "$P/wp-config.php"
+chown www-testsite:www-data "$P/config/app.json" "$P/wp-config.php"; chmod 600 "$P/config/app.json" "$P/wp-config.php"
+out="$(ddeploy api files testsite)"
+assert_contains "$(jq_py '[f["path"] + ":" + f["format"] for f in d["files"]]' <<< "$out")" '"config/app.json:json", "wp-config.php:php"' "lists the config files with their format"
+assert_not_contains "$(jq_py '[f["path"] for f in d["files"]]' <<< "$out")" '".env"' "...not .env (the Environment tab edits it)"
+r="$(ddeploy api files testsite --read config/app.json)"
+sha="$(jq_py 'd["sha256"]' <<< "$r")"
+assert_contains "$(jq_py 'd["content"]' <<< "$r")" '{"name":"x"}' "reads the content"
+assert_contains "$(jq_py 'repr(d["content"][-1:])' <<< "$r")" "'\\n'" "...exactly, final newline included"
+out="$(printf '{"name": }' | ddeploy api files testsite --write config/app.json --actor admin@example.com 2>/dev/null || true)"
+assert_contains "$out" "invalid JSON" "invalid JSON refused, with why"
+out="$(printf '<?php define("A" 1);' | ddeploy api files testsite --write wp-config.php --actor admin@example.com 2>/dev/null || true)"
+assert_contains "$out" "syntax error" "a PHP syntax error refused (php -l, nothing run)"
+printf '{"name":"y"}\n' | ddeploy api files testsite --write config/app.json --expect-sha "$sha" --actor admin@example.com >/dev/null
+assert_contains "$(cat "$P/config/app.json")" '"y"' "saved"
+assert_contains "$(stat -c '%U:%G %a' "$P/config/app.json")" "www-testsite:www-data 600" "...keeping its owner and mode"
+out="$(printf '{"name":"z"}\n' | ddeploy api files testsite --write config/app.json --expect-sha "$sha" --actor admin@example.com 2>/dev/null || true)"
+assert_contains "$out" "changed since you opened it" "a stale edit is refused"
+v="$(ddeploy api files testsite --read config/app.json | jq_py 'd["versions"][0]["id"]')"
+assert_contains "$(stat -c '%U %a' "/var/lib/ddeploy/file-versions/testsite/config%app.json/$v")" "root 600" "the previous version is kept, root-only"
+ddeploy api files testsite --restore config/app.json --version "$v" --actor admin@example.com >/dev/null
+assert_contains "$(cat "$P/config/app.json")" '"x"' "restored"
+assert_contains "$(tail -n 1 /var/lib/ddeploy/events/testsite.jsonl)" '"kind":"file-change"' "changes land in the site's history"
+printf '{"n":1}\n' | ddeploy api files testsite --write config/app.json --actor admin@example.com >/dev/null
+printf '{"n":2}\n' | ddeploy api files testsite --write config/app.json --actor admin@example.com >/dev/null
+assert_contains "$(ddeploy api files testsite --read config/app.json | jq_py 'd["versions"][0]["id"] != d["versions"][1]["id"]')" "true" "two saves in a row keep two versions"
+assert_contains "$(cat "/var/lib/ddeploy/file-versions/testsite/config%app.json/$(ddeploy api files testsite --read config/app.json | jq_py 'd["versions"][0]["id"]')")" '"n":1' "...the newest being what the last save replaced"
+out="$(ddeploy api files testsite --read ../../../etc/shadow 2>/dev/null || true)"
+assert_contains "$out" "isn't one of" "only the listed files"
+mv "$P/wp-config.php" /tmp/wpc.bak; ln -s /etc/shadow "$P/wp-config.php"
+out="$(ddeploy api files testsite --read wp-config.php 2>/dev/null || true)"
+assert_not_contains "$out" "root:" "a symlink to a root-only file isn't read as root"
+printf '<?php\n' | ddeploy api files testsite --write wp-config.php --actor admin@example.com >/dev/null 2>&1 || true
+assert_contains "$(head -c 5 /etc/shadow)" "root:" "...nor written through"
+rm -f "$P/wp-config.php"; mv /tmp/wpc.bak "$P/wp-config.php"
+ddeploy override testsite --unset persistent_files >/dev/null 2>&1 || true
+
 step "api: backups — a site with nothing in object storage yet"
 # Earlier steps already backed testsite up: set its prefix aside, as if new.
 remote="$(cd /opt/ddeploy && bash -c 'source lib/common.sh; load_conf >/dev/null 2>&1; source lib/backup.sh; backup_remote_spec')"
@@ -452,6 +494,12 @@ id="$(ddeploy api run start backup-database testsite --actor admin@example.com |
 assert_contains "$(wait_run "$id" 180)" "succeeded" "database backup with a bucket-limited key"
 assert_not_contains "$(ddeploy api run log "$id")" "AccessDenied" "...no AccessDenied on upload"
 assert_contains "$(ddeploy api backups testsite | jq_py 'd["error"]')" "null" "...and it lists"
+sed -i 's/^BACKUP_SECRET_KEY=.*/BACKUP_SECRET_KEY="wrong"/' "$creds"
+id="$(ddeploy api run start backup-database testsite --actor admin@example.com | run_id_of)"
+assert_contains "$(wait_run "$id" 180)" "failed" "a backup with a wrong key fails"
+err="$(ddeploy api run show "$id" | jq_py '[e.get("error") for e in d["events"] if e["phase"] == "failed"][0]')"
+assert_contains "$err" "upload to $bucket failed:" "...and its error says what failed"
+assert_contains "$err" "Forbidden" "...with rclone's reason, not just 'failed'"
 cp /tmp/creds.limited-before "$creds"
 
 step "api: backups — run now, versions, restore, keep/delete, download"

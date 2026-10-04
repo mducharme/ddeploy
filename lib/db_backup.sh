@@ -40,7 +40,8 @@ backup_site_database() {
 
     log_info "backup: $name: dumping database '$db_name'"
     if ! dump_database "$db_name" "$dump"; then
-        log_warn "backup: $name: mysqldump failed, skipping upload"
+        BACKUP_LAST_ERROR="mysqldump of '$db_name' failed"
+        log_error "backup: $name: $BACKUP_LAST_ERROR, skipping upload"
         rm -rf "$tmp_dir"
         return 1
     fi
@@ -48,13 +49,19 @@ backup_site_database() {
     BACKUP_LAST_DUMP="$(basename "$dump")"
     BACKUP_LAST_DUMP_BYTES="$(stat -c %s "$dump" 2>/dev/null || echo 0)"
     log_info "backup: $name: uploading $(basename "$dump") -> $BACKUP_BUCKET/$name/db/"
-    local uploaded=1
-    rclone copy "$dump" "${remote}/$name/db/" || uploaded=0
+    local uploaded=1 rerr
+    rerr="$(mktemp)"
+    rclone copy "$dump" "${remote}/$name/db/" 2>"$rerr" || uploaded=0
+    cat "$rerr" >&2
     rm -rf "$tmp_dir"
     if [[ "$uploaded" -eq 0 ]]; then
-        log_warn "backup: $name: upload failed"
+        # rclone's reason, not just "failed": it's what the run's error and its notification say.
+        BACKUP_LAST_ERROR="upload to $BACKUP_BUCKET failed: $(rclone_reason "$rerr")"
+        rm -f "$rerr"
+        log_error "backup: $name: $BACKUP_LAST_ERROR"
         return 1
     fi
+    rm -f "$rerr"
 
     # DB_BACKUP_RETENTION_DAYS_CONFIG is set by parse_config from
     # .ddeploy/config.yaml's db_backup_retention_days: — a per-site
