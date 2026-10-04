@@ -208,7 +208,7 @@ api_site_names() {
         fi
         [[ "$first" -eq 1 ]] || printf ','
         first=0
-        printf '{"name":%s,"preview":%s}' "$(json_str "$name")" "$preview"
+        printf '{"name":%s,"url":%s,"preview":%s}' "$(json_str "$name")" "$(json_str "https://$name.$BASE_DOMAIN")" "$preview"
     done < <(provisioned_site_names)
     printf ']}\n'
 }
