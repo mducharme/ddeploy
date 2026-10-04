@@ -91,6 +91,9 @@ assert_contains "$log" "provisioned: https://testsite.staging.ddeploy.test" "ful
 assert_contains "$(grep 'provision: started' /var/log/ddeploy/testsite.log | tail -n 1)" "(web (admin@example.com))" "site log attributes the web user too"
 
 step "api: sites / site"
+out="$(ddeploy api site-names)"
+assert_contains "$(jq_py '[s["name"] for s in d["sites"]]' <<< "$out")" '"testsite"' "site-names lists the sites"
+assert_contains "$(jq_py '[s["preview"] for s in d["sites"] if s["name"] == "testsite"]' <<< "$out")" "[null]" "...and which are previews"
 out="$(ddeploy api sites)"
 assert_contains "$(jq_py '[s["name"] for s in d["sites"]]' <<< "$out")" '"testsite"' "testsite listed"
 assert_contains "$(jq_py 'd["sites"][0]["last_event"]["phase"]' <<< "$out")" "succeeded" "newest event inlined"

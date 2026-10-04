@@ -31,6 +31,7 @@ JSON interface for the web UI. Every verb prints one JSON object.
 read:
   info                                  server, ddeploy version, features
   sites                                 every provisioned site (previews included)
+  site-names                            just their names (and which are previews): instant, for a list to show first
   site <name>                           one site: summary, resolved config, releases
   events [--site n] [--project p] [--run id] [--limit N]
                                         deploy/preview event log, oldest first
@@ -150,7 +151,7 @@ api_valid() {
 api_dispatch() {
     local verb="$1"; shift
     case "$verb" in
-        info|sites|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db|uploads|backups|config|fetch-key|fetch-test|files) ;;
+        info|sites|site-names|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db|uploads|backups|config|fetch-key|fetch-test|files) ;;
         *) api_die unknown_verb "unknown api verb '$verb'" ;;
     esac
     load_conf
@@ -159,6 +160,7 @@ api_dispatch() {
     case "$verb" in
         info)         api_info "$@" ;;
         sites)        api_sites "$@" ;;
+        site-names)   api_site_names "$@" ;;
         site)         api_site "$@" ;;
         events)       api_events "$@" ;;
         previews)     api_previews "$@" ;;
@@ -188,6 +190,27 @@ api_int() {
     [[ "$val" =~ ^[0-9]{1,9}$ ]] || api_die bad_request "$label must be a non-negative integer"
     (( val <= max )) || val="$max"
     printf '%s' "$val"
+}
+
+# --- site-names -----------------------------------------------------------
+
+# What `sites` would list, without reading any config or git: the web UI
+# shows these at once and fills in the details when `sites` answers.
+api_site_names() {
+    [[ $# -eq 0 ]] || api_die bad_request "site-names takes no arguments"
+    api_header
+    printf ',"sites":['
+    local name first=1 preview
+    while IFS= read -r name; do
+        preview=null
+        if is_preview "$name" && read_preview_meta "$name" 2>/dev/null; then
+            preview="{\"project\":$(json_str "$PREVIEW_PROJECT")}"
+        fi
+        [[ "$first" -eq 1 ]] || printf ','
+        first=0
+        printf '{"name":%s,"preview":%s}' "$(json_str "$name")" "$preview"
+    done < <(provisioned_site_names)
+    printf ']}\n'
 }
 
 # --- info ---------------------------------------------------------------
