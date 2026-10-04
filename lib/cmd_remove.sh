@@ -102,4 +102,8 @@ cmd_remove() {
     fi
 
     site_log "$name" "removed (purge_db=$purge_db purge_files=$purge_files purge_persistent=$purge_persistent)"
+    # For the change feed: the web UI drops the site on this, not on its
+    # next full reconcile.
+    index_forget "$name"
+    event_record "$name" remove succeeded
 }

@@ -169,6 +169,17 @@ cmd_env() {
 
     env_fix_perms "$file" "$owner"
 
+    # Key names only: values are secrets, and events are shown in the UI.
+    if [[ "${#sets[@]}" -gt 0 || "${#unsets[@]}" -gt 0 || "$edit" -eq 1 ]]; then
+        local summary=""
+        local -a set_keys=()
+        for kv in "${sets[@]}"; do set_keys+=("${kv%%=*}"); done
+        [[ "${#set_keys[@]}" -gt 0 ]] && summary="set ${set_keys[*]}"
+        [[ "${#unsets[@]}" -gt 0 ]] && summary+="${summary:+, }unset ${unsets[*]}"
+        [[ "$edit" -eq 1 ]] && summary+="${summary:+, }edited"
+        event_record "$name" env-change succeeded "subject=$summary"
+    fi
+
     if [[ "$show" -eq 1 || ( "${#sets[@]}" -eq 0 && "${#unsets[@]}" -eq 0 && "$edit" -eq 0 ) ]]; then
         log_info "$file (symlinked from $(site_dir "$name")/.env)"
         env_show "$file" "$reveal"

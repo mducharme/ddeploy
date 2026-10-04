@@ -8,6 +8,7 @@
 usage_doctor() {
     cat <<'EOF'
 usage: ddeploy doctor [-v|--verbose] [--no-notify] [name]
+       ddeploy doctor --snapshot
 
 Read-only checks (nginx, PHP-FPM, database reachability, disk space,
 certificate expiry, Node toolchain and each site's last frontend
@@ -19,6 +20,11 @@ server plus every check for just that site (previews included).
 Exits nonzero if any check failed — fit for cron/monitoring. When
 NOTIFY_WEBHOOK is set, a [fail] (not a [warn]) also POSTs there —
 unless --no-notify (an interactive check that shouldn't page anyone).
+
+--snapshot (what the DOCTOR_SCHEDULE cron job runs): checks every site,
+stores the result for the web UI's health column (no table), and pages
+NOTIFY_WEBHOOK only for checks that started failing or recovered since
+the last snapshot.
 EOF
 }
 
@@ -152,12 +158,11 @@ doctor_check_infra() {
         doctor_result off "prune-previews" "disabled (PREVIEW_PRUNE_ENABLED=false)"
     fi
 
-    if [[ "$BACKUP_ENABLED" == "true" || "$DB_BACKUP_ENABLED" == "true" || "$PREVIEW_PRUNE_ENABLED" == "true" ]]; then
-        if systemctl is-active --quiet cron; then
-            doctor_result ok "cron" "running (drives /etc/cron.d/ddeploy-* — not visible in 'crontab -l')"
-        else
-            doctor_result fail "cron" "backup/prune schedules are written to /etc/cron.d/ but cron itself is not running — re-run 'init'"
-        fi
+    # Always: the doctor snapshot (DOCTOR_SCHEDULE) runs from cron too.
+    if systemctl is-active --quiet cron; then
+        doctor_result ok "cron" "running (drives /etc/cron.d/ddeploy-* — not visible in 'crontab -l')"
+    else
+        doctor_result fail "cron" "the doctor snapshot and backup/prune schedules are written to /etc/cron.d/ but cron itself is not running — re-run 'init'"
     fi
 
     # One connectivity check covers both backup types — same bucket,
@@ -498,19 +503,108 @@ doctor_print_rows() {
     done <<< "$rows"
 }
 
+# --- snapshot ------------------------------------------------------------
+# The last full check, kept so a page can show health without running
+# one: $DOCTOR_SNAPSHOT_DIR/server.json and sites/<name>.json, each a
+# JSON line with its own checked_at. Written by every fleet-wide `api
+# doctor` and by `doctor --snapshot` (the cron job); `api doctor <name>`
+# refreshes just that site's file. Root-only, like the rest of the index.
+DOCTOR_SNAPSHOT_DIR="$DDEPLOY_STATE/index/doctor"
+
+# $1 file, $2 content: written to a temp file and renamed into place.
+doctor_snapshot_put() {
+    mkdir -p "$DOCTOR_SNAPSHOT_DIR/sites"
+    chmod 700 "$DDEPLOY_STATE/index" "$DOCTOR_SNAPSHOT_DIR" 2>/dev/null || true
+    local t="$1.$BASHPID"
+    printf '%s\n' "$2" > "$t" && mv -f "$t" "$1"
+}
+
+# $1 checked_at, $2 a site's api_doctor_site line: stored with its time.
+doctor_snapshot_site() {
+    local at="$1" line="$2" name=""
+    [[ "$line" =~ ^\{\"name\":\"([^\"]+)\" ]] && name="${BASH_REMATCH[1]}"
+    [[ "$name" =~ $NAME_RE ]] || return 0
+    doctor_snapshot_put "$DOCTOR_SNAPSHOT_DIR/sites/$name.json" "{\"checked_at\":$(json_str "$at"),${line#\{}"
+}
+
+# Sets DOCTOR_HEALTH_WORST and DOCTOR_HEALTH_AT for site $1 from the
+# snapshot (both empty if it was never checked). Builtins only: called
+# once per site on every `api sites`.
+doctor_snapshot_health() {
+    DOCTOR_HEALTH_WORST="" DOCTOR_HEALTH_AT=""
+    local f="$DOCTOR_SNAPSHOT_DIR/sites/$1.json" line=""
+    [[ -f "$f" ]] || return 0
+    IFS= read -r line < "$f" || true
+    [[ "$line" =~ ^\{\"checked_at\":\"([^\"]+)\" ]] && DOCTOR_HEALTH_AT="${BASH_REMATCH[1]}"
+    [[ "$line" =~ \"worst\":\"([a-z]+)\" ]] && DOCTOR_HEALTH_WORST="${BASH_REMATCH[1]}"
+    return 0
+}
+
+# Prints "site|check" for every failing check in the snapshot right now.
+doctor_snapshot_failing() {
+    local f name
+    for f in "$DOCTOR_SNAPSHOT_DIR/server.json" "$DOCTOR_SNAPSHOT_DIR"/sites/*.json; do
+        [[ -f "$f" ]] || continue
+        name="$(basename "$f" .json)"
+        [[ "$f" == */server.json ]] && name="server"
+        grep -o '{"status":"fail","check":"[^"]*"' "$f" | sed "s/.*\"check\":\"/$name|/; s/\"\$//" || true
+    done
+}
+
+# Pages NOTIFY_WEBHOOK on what changed between two failing lists ($1
+# before, $2 after): checks that started failing, checks that recovered.
+# Never for a failure that was already failing last time — a site down
+# for a day pages once, not every 10 minutes.
+doctor_notify_transitions() {
+    local before="$1" after="$2"
+    [[ -n "${NOTIFY_WEBHOOK:-}" ]] || return 0
+    local new recovered
+    new="$(comm -13 <(sort -u <<< "$before") <(sort -u <<< "$after") | grep . || true)"
+    recovered="$(comm -23 <(sort -u <<< "$before") <(sort -u <<< "$after") | grep . || true)"
+    if [[ -n "$new" ]]; then
+        notify_post "$NOTIFY_WEBHOOK" fail "doctor: $(grep -c . <<< "$new") check(s) started failing on ${BASE_DOMAIN:-this server}" \
+            "$(sed 's/|/: /' <<< "$new")" doctor "" || log_warn "notify: POST failed for doctor"
+    fi
+    if [[ -n "$recovered" ]]; then
+        notify_post "$NOTIFY_WEBHOOK" ok "doctor: $(grep -c . <<< "$recovered") check(s) recovered on ${BASE_DOMAIN:-this server}" \
+            "$(sed 's/|/: /' <<< "$recovered")" doctor "" || log_warn "notify: POST failed for doctor"
+    fi
+    return 0
+}
+
+# `doctor --snapshot` (cron): a full check into the snapshot, paging only
+# on changes. Prints one summary line (the cron log), no table.
+doctor_snapshot_run() {
+    log_timestamps_unless_tty
+    local started="$SECONDS" before after
+    before="$(doctor_snapshot_failing)"
+    api_doctor >/dev/null
+    after="$(doctor_snapshot_failing)"
+    doctor_notify_transitions "$before" "$after"
+    log_info "doctor: snapshot done in $((SECONDS - started))s — $(grep -c . <<< "$after" || true) failing check(s)"
+}
+
 cmd_doctor() {
-    local verbose=0 only="" no_notify=0
+    local verbose=0 only="" no_notify=0 snapshot=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -h|--help)    usage_doctor; return 0 ;;
             -v|--verbose) verbose=1; shift ;;
             --no-notify)  no_notify=1; shift ;;
+            --snapshot)   snapshot=1; shift ;;
             -*)           die "unknown option '$1' (see 'doctor -h')" ;;
             *)            [[ -z "$only" ]] || die "doctor takes at most one site name"; only="$1"; shift ;;
         esac
     done
     load_conf
     require_root
+    if [[ "$snapshot" -eq 1 ]]; then
+        [[ -z "$only" ]] || die "--snapshot checks the whole fleet — no site name"
+        PARSE_CONFIG_QUIET=1
+        (require_yq) >/dev/null 2>&1 && YQ_CHECKED=1
+        doctor_snapshot_run
+        return 0
+    fi
 
     if [[ -n "$only" ]]; then
         validate_name "$only"

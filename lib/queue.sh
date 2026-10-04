@@ -67,8 +67,14 @@ install_queue_workers() {
         # restarts it; without this it would silently keep serving the
         # PREVIOUS release's code forever after a deploy (the same
         # reason Laravel ships `queue:restart` as its own command).
+        # reset-failed first: systemd refuses a 6th start within 10s
+        # (start-limit-hit), and a few deploys in a row — quick pushes,
+        # a retry — got there, failing a deploy whose code was already
+        # live. A deploy's restart is deliberate; the limit still stops a
+        # worker that keeps crashing on its own (Restart=always).
         for ((i = 0; i < ${#workers[@]}; i++)); do
             systemctl enable "ddeploy-worker-$name-$i"
+            systemctl reset-failed "ddeploy-worker-$name-$i" 2>/dev/null || true
             systemctl restart "ddeploy-worker-$name-$i"
         done
         log_info "installed ${#workers[@]} queue worker(s) for $name"

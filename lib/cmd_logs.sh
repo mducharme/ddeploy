@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # `logs <name>` — last lines of $LOG_DIR/<name>.log. Site names and the
-# fleet logs init writes (backup-uploads, backup-database, prune-previews)
+# fleet logs init writes (backup-uploads, backup-database, prune-previews,
+# doctor)
 # all match NAME_RE, so one validator covers both. Never interpolates
 # $name into a path without that check (a `../` would otherwise walk
 # out of LOG_DIR).
@@ -10,7 +11,7 @@ usage_logs() {
 usage: ddeploy logs <name> [-n lines] [-f]
 
 Print the last lines of /var/log/ddeploy/<name>.log (provision/deploy/preview for a
-site, or backup-uploads / backup-database / prune-previews for fleet
+site, or backup-uploads / backup-database / prune-previews / doctor for fleet
 cron — timestamped, one started/done pair per run). -n is how many
 (default 50). -f follows, like tail -f.
 

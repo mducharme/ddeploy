@@ -109,6 +109,12 @@ a="$(ddeploy api run start deploy testsite --actor one@example.com | run_id_of)"
 b="$(ddeploy api run start deploy testsite --actor two@example.com | run_id_of)"
 assert_contains "$(wait_run "$a" 300)" "succeeded" "first deploy succeeded"
 assert_contains "$(wait_run "$b" 300)" "succeeded" "second deploy succeeded"
+# testsite has a queue worker, restarted by every deploy: six in a row
+# is more than systemd's 5 starts per 10s. Each restart must still go
+# through (it used to fail the deploy with start-limit-hit).
+burst_fail=0
+for i in 1 2 3 4 5 6; do ddeploy deploy testsite >/dev/null 2>&1 || burst_fail=$((burst_fail + 1)); done
+assert_cmd_ok "six deploys in a row: none fails on systemd's restart limit" test "$burst_fail" -eq 0
 a_end="$(ddeploy api run show "$a" | jq_py 'd["events"][-1]["ts"]')"
 b_start="$(ddeploy api run show "$b" | jq_py 'd["events"][0]["ts"]')"
 if [[ ! "$b_start" < "$a_end" ]]; then
@@ -591,9 +597,79 @@ assert_cmd_fails "$WEB_USER can't pass environment through sudo" \
 ddeploy init-web --disable >/dev/null 2>&1
 assert_file_absent /etc/sudoers.d/ddeploy-web "init-web --disable removes the sudoers rule"
 
+step "read index: api sites/site/list come from it, and stay correct"
+INDEX=/var/lib/ddeploy/index
+ddeploy api sites > /tmp/sites1.json
+assert_file_exists "$INDEX/testsite.summary" "api sites built testsite's index row"
+assert_cmd_ok "the index is root-only" test "$(stat -c %a "$INDEX")" = 700
+fp_mtime="$(stat -c %Y.%N "$INDEX/testsite.fp")"
+sleep 1
+ddeploy api sites > /tmp/sites2.json
+assert_cmd_ok "a second api sites returns the same JSON" cmp -s /tmp/sites1.json /tmp/sites2.json
+assert_cmd_ok "...without rebuilding the row (fingerprint unchanged)" test "$fp_mtime" = "$(stat -c %Y.%N "$INDEX/testsite.fp")"
+ddeploy override testsite client_max_body_size=77M >/dev/null
+assert_contains "$(ddeploy api site testsite | jq_py 'd["config"]["settings"]["client_max_body_size"]')" "77M" \
+    "an override shows in api site immediately (its file is in the fingerprint)"
+assert_contains "$(ddeploy list)" "testsite" "list reads the same rows"
+ddeploy override testsite --unset client_max_body_size >/dev/null
+
+step "event feed: seq, --after, CLI changes, concurrent writers"
+feed="$(ddeploy api events --limit 1)"
+seq0="$(jq_py 'd["seq"]' <<< "$feed")"
+assert_cmd_ok "api events reports the newest seq" test "$seq0" -gt 0
+ddeploy override testsite fpm_max_children=7 >/dev/null
+newer="$(ddeploy api events --after "$seq0")"
+assert_contains "$(jq_py '[e["kind"] for e in d["events"]]' <<< "$newer")" '"settings-change"' \
+    "a CLI override is in the feed (settings-change)"
+assert_contains "$(jq_py 'd["events"][-1]["subject"]' <<< "$newer")" "fpm_max_children=7" "...with what changed"
+assert_contains "$(jq_py 'd["truncated"]' <<< "$newer")" "false" "...and the feed wasn't truncated"
+seq1="$(jq_py 'd["seq"]' <<< "$newer")"
+ddeploy api settings testsite --unset fpm_max_children --actor admin@example.com >/dev/null
+assert_contains "$(ddeploy api events --after "$seq1" | jq_py 'len([e for e in d["events"] if e["kind"] == "settings-change"])')" "1" \
+    "a web settings change is recorded once (not again by the override it runs)"
+paging="$(ddeploy api events --after 0 --limit 2 | jq_py '[e["seq"] for e in d["events"]]')"
+assert_contains "$paging" "[1, 2]" "--after pages forward from the cursor (oldest first)"
+assert_cmd_fails "--after with --site is refused" ddeploy api events --site testsite --after 1
+
+# 20 writers at once, with trimming forced on every write: the lock must
+# keep every line, in both files, with unique consecutive seqs.
+before_lines="$(wc -l < /var/lib/ddeploy/events/_fleet.jsonl)"
+before_site="$(grep -c '"subject":"concurrent ' /var/lib/ddeploy/events/testsite.jsonl || true)"
+before_seq="$(ddeploy api events --limit 1 | jq_py 'd["seq"]')"
+EVENTS_MAX_BYTES=1 EVENTS_KEEP_LINES=100000 bash -c '
+    cd /opt/ddeploy
+    while read -r f; do source "lib/$f"; done < <(sed -n "s|^source \"\$LIB_DIR/\(.*\)\"\$|\1|p" provision.sh)
+    load_conf
+    for i in $(seq 1 20); do event_record testsite deploy started "subject=concurrent $i" & done
+    wait'
+after_seq="$(ddeploy api events --limit 1 | jq_py 'd["seq"]')"
+assert_cmd_ok "20 concurrent events: 20 new seqs" test "$after_seq" -eq "$((before_seq + 20))"
+assert_cmd_ok "...all 20 lines kept through the trims" test "$(wc -l < /var/lib/ddeploy/events/_fleet.jsonl)" -eq "$((before_lines + 20))"
+assert_contains "$(ddeploy api events --after "$before_seq" --limit 100 | jq_py 'sorted(e["seq"] for e in d["events"]) == list(range('"$before_seq"' + 1, '"$after_seq"' + 1))')" "true" \
+    "...each seq exactly once, none skipped"
+assert_cmd_ok "...and in the site's own file too" \
+    test "$(grep -c '"subject":"concurrent ' /var/lib/ddeploy/events/testsite.jsonl)" -eq "$((before_site + 20))"
+
+step "doctor snapshot: stored, served without checking, health on sites"
+ddeploy api doctor >/dev/null
+assert_file_exists "$INDEX/doctor/sites/testsite.json" "api doctor stores the site's result"
+snap="$(ddeploy api doctor --snapshot)"
+assert_contains "$(jq_py '[s["name"] for s in d["sites"]]' <<< "$snap")" '"testsite"' "api doctor --snapshot serves it"
+assert_contains "$(jq_py 'd["sites"][0]["checked_at"] is not None and d["server"]["checked_at"] is not None' <<< "$snap")" "true" \
+    "...with when each part was checked"
+health="$(ddeploy api sites | jq_py '[d["sites"][0].get("health"), d["sites"][0].get("health_checked_at") is not None]')"
+assert_contains "$health" '"' "api sites carries each site's last health"
+assert_contains "$health" "true" "...and when it was checked"
+ddeploy doctor --snapshot >/dev/null 2>&1
+assert_cmd_ok "doctor --snapshot (the cron job) refreshes it" test "$INDEX/doctor/server.json" -nt /tmp/sites2.json
+assert_file_exists /etc/cron.d/ddeploy-doctor "init installed the doctor snapshot cron job"
+assert_contains "$(cat /etc/cron.d/ddeploy-doctor)" "doctor --snapshot" "...running doctor --snapshot"
+
 step "api: cleanup"
 ddeploy remove testsite --purge-db --purge-files >/dev/null 2>&1
 assert_contains "$(ddeploy api sites | jq_py 'd["sites"]')" "[]" "no sites left"
+assert_file_absent "$INDEX/testsite.summary" "remove dropped the site's index row"
+assert_contains "$(ddeploy api events --limit 1 | jq_py 'd["events"][-1]["kind"]')" "remove" "remove is in the event feed"
 
 echo
 echo "ALL API CHECKS PASSED"

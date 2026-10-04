@@ -10,6 +10,8 @@ source "$LIB_DIR/common.sh"
 source "$LIB_DIR/json.sh"
 # shellcheck source=lib/events.sh
 source "$LIB_DIR/events.sh"
+# shellcheck source=lib/index.sh
+source "$LIB_DIR/index.sh"
 # shellcheck source=lib/releases.sh
 source "$LIB_DIR/releases.sh"
 # shellcheck source=lib/config.sh

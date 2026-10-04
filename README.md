@@ -845,6 +845,7 @@ own to restore). Isolated preview restores its own.
 
 ```
 doctor [-v] [name]
+doctor --snapshot
 ```
 
 Read-only checks: nginx config/service, disk space, database server,
@@ -875,6 +876,16 @@ wire into cron/monitoring. One site's malformed config only produces one
 
 `NOTIFY_WEBHOOK` in `provisioner.conf` pages on `[fail]` (not `[warn]`).
 See "Notifications."
+
+**Scheduled snapshot.** `init` installs `/etc/cron.d/ddeploy-doctor`,
+running `doctor --snapshot` on `DOCTOR_SCHEDULE` (default every 10
+minutes, log in `doctor.log`). It checks every site and stores the
+result under `/var/lib/ddeploy/index/doctor/` (root-only) instead of
+printing a table: `api sites` then carries each site's last `health` and
+`health_checked_at`, and `api doctor --snapshot` returns the stored
+checks without running any. It pages `NOTIFY_WEBHOOK` only when a check
+**starts** failing, and again when it recovers — a site down for a day
+pages once. Every `api doctor` refreshes the snapshot too.
 
 ## Web UI
 
@@ -945,10 +956,26 @@ every verb. Usable from scripts too.
   SIGTERM — still records a `failed: interrupted` event. One that never
   recorded an end at all (SIGKILL, power loss) shows as "no result" in the
   UI after 3 hours.
-- Config changes made through the api (`env --apply`, `settings`) are
-  events too (`env-change`, `settings-change`, keys only — never values),
-  so a site's history shows who changed what alongside its deploys.
+- Config changes are events too (`env-change`, `settings-change`, keys
+  only — never values), from the api (`env --apply`, `settings`) and
+  the CLI (`env`, `override`) alike, so a site's history shows who
+  changed what alongside its deploys. `remove` records a `remove` event.
+- **The fleet feed.** Every event also lands in `events/_fleet.jsonl`
+  with a fleet-wide `seq` that only grows (written under one lock, so
+  concurrent runs never lose or reorder a line). `api events` with no
+  `--site`/`--project` reads that tail; `api events --after <seq>` returns
+  only newer events, oldest first, with `"seq"` (where to continue) and
+  `"truncated"` (the cursor fell out of the trimmed tail: reload instead).
+  That's the change feed webddeploy's mirror follows; `api info` lists
+  `event_feed` and `doctor_snapshot` under `capabilities`.
 - Event files are trimmed to their newest 4000 lines past 2 MB.
+- **The read index.** `api sites`, `api site` and `list` read each site's
+  row from `/var/lib/ddeploy/index/` (root-only), rebuilt only when one
+  of its inputs changed: a fingerprint of every file the row is computed
+  from (configs, overrides, `package.json`/lockfiles, `.nvmrc`, the
+  `current` symlink and HEAD, the event file, `provisioner.conf`...), all
+  sites' from a single `stat`. Nothing has to remember to refresh it: a
+  changed file is a stale row. Reads never wait on a running deploy.
 - **Per-site web server logs.** Each site's vhost writes its own
   `/var/log/nginx/<name>.access.log` and `<name>.error.log` (from the
   site's next deploy on). PHP errors land in the error log too, since nginx

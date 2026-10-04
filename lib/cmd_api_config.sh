@@ -29,6 +29,7 @@ API_CONFIG_KEYS=(
     PREVIEW_BRANCHES:patterns:now
     PREVIEW_PRUNE_ENABLED:bool:cron
     PREVIEW_PRUNE_SCHEDULE:cron:cron
+    DOCTOR_SCHEDULE:cron:cron
     BACKUP_ENABLED:bool:cron
     BACKUP_SCHEDULE:cron:cron
     DB_BACKUP_ENABLED:bool:cron

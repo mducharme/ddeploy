@@ -154,6 +154,7 @@ load_conf() {
     PREVIEW_BRANCHES="${PREVIEW_BRANCHES:-}"
     PREVIEW_PRUNE_ENABLED="${PREVIEW_PRUNE_ENABLED:-false}"
     PREVIEW_PRUNE_SCHEDULE="${PREVIEW_PRUNE_SCHEDULE:-37 3 * * *}"
+    DOCTOR_SCHEDULE="${DOCTOR_SCHEDULE:-*/10 * * * *}"
     WEBHOOK_ENABLED="${WEBHOOK_ENABLED:-false}"
     WEBHOOK_HOSTNAME="${WEBHOOK_HOSTNAME:-hooks.$BASE_DOMAIN}"
     WEBHOOK_SECRET="${WEBHOOK_SECRET:-/etc/ddeploy/webhook.secret}"
@@ -232,12 +233,139 @@ detect_ssh_ports() {
 }
 
 # Confirms the Go (mikefarah) yq is on PATH, not the Python (kislyuk) one
-# — same binary name, incompatible CLI.
+# — same binary name, incompatible CLI. Once per process (YQ_CHECKED is
+# inherited by subshells, so call it before fanning out).
 require_yq() {
+    [[ -n "${YQ_CHECKED:-}" ]] && return 0
     command -v yq >/dev/null 2>&1 || die "yq not found — run 'init' first, or install the Go yq (mikefarah/yq)"
     if ! yq --version 2>&1 | grep -qi 'mikefarah'; then
         die "found a 'yq' on PATH but it isn't the Go (mikefarah) build — this tool needs that one, not the Python yq"
     fi
+    YQ_CHECKED=1
+}
+
+# --- yqc: `yq eval EXPR FILE`, batched ----------------------------------
+# Reading one site's config used to start a yq process per field (~40).
+# yqc evaluates every expression in YQC_EXPRS against a file in ONE yq
+# run, the first time that file is asked about, and answers from memory
+# after that. The output is byte-for-byte what `yq eval EXPR FILE`
+# prints (tests/unit.sh checks every expression). Anything else falls
+# through to a real yq call, so an expression missing from the list is
+# only slower, never wrong.
+#
+# Freshness: each call re-reads the file (the `read` builtin, no
+# process) and reloads if its content changed, so a write in between —
+# override, generated sidecars, `yq -i` anywhere — is never missed.
+# A file yq can't parse isn't cached: every call then goes to real yq,
+# with real yq's errors.
+YQC_EXPRS=(
+    '.name' '.php_version' '.docroot // ""' '.webserver_type' '.upload_dirs[]'
+    '.database.name // ""' '.database.user // ""'
+    '.additional_fqdns[]' '.additional_hostnames[]' '.auth_exempt_paths[]'
+    '.backup_exclude[]' '.persistent_files[]' '.queue_workers[]' '.deny_php_paths[]'
+    '.basic_auth // ""' '.client_max_body_size // ""' '.composer_dev // ""'
+    '.db_backup_retention_days // ""' '.db_env_scheme // ""' '.deny_php_in_uploads // ""'
+    '.fpm_max_children // ""' '.nodejs_version // ""' '.security_headers // ""' '.static_cache // ""'
+    '.build' '.build | tag' '.build.path // ""' '.build.package_manager // "auto"'
+    '.build.install' '.build.keep_node_modules' '.build.script // ""' '.build.command // ""'
+    '(.build.env // {}) | to_entries | .[] | .key + "=" + (.value | tostring)'
+    '.build.outputs[]'
+    '(.php_ini // {}) | to_entries | .[] | .key + "=" + (.value | tostring)'
+    '.redirects | tag' '.redirects | length' '.schedule | tag' '.schedule | length'
+    '.hooks | has("post-start")' '.hooks."post-start" | length'
+)
+declare -gA YQC_IDX=() YQC_FILE_ID=() YQC_CONTENT=() YQC_VAL=() YQC_HAS=()
+YQC_MARK="@@yqc-$$-$RANDOM$RANDOM"
+YQC_NEXT_ID=0
+for _yqc_i in "${!YQC_EXPRS[@]}"; do YQC_IDX["${YQC_EXPRS[_yqc_i]}"]="$_yqc_i"; done
+unset _yqc_i
+
+yqc() {
+    local expr="$1" file="$2"
+    local idx="${YQC_IDX[$expr]-}"
+    if [[ -z "$idx" || ! -f "$file" || ! -r "$file" ]]; then
+        yq eval "$expr" "$file"
+        return
+    fi
+    local content=""
+    IFS= read -r -d '' content < "$file" || true
+    if [[ -z "${YQC_CONTENT[$file]+x}" || "${YQC_CONTENT[$file]}" != "$content" ]]; then
+        yqc_load "$file" "$content"
+    fi
+    local id="${YQC_FILE_ID[$file]}"
+    if [[ "$id" == "x" ]]; then
+        yq eval "$expr" "$file"
+        return
+    fi
+    [[ "${YQC_HAS[$id:$idx]}" == 1 ]] && printf '%s\n' "${YQC_VAL[$id:$idx]}"
+    return 0
+}
+
+# Loads files "$@" into the cache in THIS shell. Callers read values via
+# $(yqc ...) or < <(yqc ...) — subshells, whose own loads would be thrown
+# away — so prime first and let those subshells inherit the cache.
+yqc_prime() {
+    local f content
+    for f in "$@"; do
+        [[ -n "$f" && -f "$f" && -r "$f" ]] || continue
+        content=""
+        IFS= read -r -d '' content < "$f" || true
+        [[ -n "${YQC_CONTENT[$f]+x}" && "${YQC_CONTENT[$f]}" == "$content" ]] || yqc_load "$f" "$content"
+    done
+    return 0
+}
+
+# One yq run printing every YQC_EXPRS result after its own marker line,
+# split back into YQC_VAL/YQC_HAS (whether it printed anything at all —
+# an empty string prints an empty line, an empty stream nothing).
+#
+# Each expression gets its own copy of the file (the file is passed once
+# per expression, eval-all + select(fileIndex)): reading a missing path
+# in yq adds it to the document in memory, so in one shared document
+# `.build.install` would make a later `.build` print keys that aren't in
+# the file. -N: no `---` between documents.
+#
+# Only a file whose top level is a map is cached (every real config is):
+# for an empty or comments-only file, eval-all prints nothing where a
+# lone `yq eval` prints "null", so those go to real yq. The first output
+# line is that check, the document's tag.
+yqc_load() {
+    local file="$1" content="$2"
+    YQC_CONTENT["$file"]="$content"
+    local batch="(select(fileIndex == 0) | tag)" i
+    local -a files=("$file")
+    for i in "${!YQC_EXPRS[@]}"; do
+        batch+=", (select(fileIndex == $((i + 1))) | (\"$YQC_MARK $i\", (${YQC_EXPRS[i]})))"
+        files+=("$file")
+    done
+    local out
+    if ! out="$(yq eval-all -N "$batch" "${files[@]}" 2>/dev/null)" || [[ "${out%%$'\n'*}" != '!!map' ]]; then
+        YQC_FILE_ID["$file"]="x"
+        return 0
+    fi
+    out="${out#*$'\n'}"$'\n'"$YQC_MARK end"
+    local id="${YQC_FILE_ID[$file]-}"
+    if [[ -z "$id" || "$id" == "x" ]]; then
+        id="$YQC_NEXT_ID"
+        YQC_NEXT_ID=$((YQC_NEXT_ID + 1))
+        YQC_FILE_ID["$file"]="$id"
+    fi
+    local line cur=""
+    while IFS= read -r line; do
+        if [[ "$line" == "$YQC_MARK "* ]]; then
+            cur="${line#"$YQC_MARK "}"
+            [[ "$cur" == end ]] && break
+            YQC_VAL["$id:$cur"]=""
+            YQC_HAS["$id:$cur"]=0
+        elif [[ -n "$cur" ]]; then
+            if [[ "${YQC_HAS[$id:$cur]}" == 1 ]]; then
+                YQC_VAL["$id:$cur"]+=$'\n'"$line"
+            else
+                YQC_VAL["$id:$cur"]="$line"
+                YQC_HAS["$id:$cur"]=1
+            fi
+        fi
+    done <<< "$out"
 }
 
 # Wrapper directory: Linux user HOME, .ssh, releases/, current.

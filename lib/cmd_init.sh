@@ -404,6 +404,13 @@ EOF
         log_info "DB_BACKUP_ENABLED=false — skipping database backup cron"
     fi
 
+    validate_cron_expr "$DOCTOR_SCHEDULE" DOCTOR_SCHEDULE
+    cat > /etc/cron.d/ddeploy-doctor <<EOF
+$DOCTOR_SCHEDULE root DDEPLOY_TRIGGER=schedule $PROVISIONER_DIR/provision.sh doctor --snapshot >> $LOG_DIR/doctor.log 2>&1
+EOF
+    chmod 644 /etc/cron.d/ddeploy-doctor
+    log_info "cron: doctor --snapshot runs on schedule '$DOCTOR_SCHEDULE' as root, via /etc/cron.d/ddeploy-doctor"
+
     if [[ "$PREVIEW_PRUNE_ENABLED" == "true" ]]; then
         cat > /etc/cron.d/ddeploy-prune-previews <<EOF
 $PREVIEW_PRUNE_SCHEDULE root DDEPLOY_TRIGGER=schedule $PROVISIONER_DIR/provision.sh prune-previews >> $LOG_DIR/prune-previews.log 2>&1

@@ -33,10 +33,13 @@ read:
   sites                                 every provisioned site (previews included)
   site-names                            just their names (and which are previews): instant, for a list to show first
   site <name>                           one site: summary, resolved config, releases
-  events [--site n] [--project p] [--run id] [--limit N]
-                                        deploy/preview event log, oldest first
+  events [--site n] [--project p] [--run id] [--limit N] [--after seq]
+                                        deploy/preview event log, oldest first; "seq" is
+                                        the newest event's, --after seq only newer (fleet)
   previews <project>                    active previews of a project
-  doctor [name]                         health checks (never pages NOTIFY_WEBHOOK)
+  doctor [name]                         health checks (never pages NOTIFY_WEBHOOK); also
+                                        stored as the snapshot
+  doctor --snapshot                     the last stored checks, without running any
   logs [<name> [--lines N | --offset B]]   list logs, or read one: <site>, <site>.access,
                                         <site>.error, nginx_access, nginx_error, phpX.Y_fpm, webhook...
   inspect-repo <url> [--branch b]       what provision would find in a repo
@@ -156,6 +159,10 @@ api_dispatch() {
     esac
     load_conf
     require_root
+    # Checked once here, so the per-site work below (subshells) inherits
+    # YQ_CHECKED; a server without yq still answers the verbs that don't
+    # need it, and the ones that do fail as before.
+    (require_yq) >/dev/null 2>&1 && YQ_CHECKED=1
     PARSE_CONFIG_QUIET=1
     case "$verb" in
         info)         api_info "$@" ;;
@@ -237,6 +244,10 @@ api_info() {
     printf ',"features":{"webhook":%s,"backups":%s,"db_backups":%s,"preview_prune":%s,"web":%s}' \
         "$(json_bool "$WEBHOOK_ENABLED")" "$(json_bool "$BACKUP_ENABLED")" "$(json_bool "$DB_BACKUP_ENABLED")" \
         "$(json_bool "$PREVIEW_PRUNE_ENABLED")" "$(json_bool "${WEB_ENABLED:-false}")"
+    # What this ddeploy's api can do, for a client to check before using it:
+    # event_feed (events --after, seq), doctor_snapshot (doctor --snapshot,
+    # health on site summaries).
+    printf ',"capabilities":["event_feed","doctor_snapshot"]'
     printf ',"preview_db_mode":%s' "$(json_str "$PREVIEW_DB_MODE")"
     printf ',"basic_auth_default":%s' "$(json_bool "$BASIC_AUTH_DEFAULT")"
     printf ',"defaults":{"client_max_body_size":%s,"fpm_max_children":%s,"db_backup_retention_days":%s}' \
@@ -264,10 +275,11 @@ api_import_max_bytes() {
 
 # One site's summary object on one line: list's columns plus what the UI
 # links to (URL, repo, full SHA) and the newest event.
+# $1 site, $2 its list_row line if the caller already has it.
 api_site_summary() {
-    local name="$1"
-    local row php="" node="" docroot="" db="" branch="" sha="" when="" preview=""
-    row="$(list_row "$name" 2>/dev/null)" || true
+    local name="$1" row="${2-}"
+    local php="" node="" docroot="" db="" branch="" sha="" when="" preview=""
+    [[ -n "$row" ]] || row="$(list_row "$name" 2>/dev/null)" || true
     IFS=$'\x1f' read -r _ php node docroot db branch sha when preview <<< "$row"
 
     local build=false node_spec="$node"
@@ -336,10 +348,30 @@ api_sites() {
     [[ $# -eq 0 ]] || api_die bad_request "sites takes no arguments"
     local -a names=()
     mapfile -t names < <(provisioned_site_names)
+    # From the read index (lib/index.sh): unchanged sites are a read.
+    index_refresh "${names[@]}"
     api_header
     printf ',"base_domain":%s,"sites":' "$(json_str "$BASE_DOMAIN")"
-    parallel_map api_site_summary "${names[@]}" | json_lines_to_array
+    local name
+    for name in "${names[@]}"; do
+        api_indexed_summary "$name"
+    done | json_lines_to_array
     printf '}\n'
+}
+
+# Site $1's summary from the index, plus "health"/"health_checked_at"
+# from the doctor snapshot when there is one. Added here, not stored in
+# the row: a doctor run then doesn't make every row stale.
+api_indexed_summary() {
+    local name="$1" line=""
+    [[ -f "$INDEX_DIR/$name.summary" ]] || return 0
+    IFS= read -r line < "$INDEX_DIR/$name.summary" || true
+    [[ "$line" == \{*\} ]] || return 0
+    doctor_snapshot_health "$name"
+    if [[ -n "$DOCTOR_HEALTH_WORST" ]]; then
+        line="${line%\}},\"health\":\"$DOCTOR_HEALTH_WORST\",\"health_checked_at\":\"$DOCTOR_HEALTH_AT\"}"
+    fi
+    printf '%s\n' "$line"
 }
 
 # $1 a validated, existing site name — exits not_found otherwise.
@@ -408,14 +440,11 @@ api_site() {
     [[ $# -le 1 ]] || api_die bad_request "site takes one site name"
     api_require_site "$name"
 
-    local config config_error="" errf
-    errf="$(mktemp)"
-    if ! config="$(api_site_config "$name" 2>"$errf")"; then
-        config=null
-        config_error="$(grep -E '^\[error\]' "$errf" | tail -n 1 | sed 's/^\[error\] *//' || true)"
-        [[ -n "$config_error" ]] || config_error="$(tail -n 1 "$errf")"
-    fi
-    rm -f "$errf"
+    # Summary and resolved config: from the read index (lib/index.sh).
+    index_refresh "$name"
+    local config=null config_error=""
+    { IFS= read -r config; IFS= read -r config_error; } < "$INDEX_DIR/$name.config" || true
+    [[ -n "$config" ]] || config=null
 
     local overrides=null f
     f="$(override_config_path "$name")"
@@ -455,8 +484,8 @@ api_site() {
     done
 
     api_header
-    printf ',"site":'
-    api_site_summary "$name" | tr -d '\n'
+    local summary; summary="$(api_indexed_summary "$name")"
+    printf ',"site":%s' "${summary:-null}"
     printf ',"config":%s,"config_error":%s,"overrides":%s,"deploy_branch":%s' \
         "$config" "$(json_str_or_null "$config_error")" "$overrides" \
         "$(json_str_or_null "$(read_deploy_branch "$name" 2>/dev/null || true)")"
@@ -470,13 +499,14 @@ api_site() {
 # --- events -------------------------------------------------------------
 
 api_events() {
-    local site="" project="" run="" limit=""
+    local site="" project="" run="" limit="" after=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --site) site="${2:-}"; shift ;;
             --project) project="${2:-}"; shift ;;
             --run) run="${2:-}"; shift ;;
             --limit) limit="${2:-}"; shift ;;
+            --after) after="${2:-}"; shift ;;
             *) api_die bad_request "events: unknown option '$1'" ;;
         esac
         shift
@@ -485,17 +515,55 @@ api_events() {
     [[ -z "$project" ]] || api_valid validate_name "$project"
     [[ -z "$run" ]] || api_valid validate_run_id "$run"
     limit="$(api_int "$limit" 200 5000 --limit)"
+    if [[ -n "$after" ]]; then
+        [[ "$after" =~ ^[0-9]{1,15}$ ]] || api_die bad_request "--after must be a seq (a number)"
+    fi
+
+    # No site, project or run: the fleet tail, already in order — one
+    # file, no merge. --after N keeps only events past seq N (the change
+    # feed). The response's own "seq" is where the next --after should
+    # start, even when nothing's new. (--run searches every site file, as
+    # before: a run older than the tail's window must still be found.)
+    if [[ -z "$site" && -z "$project" && -z "$run" ]]; then
+        events_fleet_init 2>/dev/null || true
+        local fleet="$EVENTS_DIR/_fleet.jsonl" last first="" line=""
+        last="$(events_last_seq)"
+        # A feed reader pages FORWARD: the oldest --limit events past its
+        # cursor (it asks again from the last seq it got, until "seq").
+        # "truncated": events past the cursor were already trimmed away —
+        # the reader can't catch up from the feed, and should reload.
+        local truncated=false
+        if [[ -n "$after" && -f "$fleet" ]]; then
+            IFS= read -r line < "$fleet" || true
+            [[ "$line" =~ ^\{\"ts\":\"[^\"]*\",\"seq\":([0-9]+) ]] && first="${BASH_REMATCH[1]}"
+            [[ -n "$first" && "$after" -lt "$last" && "$first" -gt $((after + 1)) ]] && truncated=true
+        fi
+        api_header
+        printf ',"seq":%s,"truncated":%s,"events":' "$last" "$truncated"
+        if [[ ! -f "$fleet" ]]; then
+            printf '[]'
+        elif [[ -n "$after" ]]; then
+            # awk stops at the limit itself: `| head` would cut the pipe
+            # early, and pipefail would end the verb before its closing }.
+            awk -v a="$after" -v l="$limit" 'match($0, /^\{"ts":"[^"]*","seq":[0-9]+/) { n = substr($0, RSTART, RLENGTH); sub(/.*:/, "", n); if (n + 0 > a + 0) { print; if (++c >= l + 0) exit } }' "$fleet" \
+                | json_lines_to_array
+        else
+            tail -n "$limit" "$fleet" | json_lines_to_array
+        fi
+        printf '}\n'
+        return 0
+    fi
+    [[ -z "$after" ]] || api_die bad_request "--after only applies to the fleet feed (no --site/--project/--run)"
 
     local -a files=()
     if [[ -n "$site" ]]; then
         [[ -f "$EVENTS_DIR/$site.jsonl" ]] && files=("$EVENTS_DIR/$site.jsonl")
     else
-        local f
-        for f in "$EVENTS_DIR"/*.jsonl; do [[ -f "$f" ]] && files+=("$f"); done
+        mapfile -t files < <(events_site_files)
     fi
 
     api_header
-    printf ',"events":'
+    printf ',"seq":%s,"events":' "$(events_last_seq)"
     if [[ "${#files[@]}" -eq 0 ]]; then
         printf '[]'
     else
@@ -574,6 +642,11 @@ api_doctor_site() {
 }
 
 api_doctor() {
+    if [[ "${1:-}" == --snapshot ]]; then
+        [[ $# -eq 1 ]] || api_die bad_request "doctor --snapshot takes no site name"
+        api_doctor_snapshot
+        return
+    fi
     local only="${1:-}"
     [[ $# -le 1 ]] || api_die bad_request "doctor takes at most one site name"
     [[ -z "$only" ]] || api_require_site "$only"
@@ -583,13 +656,39 @@ api_doctor() {
     else
         mapfile -t names < <(provisioned_site_names)
     fi
-    local infra
+    local infra at server lines line
+    at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     infra="$(doctor_check_infra 2>/dev/null)" || infra+=$'\n'"fail"$'\t'"infra"$'\t'"infra checks crashed unexpectedly"
+    server="{\"worst\":$(json_str "$(doctor_worst "$infra")"),\"checks\":$(api_doctor_rows <<< "$infra")}"
+    lines="$(parallel_map api_doctor_site "${names[@]}")"
+    # Every check also refreshes the stored snapshot (lib/cmd_doctor.sh):
+    # the server part, and the sites that were just checked.
+    doctor_snapshot_put "$DOCTOR_SNAPSHOT_DIR/server.json" "{\"checked_at\":$(json_str "$at"),${server#\{}"
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && doctor_snapshot_site "$at" "$line"
+    done <<< "$lines"
     api_header
-    printf ',"checked_at":%s' "$(json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
-    printf ',"server":{"worst":%s,"checks":%s}' "$(json_str "$(doctor_worst "$infra")")" "$(api_doctor_rows <<< "$infra")"
-    printf ',"sites":'
-    parallel_map api_doctor_site "${names[@]}" | json_lines_to_array
+    printf ',"checked_at":%s,"server":%s,"sites":' "$(json_str "$at")" "$server"
+    printf '%s\n' "$lines" | json_lines_to_array
+    printf '}\n'
+}
+
+# The stored snapshot, without running anything: the server part and
+# every provisioned site's last result, each with its own checked_at
+# (null/absent if never checked). "checked_at" is the server part's.
+api_doctor_snapshot() {
+    local server=null at=null name
+    if [[ -f "$DOCTOR_SNAPSHOT_DIR/server.json" ]]; then
+        IFS= read -r server < "$DOCTOR_SNAPSHOT_DIR/server.json" || true
+        [[ "$server" =~ ^\{\"checked_at\":(\"[^\"]+\") ]] && at="${BASH_REMATCH[1]}"
+    fi
+    api_header
+    printf ',"checked_at":%s,"server":%s,"sites":' "$at" "${server:-null}"
+    local -a names=()
+    mapfile -t names < <(provisioned_site_names)
+    for name in "${names[@]}"; do
+        [[ -f "$DOCTOR_SNAPSHOT_DIR/sites/$name.json" ]] && cat "$DOCTOR_SNAPSHOT_DIR/sites/$name.json"
+    done | json_lines_to_array
     printf '}\n'
 }
 
@@ -685,7 +784,7 @@ api_logs() {
             [[ "$name" =~ $NAME_RE ]] || continue
             case "$name" in
                 webhook|webhook-other) kind=webhook ;;
-                backup-uploads|backup-database|prune-previews|server-config) kind=fleet ;;
+                backup-uploads|backup-database|prune-previews|doctor|server-config) kind=fleet ;;
                 *) kind=site ;;
             esac
             local site="" label="ddeploy"
@@ -1108,8 +1207,10 @@ api_run_show() {
     [[ -s "$RUNS_META_DIR/$id.json" ]] && meta="$(head -n 1 "$RUNS_META_DIR/$id.json")"
     [[ -f "$log" ]] && log_size="$(stat -c %s "$log")"
     local events="[]"
-    if compgen -G "$EVENTS_DIR/*.jsonl" >/dev/null; then
-        events="$(cat "$EVENTS_DIR"/*.jsonl | { grep -F "\"run_id\":\"$id\"" || true; } | sort -s -t, -k1,1 | json_lines_to_array)"
+    local -a efiles=()
+    mapfile -t efiles < <(events_site_files)
+    if [[ "${#efiles[@]}" -gt 0 ]]; then
+        events="$(cat "${efiles[@]}" | { grep -F "\"run_id\":\"$id\"" || true; } | sort -s -t, -k1,1 | json_lines_to_array)"
     fi
     if [[ "$meta" == null && "$log_size" == null && "$events" == "[]" ]]; then
         api_die not_found "no run '$id'"
@@ -1323,7 +1424,7 @@ api_settings() {
     for kv in "${sets[@]}"; do args+=("$kv"); done
     for key in "${unsets[@]}"; do args+=(--unset "$key"); done
     if [[ "${#sets[@]}" -gt 0 || "${#unsets[@]}" -gt 0 ]]; then
-        cmd_override "${args[@]}" >/dev/null
+        OVERRIDE_FROM_API=1 cmd_override "${args[@]}" >/dev/null
     fi
     [[ -n "$branch" ]] && write_deploy_branch "$name" "$branch"
     [[ "$clear_branch" -eq 1 ]] && clear_deploy_branch "$name"

@@ -86,6 +86,24 @@ mapfile -t lines < "$EVENTS_DIR/mysite.jsonl"
 assert_json "started event" "${lines[0]}" 'd["site"] == "mysite" and d["kind"] == "deploy" and d["phase"] == "started" and d["run_id"] == "20261002T120000Z-abcdef" and d["trigger"] == "manual (tester)"'
 assert_json "final event extras" "${lines[1]}" 'd["to_sha"] == "abc123" and d["duration_s"] == 12 and d["subject"] == "fix \"quotes\"" and "empty" not in d and "Bad-Key" not in d'
 assert_ok "events start with {\"ts\": (sortable)" bash -c "grep -c '^{\"ts\":\"' '$EVENTS_DIR/mysite.jsonl' | grep -qx 2"
+assert_json "events carry a fleet-wide seq" "${lines[1]}" 'd["seq"] == 2'
+assert_eq "the fleet tail has the same lines" "$(cat "$EVENTS_DIR/mysite.jsonl")" "$(cat "$EVENTS_DIR/_fleet.jsonl")"
+event_record othersite provision started
+assert_eq "seq keeps growing across sites" 3 "$(events_last_seq)"
+assert_eq "events_site_files lists sites, never _fleet" "mysite.jsonl othersite.jsonl" "$(events_site_files | xargs -n1 basename | sort | tr '\n' ' ' | sed 's/ $//')"
+
+# A server upgraded from before the fleet tail: _fleet.jsonl is built
+# from the per-site files, by time, and numbered in that order.
+old_events="$(mktemp -d)"
+printf '{"ts":"2026-10-01T10:00:00Z","site":"a","kind":"deploy","phase":"started"}\n{"ts":"2026-10-01T12:00:00Z","site":"a","kind":"deploy","phase":"succeeded"}\n' > "$old_events/a.jsonl"
+printf '{"ts":"2026-10-01T11:00:00Z","site":"b","kind":"deploy","phase":"started"}\n' > "$old_events/b.jsonl"
+(EVENTS_DIR="$old_events"; events_fleet_init)
+assert_eq "fleet tail built from older per-site files, merged by time" "1:a 2:b 3:a" \
+    "$(python3 -c 'import json,sys; print(" ".join("%d:%s" % (d["seq"], d["site"]) for d in map(json.loads, open(sys.argv[1]))))' "$old_events/_fleet.jsonl")"
+assert_eq "...and the counter continues from there" 3 "$(EVENTS_DIR="$old_events"; events_last_seq)"
+(EVENTS_DIR="$old_events"; event_record b deploy succeeded)
+assert_json "the next event is seq 4" "$(tail -n 1 "$old_events/_fleet.jsonl")" 'd["seq"] == 4 and d["site"] == "b"'
+rm -rf "$old_events"
 DDEPLOY_EVENT_ATTRS="$(mktemp)"
 event_attr kind rollback
 event_attr to_sha one
@@ -208,6 +226,121 @@ assert_fail "absolute upload dir" api_valid_upload_dir /etc --upload-dirs
 assert_ok "api_int caps at max" bash -c "source lib/common.sh; source lib/json.sh; source lib/cmd_api.sh; [[ \$(api_int 99999 10 500 x) == 500 ]]"
 assert_ok "api_int default" bash -c "source lib/common.sh; source lib/json.sh; source lib/cmd_api.sh; [[ \$(api_int '' 10 500 x) == 10 ]]"
 assert_fail "api_int refuses non-numbers" api_int 1e3 10 500 x
+
+echo
+echo "yqc (batched yq reads)"
+# Every YQC_EXPRS expression must print exactly what `yq eval` prints —
+# same bytes, same trailing newline, same "nothing at all" — on configs
+# of every shape parse_config meets.
+yqc_dir="$(mktemp -d)"
+cat > "$yqc_dir/full.yaml" <<'EOF'
+name: demo
+php_version: "8.3"
+docroot: ""
+webserver_type: nginx-fpm
+upload_dirs: [web/uploads, "private uploads", "@@yqc-fake 3"]
+database: {name: dbn, user: ""}
+additional_fqdns: [a.example.com]
+additional_hostnames: []
+basic_auth: true
+client_max_body_size: 64M
+composer_dev: false
+fpm_max_children: 12
+nodejs_version: auto
+build:
+  path: front
+  package_manager: pnpm
+  install: false
+  script: build
+  env: {A: 1, B: "x y", C: "multi\nline"}
+  outputs: [dist, ""]
+php_ini: {memory_limit: 256M}
+redirects:
+  - {from: /a, to: /b, code: 302}
+schedule:
+  - {cron: "* * * * *", cmd: "php craft queue/run"}
+hooks:
+  post-start:
+    - exec: "npm run build"
+    - composer: install
+EOF
+printf 'name: bare\n' > "$yqc_dir/bare.yaml"
+printf 'build: true\nredirects: "nope"\nschedule: {}\nhooks: {}\n' > "$yqc_dir/odd.yaml"
+: > "$yqc_dir/empty.yaml"
+printf '# only a comment\n' > "$yqc_dir/comment.yaml"
+yqc_mismatch=0
+for f in "$yqc_dir"/{full,bare,odd,empty,comment}.yaml; do
+    for e in "${YQC_EXPRS[@]}"; do
+        want="$(yq eval "$e" "$f" 2>&1; printf '|%s' "$?")"
+        got="$(yqc "$e" "$f" 2>&1; printf '|%s' "$?")"
+        if [[ "$want" != "$got" ]]; then
+            yqc_mismatch=$((yqc_mismatch + 1))
+            bad "yqc '$e' on $(basename "$f"): expected $(printf %q "$want"), got $(printf %q "$got")"
+        fi
+    done
+done
+assert_eq "every expression matches yq on 5 config shapes" 0 "$yqc_mismatch"
+assert_eq "an expression outside the list still works (real yq)" "front" "$(yqc '.build.path' "$yqc_dir/full.yaml")"
+
+# One yq process per file, however many reads: count them with a shim.
+mkdir -p "$yqc_dir/bin"
+printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$yqc_dir/calls" "$(command -v yq)" > "$yqc_dir/bin/yq"
+chmod +x "$yqc_dir/bin/yq"
+yqc_calls="$(
+    PATH="$yqc_dir/bin:$PATH"
+    : > "$yqc_dir/calls"
+    yqc_prime "$yqc_dir/full.yaml"
+    for e in "${YQC_EXPRS[@]}"; do v="$(yqc "$e" "$yqc_dir/full.yaml")"; done
+    mapfile -t _dirs < <(yqc '.upload_dirs[]' "$yqc_dir/full.yaml")
+    wc -l < "$yqc_dir/calls" | tr -d ' '
+)"
+assert_eq "primed: ${#YQC_EXPRS[@]} reads, one yq process" 1 "$yqc_calls"
+
+# A write between reads is seen: the cache compares content every call.
+cp "$yqc_dir/full.yaml" "$yqc_dir/live.yaml"
+yqc_prime "$yqc_dir/live.yaml"
+assert_eq "cached value" "8.3" "$(yqc '.php_version' "$yqc_dir/live.yaml")"
+sed -i.bak 's/^php_version: .*/php_version: "8.4"/' "$yqc_dir/live.yaml"
+assert_eq "a changed file is reloaded" "8.4" "$(yqc '.php_version' "$yqc_dir/live.yaml")"
+yqc_prime "$yqc_dir/live.yaml"
+assert_eq "...and re-primed in this shell" "8.4" "${YQC_VAL[${YQC_FILE_ID[$yqc_dir/live.yaml]}:${YQC_IDX[.php_version]}]}"
+
+# Unparseable YAML isn't cached: real yq runs, with its own error.
+printf 'name: [unclosed\n' > "$yqc_dir/broken.yaml"
+want_rc=0; yq eval '.name' "$yqc_dir/broken.yaml" >/dev/null 2>&1 || want_rc=$?
+got_rc=0; yqc '.name' "$yqc_dir/broken.yaml" >/dev/null 2>&1 || got_rc=$?
+assert_eq "broken YAML fails like yq does" "$want_rc" "$got_rc"
+rm -rf "$yqc_dir"
+
+echo
+echo "doctor snapshot: paging only on changes"
+# shellcheck source=lib/cmd_doctor.sh
+source lib/cmd_doctor.sh
+posts="$(mktemp)"
+notify_post() { printf '%s|%s|%s\n' "$2" "$3" "${4//$'\n'/;}" >> "$posts"; }
+NOTIFY_WEBHOOK=https://example.invalid/hook BASE_DOMAIN=example.test
+doctor_notify_transitions $'a|vhost\nb|database' $'a|vhost\nb|database'
+assert_eq "nothing changed: no page" "" "$(cat "$posts")"
+doctor_notify_transitions $'a|vhost' $'a|vhost\nc|cert (custom domain)'
+assert_eq "a new failure pages once, naming it" "fail|doctor: 1 check(s) started failing on example.test|c: cert (custom domain)" "$(cat "$posts")"
+: > "$posts"
+doctor_notify_transitions $'a|vhost\nc|cert' $'c|cert'
+assert_eq "a recovery is announced" "ok|doctor: 1 check(s) recovered on example.test|a: vhost" "$(cat "$posts")"
+: > "$posts"
+NOTIFY_WEBHOOK=""
+doctor_notify_transitions "" $'a|vhost'
+assert_eq "no webhook configured: silent" "" "$(cat "$posts")"
+rm -f "$posts"
+snapdir="$(mktemp -d)"
+DOCTOR_SNAPSHOT_DIR="$snapdir"
+doctor_snapshot_site "2026-10-04T10:00:00Z" '{"name":"mysite","worst":"warn","preview":null,"checks":[{"status":"warn","check":"cert","detail":"soon"}]}'
+doctor_snapshot_health mysite
+assert_eq "health read back from the snapshot" "warn 2026-10-04T10:00:00Z" "$DOCTOR_HEALTH_WORST $DOCTOR_HEALTH_AT"
+doctor_snapshot_health never-checked
+assert_eq "never checked: no health" "|" "$DOCTOR_HEALTH_WORST|$DOCTOR_HEALTH_AT"
+doctor_snapshot_site "2026-10-04T10:00:00Z" '{"name":"../escape","worst":"ok"}'
+assert_eq "a path-like name is never written" "" "$(find "$snapdir" -name '*escape*')"
+rm -rf "$snapdir"
 
 echo
 echo "$PASSES passed, $FAILS failed"

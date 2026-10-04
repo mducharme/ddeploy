@@ -4,7 +4,13 @@
 #
 #   $EVENTS_DIR/<site>.jsonl    one JSON object per line, appended as a
 #                               run starts and as it ends:
-#     {ts, run_id, site, kind, phase, trigger, ...}
+#     {ts, seq, run_id, site, kind, phase, trigger, ...}
+#   $EVENTS_DIR/_fleet.jsonl    every site's events, in the order they
+#                               were recorded: the fleet-wide tail the web
+#                               UI follows. seq is fleet-wide and only
+#                               grows (_fleet.seq), so `api events
+#                               --after <seq>` is a change feed. The
+#                               leading _ can't match NAME_RE: never a site.
 #     kind   deploy|rollback|provision|provision-preview|deploy-preview|remove-preview
 #     phase  started|succeeded|failed|skipped
 #     extra  from_sha to_sha subject author branch project duration_s error
@@ -45,36 +51,100 @@ event_record() {
     local site="$1" kind="$2" phase="$3"; shift 3
     # The site name becomes a path: never anything but a plain name.
     [[ "$site" =~ $NAME_RE ]] || return 0
-    local line kv key val
-    line="{\"ts\":$(json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
-    line+=",\"run_id\":$(json_str_or_null "${DDEPLOY_RUN_ID:-}")"
-    line+=",\"site\":$(json_str "$site"),\"kind\":$(json_str "$kind"),\"phase\":$(json_str "$phase")"
-    line+=",\"trigger\":$(json_str "$(notify_trigger)")"
+    local rest kv key val
+    rest=",\"run_id\":$(json_str_or_null "${DDEPLOY_RUN_ID:-}")"
+    rest+=",\"site\":$(json_str "$site"),\"kind\":$(json_str "$kind"),\"phase\":$(json_str "$phase")"
+    rest+=",\"trigger\":$(json_str "$(notify_trigger)")"
     for kv in "$@"; do
         key="${kv%%=*}"
         val="${kv#*=}"
         [[ -n "$val" && "$key" =~ ^[a-z_]+$ ]] || continue
         if [[ "$key" == duration_s ]]; then
-            line+=",\"$key\":$(json_num "$val")"
+            rest+=",\"$key\":$(json_num "$val")"
         else
-            line+=",\"$key\":$(json_str "$val")"
+            rest+=",\"$key\":$(json_str "$val")"
         fi
     done
-    line+="}"
+    rest+="}"
     {
         mkdir -p "$EVENTS_DIR"
         chmod 700 "$EVENTS_DIR"
-        printf '%s\n' "$line" >> "$EVENTS_DIR/$site.jsonl"
-        events_trim "$EVENTS_DIR/$site.jsonl"
+        # One lock for the whole write: the seq is taken, and the line
+        # lands in both files, before any other event — so _fleet.jsonl
+        # is in seq order, and a trim (tail + mv) never drops a line
+        # appended while it ran.
+        {
+            events_flock_fd9
+            events_fleet_init_locked
+            local seq=0
+            [[ -s "$EVENTS_DIR/_fleet.seq" ]] && read -r seq < "$EVENTS_DIR/_fleet.seq"
+            [[ "$seq" =~ ^[0-9]+$ ]] || seq=0
+            seq=$((seq + 1))
+            local line
+            line="{\"ts\":$(json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)"),\"seq\":$seq$rest"
+            printf '%s\n' "$seq" > "$EVENTS_DIR/_fleet.seq"
+            printf '%s\n' "$line" >> "$EVENTS_DIR/_fleet.jsonl"
+            printf '%s\n' "$line" >> "$EVENTS_DIR/$site.jsonl"
+            events_trim "$EVENTS_DIR/_fleet.jsonl"
+            events_trim "$EVENTS_DIR/$site.jsonl"
+        } 9>>"$EVENTS_DIR/.lock"
     } 2>/dev/null || true
+}
+
+# Per-site event files only (never _fleet.jsonl), one path per line.
+events_site_files() {
+    local f
+    for f in "$EVENTS_DIR"/*.jsonl; do
+        [[ -f "$f" && "$(basename "$f")" != _* ]] && printf '%s\n' "$f"
+    done
+    return 0
+}
+
+# Builds _fleet.jsonl the first time, from the per-site files written
+# before it existed: merged by time, newest EVENTS_KEEP_LINES kept, each
+# given a seq in that order. Caller holds the events lock.
+events_fleet_init_locked() {
+    [[ -f "$EVENTS_DIR/_fleet.jsonl" ]] && return 0
+    local -a files=()
+    mapfile -t files < <(events_site_files)
+    local tmp; tmp="$(mktemp "$EVENTS_DIR/_fleet.jsonl.XXXXXX")"
+    if [[ "${#files[@]}" -gt 0 ]]; then
+        cat "${files[@]}" | { grep '^{"ts":' || true; } | sort -s -t, -k1,1 | tail -n "$EVENTS_KEEP_LINES" \
+            | awk '{ if ($0 !~ /^\{"ts":"[^"]*","seq":/) sub(/^\{"ts":"[^"]*"/, "&,\"seq\":" NR); print }' > "$tmp"
+    fi
+    wc -l < "$tmp" | tr -d ' ' > "$EVENTS_DIR/_fleet.seq"
+    mv "$tmp" "$EVENTS_DIR/_fleet.jsonl"
+}
+
+# The same, taking the lock: for readers that find no fleet file yet.
+events_fleet_init() {
+    [[ -f "$EVENTS_DIR/_fleet.jsonl" ]] && return 0
+    mkdir -p "$EVENTS_DIR"
+    chmod 700 "$EVENTS_DIR"
+    { events_flock_fd9; events_fleet_init_locked; } 9>>"$EVENTS_DIR/.lock"
+}
+
+# Exclusive lock on fd 9. flock is util-linux, on every server; skipped
+# only where it doesn't exist (a developer's Mac running tests/unit.sh).
+events_flock_fd9() {
+    command -v flock >/dev/null 2>&1 || return 0
+    flock -x 9
+}
+
+# The newest seq recorded so far (0 before any).
+events_last_seq() {
+    local seq=0
+    [[ -s "$EVENTS_DIR/_fleet.seq" ]] && read -r seq < "$EVENTS_DIR/_fleet.seq"
+    [[ "$seq" =~ ^[0-9]+$ ]] || seq=0
+    printf '%s' "$seq"
 }
 
 # Keeps an events file bounded: past EVENTS_MAX_BYTES it's cut down to
 # its newest EVENTS_KEEP_LINES lines (thousands of runs — years for most
 # sites). Readers only ever want recent history; .deploys keeps the full
 # SHA log rollback needs.
-EVENTS_MAX_BYTES=2000000
-EVENTS_KEEP_LINES=4000
+EVENTS_MAX_BYTES="${EVENTS_MAX_BYTES:-2000000}"
+EVENTS_KEEP_LINES="${EVENTS_KEEP_LINES:-4000}"
 events_trim() {
     local f="$1" size
     size="$(wc -c < "$f" 2>/dev/null || echo 0)"

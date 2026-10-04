@@ -394,6 +394,7 @@ cmd_remove_preview() {
         # checkout) — nothing outlives the preview itself.
         rm -rf "${PERSISTENT_ROOT:?}/$name"
         rm -f "$GENERATED_DIR/$name.yaml" "$GENERATED_DIR/$name.steps" "$GENERATED_DIR/$name.provision-steps" "$(override_config_path "$name")"
+        index_forget "$name"
         if [[ "$mode" != "shared" ]] && id -u "www-$name" >/dev/null 2>&1; then
             userdel "www-$name" 2>/dev/null || true
         fi

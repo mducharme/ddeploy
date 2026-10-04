@@ -157,6 +157,17 @@ cmd_override() {
         done
     fi
 
+    # The change feed (lib/events.sh) sees CLI changes too, not only the
+    # web's. api settings records its own (with the web user), so it sets
+    # OVERRIDE_FROM_API and this stays quiet.
+    if [[ "${OVERRIDE_FROM_API:-}" != 1 ]] && [[ "$clear" -eq 1 || "${#sets[@]}" -gt 0 || "${#unsets[@]}" -gt 0 ]]; then
+        local summary=""
+        [[ "$clear" -eq 1 ]] && summary="cleared all overrides"
+        for kv in "${sets[@]}"; do summary+="${summary:+, }${kv%%=*}=${kv#*=}"; done
+        for key in "${unsets[@]}"; do summary+="${summary:+, }reset $key"; done
+        event_record "$name" settings-change succeeded "subject=$summary"
+    fi
+
     if [[ "$show" -eq 1 ]]; then
         if [[ -s "$f" ]]; then
             cat "$f"

@@ -311,7 +311,7 @@ read_ext_array() {
     local f vals
     for f in "$override" "$ext" "$cfg"; do
         [[ -n "$f" && -f "$f" ]] || continue
-        vals="$(yq eval "$expr" "$f" 2>/dev/null | grep -vx 'null' || true)"
+        vals="$(yqc "$expr" "$f" 2>/dev/null | grep -vx 'null' || true)"
         if [[ -n "$vals" ]]; then
             printf '%s\n' "$vals"
             return
@@ -325,7 +325,7 @@ read_ext_scalar() {
     local f val=""
     for f in "$override" "$ext" "$cfg"; do
         [[ -n "$f" && -f "$f" ]] || continue
-        val="$(yq eval "$expr" "$f" 2>/dev/null)"
+        val="$(yqc "$expr" "$f" 2>/dev/null)"
         [[ "$val" == "null" ]] && val=""
         [[ -n "$val" ]] && break
     done
@@ -340,12 +340,12 @@ extract_hooks() {
     local cfg="$1" out="$2" key="${3:-post-start}" count i type val
     : > "$out"
     [[ -f "$cfg" ]] || return 0
-    count="$(yq eval ".hooks.\"$key\" | length" "$cfg" 2>/dev/null)"
+    count="$(yqc ".hooks.\"$key\" | length" "$cfg" 2>/dev/null)"
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
     local ddev_node_re='^ddev[[:space:]]+((npm|npx|pnpm|yarn)([[:space:]].*)?)$'
     for ((i = 0; i < count; i++)); do
-        type="$(yq eval ".hooks.\"$key\"[$i] | to_entries | .[0].key" "$cfg")"
-        val="$(yq eval ".hooks.\"$key\"[$i] | to_entries | .[0].value" "$cfg")"
+        type="$(yqc ".hooks.\"$key\"[$i] | to_entries | .[0].key" "$cfg")"
+        val="$(yqc ".hooks.\"$key\"[$i] | to_entries | .[0].value" "$cfg")"
         # `exec-host: ddev npm run build` is how most DDEV projects
         # declare a frontend build. Exactly that shape — `ddev` followed
         # directly by a package manager — becomes a plain exec step (run
@@ -438,7 +438,7 @@ reset_build_config() {
 parse_build_map() {
     local name="$1" src="$2" v
     local label="build for '$name'"
-    BUILD_PATH="$(yq eval '.build.path // ""' "$src")"
+    BUILD_PATH="$(yqc '.build.path // ""' "$src")"
     [[ "$BUILD_PATH" == "null" || "$BUILD_PATH" == "." ]] && BUILD_PATH=""
     validate_relative_path "$BUILD_PATH" "$label: path"
     # Also rendered into an nginx location (build_node_deny_block,
@@ -446,7 +446,7 @@ parse_build_map() {
     [[ -z "$BUILD_PATH" || "$BUILD_PATH" =~ ^[A-Za-z0-9._/-]+$ ]] \
         || die "$label: path ('$BUILD_PATH') may only contain letters, digits, '.', '_', '-' and '/'"
 
-    BUILD_PACKAGE_MANAGER="$(yq eval '.build.package_manager // "auto"' "$src")"
+    BUILD_PACKAGE_MANAGER="$(yqc '.build.package_manager // "auto"' "$src")"
     case "$BUILD_PACKAGE_MANAGER" in
         auto|npm|pnpm|yarn) ;;
         *) die "$label: package_manager ('$BUILD_PACKAGE_MANAGER') must be auto, npm, pnpm, or yarn" ;;
@@ -454,16 +454,16 @@ parse_build_map() {
 
     # Not `// true`: yq's alternative operator treats a boolean false as
     # missing too, so `install: false` would read back as true.
-    BUILD_INSTALL="$(yq eval '.build.install' "$src")"
+    BUILD_INSTALL="$(yqc '.build.install' "$src")"
     [[ "$BUILD_INSTALL" == "null" ]] && BUILD_INSTALL=true
     validate_bool "$BUILD_INSTALL" "$label: install"
-    BUILD_KEEP_NODE_MODULES="$(yq eval '.build.keep_node_modules' "$src")"
+    BUILD_KEEP_NODE_MODULES="$(yqc '.build.keep_node_modules' "$src")"
     [[ "$BUILD_KEEP_NODE_MODULES" == "null" ]] && BUILD_KEEP_NODE_MODULES=false
     validate_bool "$BUILD_KEEP_NODE_MODULES" "$label: keep_node_modules"
 
     local script command
-    script="$(yq eval '.build.script // ""' "$src")"
-    command="$(yq eval '.build.command // ""' "$src")"
+    script="$(yqc '.build.script // ""' "$src")"
+    command="$(yqc '.build.command // ""' "$src")"
     [[ "$script" == "null" ]] && script=""
     [[ "$command" == "null" ]] && command=""
     [[ -n "$script" && -n "$command" ]] && die "$label: set script: or command:, not both"
@@ -479,7 +479,7 @@ parse_build_map() {
 
     # Passed to `env` as separate argv elements (never through a shell),
     # but still a closed key charset, and no newline in a value.
-    mapfile -t BUILD_ENV < <(yq eval '(.build.env // {}) | to_entries | .[] | .key + "=" + (.value | tostring)' "$src" 2>/dev/null)
+    mapfile -t BUILD_ENV < <(yqc '(.build.env // {}) | to_entries | .[] | .key + "=" + (.value | tostring)' "$src" 2>/dev/null)
     (( ${#BUILD_ENV[@]} > 30 )) && die "$label: env has more than 30 entries — refusing to use it"
     for v in "${BUILD_ENV[@]}"; do
         [[ "${v%%=*}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "$label: env key '${v%%=*}' is not a plain variable name"
@@ -490,7 +490,7 @@ parse_build_map() {
         [[ "${v#*=}" != *$'\n'* ]] || die "$label: env value for '${v%%=*}' contains a newline"
     done
 
-    mapfile -t BUILD_OUTPUTS < <(yq eval '.build.outputs[]' "$src" 2>/dev/null | grep -vx 'null' || true)
+    mapfile -t BUILD_OUTPUTS < <(yqc '.build.outputs[]' "$src" 2>/dev/null | grep -vx 'null' || true)
     (( ${#BUILD_OUTPUTS[@]} > 30 )) && die "$label: outputs has more than 30 entries — refusing to use it"
     for v in "${BUILD_OUTPUTS[@]}"; do
         [[ -n "$v" ]] || die "$label: empty outputs entry"
@@ -510,13 +510,14 @@ parse_build_map() {
 #     hooks.post-start already runs npm/pnpm/yarn itself.
 resolve_build_config() {
     local name="$1" override_cfg="$2" ext_cfg="$3" cfg="$4" is_deploy="$5"
-    local steps="$GENERATED_DIR/$name.steps"
+    # Mid-parse_config: the steps file being built (see STEPS_OUT there).
+    local steps="${STEPS_OUT:-$GENERATED_DIR/$name.steps}"
     local checkout; checkout="$(config_checkout_dir "$name")"
     reset_build_config
 
     local ov=""
     if [[ -f "$override_cfg" ]]; then
-        ov="$(yq eval '.build' "$override_cfg" 2>/dev/null)"
+        ov="$(yqc '.build' "$override_cfg" 2>/dev/null)"
         [[ "$ov" == "null" ]] && ov=""
         validate_bool "$ov" "build override for '$name'"
     fi
@@ -524,7 +525,7 @@ resolve_build_config() {
     local src="" tag="" f
     for f in "$ext_cfg" "$cfg"; do
         [[ -n "$f" && -f "$f" ]] || continue
-        tag="$(yq eval '.build | tag' "$f" 2>/dev/null || true)"
+        tag="$(yqc '.build | tag' "$f" 2>/dev/null || true)"
         [[ -n "$tag" && "$tag" != "!!null" ]] && { src="$f"; break; }
     done
 
@@ -535,7 +536,7 @@ resolve_build_config() {
         case "$tag" in
             '!!map') mode="explicit"; parse_build_map "$name" "$src" ;;
             '!!bool')
-                if [[ "$(yq eval '.build' "$src")" == "true" ]]; then mode="required"; else mode="off"; fi
+                if [[ "$(yqc '.build' "$src")" == "true" ]]; then mode="required"; else mode="off"; fi
                 ;;
             *) die "build for '$name' must be a map, true, or false — refusing to use it" ;;
         esac
@@ -602,26 +603,28 @@ parse_config() {
     local name="$1" cfg="$2" is_deploy="${3:-0}" skip_name_check="${4:-0}"
     require_yq
     [[ -f "$cfg" ]] || die "config not found: $cfg"
+    # One yq run per file for everything below (see yqc in common.sh).
+    yqc_prime "$cfg" "$(ext_config_path "$name")" "$(override_config_path "$name")"
 
     local cfg_name
-    cfg_name="$(yq eval '.name' "$cfg")"
+    cfg_name="$(yqc '.name' "$cfg")"
     if [[ "$skip_name_check" != "1" ]]; then
         [[ "$cfg_name" == "$name" ]] || die "'name: $cfg_name' in $cfg does not match directory name '$name'"
     fi
 
-    PHP_VERSION="$(yq eval '.php_version' "$cfg")"
+    PHP_VERSION="$(yqc '.php_version' "$cfg")"
     [[ "$PHP_VERSION" != "null" && -n "$PHP_VERSION" ]] || PHP_VERSION="$DEFAULT_PHP"
     PHP_VERSION="${PHP_VERSION//\"/}"
     validate_php_version "$PHP_VERSION" "php_version for '$name'"
 
-    DOCROOT="$(yq eval '.docroot // ""' "$cfg")"
+    DOCROOT="$(yqc '.docroot // ""' "$cfg")"
     [[ "$DOCROOT" == "null" ]] && DOCROOT=""
     validate_relative_path "$DOCROOT" "docroot for '$name'"
 
     if [[ "$is_deploy" == "1" ]]; then
         # Sites are always served via nginx + PHP-FPM regardless of this
         # value — it's informational only, not a compatibility gate.
-        WEBSERVER_TYPE="$(yq eval '.webserver_type' "$cfg")"
+        WEBSERVER_TYPE="$(yqc '.webserver_type' "$cfg")"
         [[ "$WEBSERVER_TYPE" == "null" ]] && WEBSERVER_TYPE=""
         if [[ -n "$WEBSERVER_TYPE" && "$WEBSERVER_TYPE" != "nginx-fpm" ]]; then
             log_info "'$name' uses webserver_type: $WEBSERVER_TYPE in DDEV — serving it via nginx-fpm here regardless. If it relies on .htaccess rules beyond the standard front-controller rewrite, those need manual translation into the vhost."
@@ -685,7 +688,7 @@ parse_config() {
     # (backup, restore, preview uploads linking/seeding) can go on treating
     # UPLOAD_DIRS as it always has, unchanged.
     local raw_upload_dirs resolved
-    mapfile -t raw_upload_dirs < <(yq eval '.upload_dirs[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
+    mapfile -t raw_upload_dirs < <(yqc '.upload_dirs[]' "$cfg" 2>/dev/null | grep -vx 'null' || true)
     # UPLOAD_DIRS_OVERRIDE (--upload-dirs): same win-over-config treatment
     # as the hostnames/fqdns overrides above — replaces the raw, still-
     # docroot-relative list before it goes through the same resolution
@@ -747,7 +750,7 @@ parse_config() {
     # interpolated into a rendered ini-style config file PHP-FPM parses —
     # an unconstrained key/value could inject an unrelated directive.
     mapfile -t PHP_INI_OVERRIDES < <(
-        [[ -f "$ext_cfg" ]] && yq eval '(.php_ini // {}) | to_entries | .[] | .key + "=" + (.value | tostring)' "$ext_cfg" 2>/dev/null
+        [[ -f "$ext_cfg" ]] && yqc '(.php_ini // {}) | to_entries | .[] | .key + "=" + (.value | tostring)' "$ext_cfg" 2>/dev/null
     )
     local ini_key_re='^[A-Za-z_][A-Za-z0-9_.]*$'
     for v in "${PHP_INI_OVERRIDES[@]}"; do
@@ -819,7 +822,7 @@ parse_config() {
     REDIRECTS=()
     local redirects_src="" redirects_tag redirects_ext_count
     if [[ -f "$ext_cfg" ]]; then
-        redirects_tag="$(yq eval '.redirects | tag' "$ext_cfg" 2>/dev/null || true)"
+        redirects_tag="$(yqc '.redirects | tag' "$ext_cfg" 2>/dev/null || true)"
         if [[ "$redirects_tag" == "!!seq" ]]; then
             # An explicit empty list in .ddeploy/config.yaml falls back
             # to the primary config, same as every other overridable
@@ -827,7 +830,7 @@ parse_config() {
             # resolves to a non-empty value) — declaring the key isn't
             # enough to win on its own, or redirects would be the one
             # field in this tool that behaves differently from the rest.
-            redirects_ext_count="$(yq eval '.redirects | length' "$ext_cfg" 2>/dev/null || echo 0)"
+            redirects_ext_count="$(yqc '.redirects | length' "$ext_cfg" 2>/dev/null || echo 0)"
             [[ "$redirects_ext_count" =~ ^[0-9]+$ ]] || redirects_ext_count=0
             [[ "$redirects_ext_count" -gt 0 ]] && redirects_src="$ext_cfg"
         elif [[ -n "$redirects_tag" && "$redirects_tag" != "!!null" ]]; then
@@ -835,7 +838,7 @@ parse_config() {
         fi
     fi
     if [[ -z "$redirects_src" ]]; then
-        redirects_tag="$(yq eval '.redirects | tag' "$cfg" 2>/dev/null || true)"
+        redirects_tag="$(yqc '.redirects | tag' "$cfg" 2>/dev/null || true)"
         [[ "$redirects_tag" == "!!seq" ]] && redirects_src="$cfg"
         if [[ -z "$redirects_src" && -n "$redirects_tag" && "$redirects_tag" != "!!null" ]]; then
             die "redirects for '$name' must be a list of {from, to, code} maps — refusing to use it"
@@ -843,13 +846,13 @@ parse_config() {
     fi
     if [[ -n "$redirects_src" ]]; then
         local rcount ri rfrom rto rcode
-        rcount="$(yq eval '.redirects | length' "$redirects_src")"
+        rcount="$(yqc '.redirects | length' "$redirects_src")"
         [[ "$rcount" =~ ^[0-9]+$ ]] || rcount=0
         (( rcount > 30 )) && die "redirects for '$name' has more than 30 entries — refusing to use it"
         for ((ri = 0; ri < rcount; ri++)); do
-            rfrom="$(yq eval ".redirects[$ri].from // \"\"" "$redirects_src")"
-            rto="$(yq eval ".redirects[$ri].to // \"\"" "$redirects_src")"
-            rcode="$(yq eval ".redirects[$ri].code // 301" "$redirects_src")"
+            rfrom="$(yqc ".redirects[$ri].from // \"\"" "$redirects_src")"
+            rto="$(yqc ".redirects[$ri].to // \"\"" "$redirects_src")"
+            rcode="$(yqc ".redirects[$ri].code // 301" "$redirects_src")"
             [[ "$rfrom" == "null" ]] && rfrom=""
             [[ "$rto" == "null" ]] && rto=""
             rcode="${rcode//\"/}"
@@ -881,9 +884,9 @@ parse_config() {
     SCHEDULE=()
     local schedule_src="" schedule_tag schedule_ext_count
     if [[ -f "$ext_cfg" ]]; then
-        schedule_tag="$(yq eval '.schedule | tag' "$ext_cfg" 2>/dev/null || true)"
+        schedule_tag="$(yqc '.schedule | tag' "$ext_cfg" 2>/dev/null || true)"
         if [[ "$schedule_tag" == "!!seq" ]]; then
-            schedule_ext_count="$(yq eval '.schedule | length' "$ext_cfg" 2>/dev/null || echo 0)"
+            schedule_ext_count="$(yqc '.schedule | length' "$ext_cfg" 2>/dev/null || echo 0)"
             [[ "$schedule_ext_count" =~ ^[0-9]+$ ]] || schedule_ext_count=0
             [[ "$schedule_ext_count" -gt 0 ]] && schedule_src="$ext_cfg"
         elif [[ -n "$schedule_tag" && "$schedule_tag" != "!!null" ]]; then
@@ -891,7 +894,7 @@ parse_config() {
         fi
     fi
     if [[ -z "$schedule_src" ]]; then
-        schedule_tag="$(yq eval '.schedule | tag' "$cfg" 2>/dev/null || true)"
+        schedule_tag="$(yqc '.schedule | tag' "$cfg" 2>/dev/null || true)"
         [[ "$schedule_tag" == "!!seq" ]] && schedule_src="$cfg"
         if [[ -z "$schedule_src" && -n "$schedule_tag" && "$schedule_tag" != "!!null" ]]; then
             die "schedule for '$name' must be a list of {cron, cmd} maps — refusing to use it"
@@ -899,12 +902,12 @@ parse_config() {
     fi
     if [[ -n "$schedule_src" ]]; then
         local scount si scron scmd
-        scount="$(yq eval '.schedule | length' "$schedule_src")"
+        scount="$(yqc '.schedule | length' "$schedule_src")"
         [[ "$scount" =~ ^[0-9]+$ ]] || scount=0
         (( scount > 20 )) && die "schedule for '$name' has more than 20 entries — refusing to use it"
         for ((si = 0; si < scount; si++)); do
-            scron="$(yq eval ".schedule[$si].cron // \"\"" "$schedule_src")"
-            scmd="$(yq eval ".schedule[$si].cmd // \"\"" "$schedule_src")"
+            scron="$(yqc ".schedule[$si].cron // \"\"" "$schedule_src")"
+            scmd="$(yqc ".schedule[$si].cmd // \"\"" "$schedule_src")"
             [[ "$scron" == "null" ]] && scron=""
             [[ "$scmd" == "null" ]] && scmd=""
             [[ -n "$scron" && -n "$scmd" ]] || die "schedule[$si] for '$name' needs both cron: and cmd:"
@@ -927,8 +930,8 @@ parse_config() {
     # present, and are consumed immediately so they can't leak into a
     # later parse_config call in the same process (e.g. `list`'s loop).
     local cfg_db_name cfg_db_user
-    cfg_db_name="$(yq eval '.database.name // ""' "$cfg" 2>/dev/null)"
-    cfg_db_user="$(yq eval '.database.user // ""' "$cfg" 2>/dev/null)"
+    cfg_db_name="$(yqc '.database.name // ""' "$cfg" 2>/dev/null)"
+    cfg_db_user="$(yqc '.database.user // ""' "$cfg" 2>/dev/null)"
     [[ "$cfg_db_name" == "null" ]] && cfg_db_name=""
     [[ "$cfg_db_user" == "null" ]] && cfg_db_user=""
 
@@ -951,6 +954,13 @@ parse_config() {
     fi
 
     mkdir -p "$GENERATED_DIR"
+    # Both steps files are built under a temp name and renamed into place
+    # at the end: a deploy runs its hooks from .steps, and a read-only
+    # parse (list, doctor, the web UI's api calls) mid-deploy must never
+    # hand it a truncated file. Same directory, so the rename is atomic.
+    STEPS_OUT="$GENERATED_DIR/.$name.steps.$BASHPID"
+    local provision_steps_out="$GENERATED_DIR/.$name.provision-steps.$BASHPID"
+    : > "$STEPS_OUT"
     # DEPLOY_CMDS_OVERRIDE (--deploy-cmd): same win-over-config treatment
     # as the overrides above. Unlike those, there's no array to replace —
     # deploy steps live in the .steps file extract_hooks would otherwise
@@ -964,21 +974,21 @@ parse_config() {
             while IFS= read -r cmd; do
                 [[ -n "$cmd" ]] && printf 'exec\t%s\n' "$cmd"
             done <<< "$DEPLOY_CMDS_OVERRIDE"
-        } > "$GENERATED_DIR/$name.steps"
+        } > "$STEPS_OUT"
         log_info "'$name': deploy steps overridden via --deploy-cmd"
         unset DEPLOY_CMDS_OVERRIDE
-    elif [[ -f "$ext_cfg" && "$(yq eval '.hooks | has("post-start")' "$ext_cfg" 2>/dev/null)" == "true" ]]; then
+    elif [[ -f "$ext_cfg" && "$(yqc '.hooks | has("post-start")' "$ext_cfg" 2>/dev/null)" == "true" ]]; then
         # .ddeploy/config.yaml's own hooks.post-start replaces .ddev's on
         # the server — for a project whose DDEV steps are wrong there.
-        extract_hooks "$ext_cfg" "$GENERATED_DIR/$name.steps" post-start
+        extract_hooks "$ext_cfg" "$STEPS_OUT" post-start
     else
-        extract_hooks "$cfg" "$GENERATED_DIR/$name.steps"
+        extract_hooks "$cfg" "$STEPS_OUT"
         # The sidecar is ddeploy's own file, and its composer step is
         # ddeploy's default (written at provision time): composer_dev
         # applies to it like to the implicit step below. Never to a
         # repo's own .ddev/config.yaml — those steps run as declared.
         if [[ "$COMPOSER_DEV" == "true" && "$cfg" == "$GENERATED_DIR/$name.yaml" ]]; then
-            sed -i -E $'/^composer\t/ s/ --no-dev( |$)/\\1/' "$GENERATED_DIR/$name.steps"
+            sed -i -E $'/^composer\t/ s/ --no-dev( |$)/\\1/' "$STEPS_OUT"
         fi
     fi
 
@@ -994,8 +1004,8 @@ parse_config() {
     # applies via CMS detection (config.sh's interactive/non_interactive
     # fallbacks), just extended to also cover "config exists but declares
     # nothing".
-    if [[ ! -s "$GENERATED_DIR/$name.steps" && -f "$(config_checkout_dir "$name")/composer.json" ]]; then
-        printf 'composer\t%s\n' "$(default_composer_args)" > "$GENERATED_DIR/$name.steps"
+    if [[ ! -s "$STEPS_OUT" && -f "$(config_checkout_dir "$name")/composer.json" ]]; then
+        printf 'composer\t%s\n' "$(default_composer_args)" > "$STEPS_OUT"
         # The steps file itself is always kept accurate (above), but the
         # explanation is only worth printing when this parse_config call
         # is actually about to act on it (a deploy) — every read-only
@@ -1019,10 +1029,13 @@ parse_config() {
     resolve_build_config "$name" "$override_cfg" "$ext_cfg" "$cfg" "$is_deploy"
     resolve_node_version_spec "$name" "$override_cfg" "$ext_cfg" "$cfg" "$BUILD_PATH"
 
-    cat "$POST_DEPLOY_STEPS" >> "$GENERATED_DIR/$name.steps"
+    cat "$POST_DEPLOY_STEPS" >> "$STEPS_OUT"
     rm -f "$POST_DEPLOY_STEPS"
     POST_DEPLOY_STEPS=""
-    extract_hooks "$ext_cfg" "$GENERATED_DIR/$name.provision-steps" post-provision
+    extract_hooks "$ext_cfg" "$provision_steps_out" post-provision
+    mv -f "$STEPS_OUT" "$GENERATED_DIR/$name.steps"
+    mv -f "$provision_steps_out" "$GENERATED_DIR/$name.provision-steps"
+    STEPS_OUT=""
 }
 
 # Writes a sidecar at $GENERATED_DIR/<name>.yaml in the same shape as a

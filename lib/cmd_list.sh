@@ -121,9 +121,22 @@ cmd_list() {
     local -a rows=()
     rows+=("NAME"$'\x1f'"PHP"$'\x1f'"NODE"$'\x1f'"DOCROOT"$'\x1f'"DB"$'\x1f'"BRANCH"$'\x1f'"SHA"$'\x1f'"LAST DEPLOY"$'\x1f'"PREVIEW")
     local row
-    while IFS= read -r row; do
-        [[ -n "$row" ]] && rows+=("$row")
-    done < <(parallel_map list_row "${names[@]}")
+    if [[ "$EUID" -eq 0 && "${#names[@]}" -gt 0 ]]; then
+        # The read index (lib/index.sh): only rows whose inputs changed
+        # are recomputed. It's root-only; anyone else computes every row.
+        require_yq
+        index_refresh "${names[@]}"
+        local name
+        for name in "${names[@]}"; do
+            row=""
+            [[ -f "$INDEX_DIR/$name.row" ]] && IFS= read -r row < "$INDEX_DIR/$name.row"
+            [[ -n "$row" ]] && rows+=("$row")
+        done
+    else
+        while IFS= read -r row; do
+            [[ -n "$row" ]] && rows+=("$row")
+        done < <(parallel_map list_row "${names[@]}")
+    fi
 
     print_table "${rows[@]}"
 }
