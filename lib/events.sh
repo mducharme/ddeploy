@@ -101,6 +101,10 @@ event_record() {
 index_after_event() {
     local site="$1" kind="$2" phase="$3"
     [[ "$EUID" -eq 0 && "$phase" != started && "$kind" != remove ]] || return 0
+    # Without the config (run_notifying's closing event, recorded outside
+    # the command's subshell) there's no SITES_ROOT to read: the next
+    # `api sites` rebuilds the row instead.
+    [[ -n "${SITES_ROOT:-}" ]] || return 0
     declare -F index_refresh >/dev/null 2>&1 || return 0
     declare -F is_provisioned >/dev/null 2>&1 || return 0
     is_provisioned "$site" || return 0

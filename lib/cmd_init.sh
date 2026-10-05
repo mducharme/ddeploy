@@ -106,6 +106,21 @@ EOF
     chmod 644 /etc/logrotate.d/ddeploy
 }
 
+# nginx's default server_names_hash_bucket_size (64 on most builds) holds
+# names up to ~48 characters: a preview's name.base-domain passes that
+# quickly, and then every config test fails ("could not build
+# server_names_hash") — no site reloads. 128 holds any name ddeploy makes.
+# Left alone when nginx.conf already sets it (a second one is an error).
+install_server_names_hash() {
+    local conf=/etc/nginx/conf.d/ddeploy-server-names.conf
+    if grep -Eq '^[[:space:]]*server_names_hash_bucket_size' /etc/nginx/nginx.conf 2>/dev/null; then
+        rm -f "$conf"
+        return 0
+    fi
+    printf '# ddeploy: room for long preview hostnames (lib/cmd_init.sh)\nserver_names_hash_bucket_size 128;\n' > "$conf"
+    chmod 644 "$conf"
+}
+
 # The catch-all server for hostnames no site claims (see
 # templates/default-vhost.conf.tmpl). Without one, nginx's fallback for
 # an unknown name is simply the first vhost it loaded — some client's
@@ -319,6 +334,7 @@ EOF
         rm -f /etc/nginx/sites-enabled/default
         log_info "disabled the stock default nginx site (per-site vhosts own the wildcard)"
     fi
+    install_server_names_hash
     install_default_vhost
     mkdir -p "$NGINX_EXTRA_DIR"
     chmod 755 "$NGINX_EXTRA_DIR"

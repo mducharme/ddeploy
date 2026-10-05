@@ -28,6 +28,7 @@ assert_cmd_ok "known_hosts has github.com (real ssh-keyscan)" grep -q github.com
 assert_file_exists "/etc/nginx/conf.d/cloudflare-realip.conf" "Cloudflare real-IP config written (real Cloudflare ranges fetch)"
 realip_lines="$(grep -c set_real_ip_from /etc/nginx/conf.d/cloudflare-realip.conf || true)"
 [[ "$realip_lines" -gt 0 ]] && pass "real-IP config has $realip_lines Cloudflare ranges" || fail "real-IP config has no ranges"
+assert_contains "$(cat /etc/nginx/conf.d/ddeploy-server-names.conf 2>/dev/null)" "server_names_hash_bucket_size 128" "room for long preview hostnames in nginx"
 assert_cmd_ok "composer installed" command -v composer
 assert_file_exists "/etc/nginx/htpasswd/default" "default basic-auth htpasswd generated"
 assert_cmd_ok "default htpasswd has 'preview' user" grep -q '^preview:' /etc/nginx/htpasswd/default
