@@ -35,7 +35,7 @@ scan_hooks() {
 # notification quotes.
 deploy_step_failed() {
     local name="$1" rc="$2" what="$3" out="${4:-}" label="${5:-deploy}"
-    site_log "$name" "$label: step FAILED (exit $rc): $what"
+    site_log "$name" "$label: step FAILED (exit $rc): $what" error
     [[ -n "$out" ]] && site_log_output "$name" "$out"
     rm -f "$out"
     die "'$name': $label step failed (exit $rc): $what — the $label stopped here (see the output above, or 'ddeploy logs $name')"
@@ -72,7 +72,7 @@ replay_hooks() {
         [[ -z "$type" ]] && continue
         if guardrail_match "$cmd"; then
             log_warn "skipping step '$type: $cmd' — ddev/container-path reference"
-            site_log "$name" "$label: SKIPPED (guardrail) $type: $cmd"
+            site_log "$name" "$label: SKIPPED (guardrail) $type: $cmd" warn
             continue
         fi
         case "$type" in
@@ -97,7 +97,7 @@ replay_hooks() {
                 ;;
             exec-host)
                 log_warn "exec-host step skipped by default — host-context command, review before trusting: $cmd"
-                site_log "$name" "$label: SKIPPED (exec-host, review manually) $cmd"
+                site_log "$name" "$label: SKIPPED (exec-host, review manually) $cmd" warn
                 ;;
             *)
                 log_warn "unknown hook type '$type', skipping"

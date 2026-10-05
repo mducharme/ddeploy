@@ -714,6 +714,28 @@ assert_cmd_ok "doctor --snapshot (the cron job) refreshes it" test "$INDEX/docto
 assert_file_exists /etc/cron.d/ddeploy-doctor "init installed the doctor snapshot cron job"
 assert_contains "$(cat /etc/cron.d/ddeploy-doctor)" "doctor --snapshot" "...running doctor --snapshot"
 
+step "every ddeploy log line is timestamped and tagged"
+# Everything the suite wrote under /var/log/ddeploy: site logs, webhook
+# logs, cron jobs, server-config, run logs. Allowed: "<time> [tag] ...",
+# and the "    | " lines quoting a failed command's output under the line
+# that says what failed. Worker and schedule logs are the project's own
+# output (only schedule-run's start/end lines are ddeploy's), and a run
+# log is mostly composer/npm/git output: checked for ddeploy's lines only.
+TAG_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[(info|ok|warn|error)\] +'
+untagged=""
+for f in /var/log/ddeploy/*.log; do
+    case "$f" in *.worker-*.log|*.schedule-*.log) continue ;; esac
+    untagged+="$(grep -vE "${TAG_RE}|^    \| " "$f" | head -3 | sed "s|^|$(basename "$f"): |")"
+done
+[[ -z "$untagged" ]] && pass "every line of every ddeploy log starts with a time and a [tag]" \
+    || fail "untagged log lines: $untagged"
+for f in /var/log/ddeploy/*.schedule-*.log; do
+    [[ -f "$f" ]] || continue
+    assert_cmd_fails "$(basename "$f"): schedule-run's own lines are tagged (no old '==>' markers)" grep -q '^==> ' "$f"
+done
+assert_cmd_fails "run logs: ddeploy's lines carry a time before their tag (detached runs)" \
+    grep -hE '^\[(info|ok|warn|error)\] ' $(ls -t /var/log/ddeploy/runs/*.log | head -5)
+
 step "api: cleanup"
 ddeploy remove testsite --purge-db --purge-files >/dev/null 2>&1
 assert_contains "$(ddeploy api sites | jq_py 'd["sites"]')" "[]" "no sites left"

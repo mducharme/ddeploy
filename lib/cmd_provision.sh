@@ -273,8 +273,8 @@ cmd_provision() {
     # single ordinary `deploy` has ever run against this site.
     record_deploy "$name" "$(git -C "$dest" log -1 --format=%H)"
 
-    site_log "$name" "provision: done in $((SECONDS - started))s — https://$name.$BASE_DOMAIN"
-    log_info "provisioned: https://$name.$BASE_DOMAIN"
+    site_log "$name" "provision: done in $((SECONDS - started))s — https://$name.$BASE_DOMAIN" ok
+    log_ok "provisioned: https://$name.$BASE_DOMAIN"
     local live; live="$(site_dir "$name")"
     event_attr to_sha "$(git -c safe.directory='*' -C "$live" log -1 --format=%H 2>/dev/null || true)"
     event_attr subject "$(git -c safe.directory='*' -C "$live" log -1 --format=%s 2>/dev/null | cut -c1-200 || true)"

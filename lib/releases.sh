@@ -197,7 +197,7 @@ clone_into_release() {
     fi
     local out; out="$(mktemp)"
     if ! run_captured "$out" env GIT_SSH_COMMAND="$(git_ssh_command)" git clone "${branch_args[@]}" "$repo_url" "$staging"; then
-        site_log "$name" "provision: git clone of $repo_url FAILED"
+        site_log "$name" "provision: git clone of $repo_url FAILED" error
         site_log_output "$name" "$out" 10
         rm -f "$out"
         die "git clone failed for '$name' — check the URL, and that the server's git key can read that repo (README \"Git access\")"
@@ -292,7 +292,7 @@ prepare_forward_release() {
             [[ -n "$why" ]] \
                 || git_failed "$name" "$out" "$staging" "$rewritten — live tree left unchanged; 'ddeploy deploy $name --force' deploys the new tip (or set ALLOW_FORCE_PUSH=true in provisioner.conf to always follow force-pushes)"
             log_warn "'$name': $rewritten — resetting to it ($why); 'deploy $name --rollback' goes back"
-            site_log "$name" "deploy: $rewritten — reset to it ($why)"
+            site_log "$name" "deploy: $rewritten — reset to it ($why)" warn
             run_captured "$out" git -c safe.directory='*' -C "$staging" reset --hard --quiet "$tip" \
                 || git_failed "$name" "$out" "$staging" "git reset --hard to ${tip:0:7} failed — live tree left unchanged"
         fi
@@ -306,7 +306,7 @@ prepare_forward_release() {
 git_failed() {
     local name="$1" out="$2" staging="$3" msg="$4"
     [[ -n "$staging" ]] && rm -rf "$staging"
-    site_log "$name" "deploy: git FAILED — $msg"
+    site_log "$name" "deploy: git FAILED — $msg" error
     site_log_output "$name" "$out" 10
     rm -f "$out"
     die "'$name': $msg"

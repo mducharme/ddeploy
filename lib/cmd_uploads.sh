@@ -254,7 +254,7 @@ cmd_uploads_import() {
         cp -al "$snap/tree" "$live"
         log_info "'$dir' restored from $snapshot${undo:+ (undo: uploads-import $name --snapshot $undo --yes)}"
         event_attr subject "$dir from $snapshot${undo:+ (undo: $undo)}"
-        site_log "$name" "uploads-restore: $dir from $snapshot ($(notify_trigger))"
+        site_log "$name" "uploads-restore: $dir from $snapshot ($(notify_trigger))" ok
         return 0
     fi
 
@@ -369,6 +369,6 @@ cmd_uploads_import() {
     trap - EXIT
     log_info "'$dir': $mode done${undo:+ — undo with: ddeploy uploads-import $name --snapshot $undo --yes}"
     event_attr subject "$files file(s) into $dir from $source_desc ($mode)${undo:+ (undo: $undo)}"
-    site_log "$name" "uploads-import: $files file(s), $bytes bytes into $dir from $source_desc ($mode, $(notify_trigger))${undo:+ — undo snapshot $undo}"
+    site_log "$name" "uploads-import: $files file(s), $bytes bytes into $dir from $source_desc ($mode, $(notify_trigger))${undo:+ — undo snapshot $undo}" ok
 
 }

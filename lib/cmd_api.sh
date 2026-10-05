@@ -1205,6 +1205,8 @@ api_run_start() {
         "$(json_str "$actor")" "$(json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" > "$RUNS_META_DIR/$id.json"
 
     local trigger="web ($actor)"
+    # LOG_TIMESTAMPS: the run log reads like every other log ("<time>
+    # [tag] ..."), from its very first line (a wait on the site lock).
     if command -v systemd-run >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
         # A transient unit, not a child of this process: the run outlives
         # the web request, and a restart of the web app, and shows up in
@@ -1213,11 +1215,11 @@ api_run_start() {
             --description "ddeploy $kind $run_site (run $id)" \
             --property "StandardOutput=append:$log" --property "StandardError=append:$log" \
             --setenv "DDEPLOY_RUN_ID=$id" --setenv DDEPLOY_RUN_LOG_EXTERNAL=1 \
-            --setenv "DDEPLOY_TRIGGER=$trigger" --setenv HOME=/root --setenv NO_COLOR=1 \
+            --setenv "DDEPLOY_TRIGGER=$trigger" --setenv HOME=/root --setenv NO_COLOR=1 --setenv LOG_TIMESTAMPS=1 \
             -- "$PROVISIONER_DIR/provision.sh" "${argv[@]}" >/dev/null \
             || api_die unavailable "systemd-run failed to start the run"
     else
-        DDEPLOY_RUN_ID="$id" DDEPLOY_RUN_LOG_EXTERNAL=1 DDEPLOY_TRIGGER="$trigger" NO_COLOR=1 \
+        DDEPLOY_RUN_ID="$id" DDEPLOY_RUN_LOG_EXTERNAL=1 DDEPLOY_TRIGGER="$trigger" NO_COLOR=1 LOG_TIMESTAMPS=1 \
             setsid -f "$PROVISIONER_DIR/provision.sh" "${argv[@]}" >> "$log" 2>&1 < /dev/null
     fi
     api_header
@@ -1316,7 +1318,7 @@ api_run_cancel() {
     local unit="ddeploy-run-$id.service" state
     state="$(systemctl show "$unit" -p ActiveState --value 2>/dev/null || true)"
     [[ "$state" == active || "$state" == activating ]] || api_die conflict "run '$id' isn't running"
-    printf '%s cancelled by %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$actor" >> "$RUNS_LOG_DIR/$id.log"
+    log_line "$RUNS_LOG_DIR/$id.log" warn "cancelled by $actor"
     printf '%s\n' "$actor" > "$RUNS_META_DIR/$id.cancelled"
     systemctl stop "$unit" || api_die unavailable "systemctl stop $unit failed"
     api_header

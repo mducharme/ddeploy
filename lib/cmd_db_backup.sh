@@ -55,7 +55,8 @@ cmd_backup_database() {
             backup_event "$name" backup-database succeeded "duration_s=$((SECONDS - site_started))" "subject=${BACKUP_LAST_DUMP:-dump} ($(numfmt --to=iec --suffix=B "${BACKUP_LAST_DUMP_BYTES:-0}" 2>/dev/null || echo "${BACKUP_LAST_DUMP_BYTES:-0} bytes"))"
         fi
     done
-    log_info "backup-database: done in $((SECONDS - started))s — $ok site(s) backed up, $failures failed"
+    local summary="backup-database: done in $((SECONDS - started))s — $ok site(s) backed up, $failures failed"
+    if [[ "$failures" -eq 0 ]]; then log_ok "$summary"; else log_warn "$summary"; fi
     if [[ "$failures" -ne 0 ]]; then
         # One site, from `api run start`: run_notifying reports the failure.
         [[ -n "${DDEPLOY_EVENT_ATTRS:-}" ]] || notify_failure backup-database "" "${failures} site(s): ${failed_names[*]}"

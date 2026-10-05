@@ -4,7 +4,7 @@
 
 # Host-key decisions go to the same log as server settings changes.
 api_fetch_log() {
-    printf '%s fetch: %s (web (%s))\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >> "$LOG_DIR/server-config.log" 2>/dev/null || true
+    log_line "$LOG_DIR/server-config.log" info "fetch: $1 (web ($2))" 2>/dev/null || true
 }
 
 # known_hosts entries as [{host, type, fingerprint}].

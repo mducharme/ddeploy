@@ -57,7 +57,8 @@ cmd_backup_uploads() {
             backup_event "$name" backup-uploads succeeded "duration_s=$((SECONDS - site_started))" "subject=${UPLOAD_DIRS[*]} synced"
         fi
     done
-    log_info "backup-uploads: done in $((SECONDS - started))s — $ok site(s) backed up, $failures failed"
+    local summary="backup-uploads: done in $((SECONDS - started))s — $ok site(s) backed up, $failures failed"
+    if [[ "$failures" -eq 0 ]]; then log_ok "$summary"; else log_warn "$summary"; fi
     if [[ "$failures" -ne 0 ]]; then
         # One site, from `api run start`: run_notifying reports the failure.
         [[ -n "${DDEPLOY_EVENT_ATTRS:-}" ]] || notify_failure backup-uploads "" "${failures} site(s): ${failed_names[*]}"

@@ -623,7 +623,12 @@ doctor_snapshot_run() {
     api_doctor >/dev/null
     after="$(doctor_snapshot_failing)"
     doctor_notify_transitions "$before" "$after"
-    log_info "doctor: snapshot done in $((SECONDS - started))s — $(grep -c . <<< "$after" || true) failing check(s)"
+    local failing; failing="$(grep -c . <<< "$after" || true)"
+    if [[ "$failing" -eq 0 ]]; then
+        log_ok "doctor: snapshot done in $((SECONDS - started))s — no failing checks"
+    else
+        log_warn "doctor: snapshot done in $((SECONDS - started))s — $failing failing check(s)"
+    fi
 }
 
 cmd_doctor() {

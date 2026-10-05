@@ -27,25 +27,27 @@ WEBHOOK_LOG_ID=""
 WEBHOOK_PENDING=""
 WEBHOOK_OTHER_MAX_BYTES=2000000
 
+# $1 file under LOG_DIR, $2 level, rest message: "<time> [tag] [<delivery
+# id>] message" (log_line), so the tag comes first like every other log.
 hook_log_write() {
-    local file="$1"; shift
-    mkdir -p "$LOG_DIR"
-    printf '%s [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${WEBHOOK_LOG_ID:--}" "$*" >> "$LOG_DIR/$file"
+    local file="$1" level="$2"; shift 2
+    log_line "$LOG_DIR/$file" "$level" "[${WEBHOOK_LOG_ID:--}] $*"
 }
 
-# $1 info|warn|error, rest message. To the journal and to webhook.log.
+# $1 info|ok|warn|error, rest message. To the journal and to webhook.log.
 hook_log() {
     local level="$1"; shift
     case "$level" in
+        ok) log_ok "webhook: $*" ;;
         warn) log_warn "webhook: $*" ;;
         error) log_error "webhook: $*" ;;
         *) log_info "webhook: $*" ;;
     esac
     if [[ -n "$WEBHOOK_PENDING" ]]; then
-        hook_log_write webhook.log "$WEBHOOK_PENDING"
+        hook_log_write webhook.log info "$WEBHOOK_PENDING"
         WEBHOOK_PENDING=""
     fi
-    hook_log_write webhook.log "$*"
+    hook_log_write webhook.log "$level" "$*"
 }
 
 # A delivery that needed nothing from this server: one line in
@@ -54,7 +56,7 @@ hook_log() {
 # high-volume one, and nothing in it is worth keeping for long.
 hook_log_other() {
     log_info "webhook: ${WEBHOOK_PENDING:+$WEBHOOK_PENDING — }$*"
-    hook_log_write webhook-other.log "${WEBHOOK_PENDING:+$WEBHOOK_PENDING — }$*"
+    hook_log_write webhook-other.log info "${WEBHOOK_PENDING:+$WEBHOOK_PENDING — }$*"
     WEBHOOK_PENDING=""
     local f="$LOG_DIR/webhook-other.log" size
     size="$(stat -c %s "$f" 2>/dev/null || echo 0)"
@@ -202,7 +204,7 @@ hook_verify_and_process() {
     # Every path above logs something, which flushes the held "accepted"
     # line; this only catches one that somehow didn't.
     if [[ -n "$WEBHOOK_PENDING" ]]; then
-        hook_log_write webhook.log "$WEBHOOK_PENDING"
+        hook_log_write webhook.log info "$WEBHOOK_PENDING"
         WEBHOOK_PENDING=""
     fi
     rm -f "$claimed"
@@ -223,10 +225,10 @@ hook_run_site() {
         if tail -n 1 "$LOG_DIR/$site.log" 2>/dev/null | grep -q 'skipped (--if-changed)'; then
             hook_log info "$label $site: already up to date — nothing to do (${took}s)"
         elif [[ "$label" == remove-preview ]]; then
-            hook_log info "$label $site: OK (${took}s)"
+            hook_log ok "$label $site: OK (${took}s)"
         else
             local sha; sha="$(git -c safe.directory='*' -C "$(site_dir "$site")" log -1 --format=%h 2>/dev/null || true)"
-            hook_log info "$label $site: OK${sha:+ @ $sha} (${took}s)"
+            hook_log ok "$label $site: OK${sha:+ @ $sha} (${took}s)"
         fi
     else
         hook_log error "$label $site: FAILED (exit $rc, ${took}s) — $(notify_log_snippet "$LOG_DIR/$site.log") — full log: ddeploy logs $site"

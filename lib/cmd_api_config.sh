@@ -240,6 +240,6 @@ api_config_set() {
         fi
     fi
     mkdir -p "$LOG_DIR"
-    printf '%s config: set %s (web (%s))%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$changed" "$actor" "${applied:+ — applied: $applied}" >> "$LOG_DIR/server-config.log"
+    log_line "$LOG_DIR/server-config.log" ok "config: set $changed (web ($actor))${applied:+ — applied: $applied}"
     api_config_json
 }

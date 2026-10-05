@@ -383,5 +383,31 @@ assert_eq "a path-like name is never written" "" "$(find "$snapdir" -name '*esca
 rm -rf "$snapdir"
 
 echo
+echo "log lines: a tag after the timestamp, everywhere"
+logdir="$(mktemp -d)"
+LOG_DIR="$logdir"
+LINE_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[(info|ok|warn|error)\] +[^ ]'
+log_line "$logdir/x.log" ok "deploy: done"
+log_line "$logdir/x.log" error "deploy: FAILED"
+log_line "$logdir/x.log" bogus "unknown level"
+assert_eq "ok, error, and an unknown level as info, messages aligned" \
+    "[ok]    deploy: done|[error] deploy: FAILED|[info]  unknown level" "$(cut -d' ' -f2- "$logdir/x.log" | paste -sd'|' -)"
+site_log mysite "deploy: started"
+site_log mysite "deploy: done" ok
+assert_cmd() { if grep -qvE "$LINE_RE" "$1"; then bad "$2 — $(grep -vE "$LINE_RE" "$1" | head -1)"; else ok "$2"; fi; }
+assert_cmd "$logdir/mysite.log" "site_log lines are timestamped and tagged (info by default)"
+assert_eq "...with the level given" "[ok]" "$(tail -n 1 "$logdir/mysite.log" | cut -d' ' -f2)"
+# shellcheck source=lib/cmd_hook.sh
+source lib/cmd_hook.sh
+WEBHOOK_LOG_ID=abcd1234
+hook_log_write webhook.log ok "deploy testsite: OK @ 1a2b3c4 (3s)"
+assert_cmd "$logdir/webhook.log" "webhook.log lines are tagged"
+assert_eq "...tag first, then the delivery id" "[ok]    [abcd1234] deploy testsite: OK @ 1a2b3c4 (3s)" "$(cut -d' ' -f2- "$logdir/webhook.log")"
+WEBHOOK_PENDING="github push testsite@main -> accepted: matches"
+hook_log_other "nothing to do" 2>/dev/null
+assert_cmd "$logdir/webhook-other.log" "webhook-other.log lines are tagged"
+rm -rf "$logdir"
+
+echo
 echo "$PASSES passed, $FAILS failed"
 [[ "$FAILS" -eq 0 ]]

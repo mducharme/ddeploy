@@ -208,12 +208,12 @@ cmd_deploy() {
     local sha; sha="$(git -C "$dir" log -1 --format=%h)"
     record_deploy "$name" "$full_sha"
     if [[ "$rollback" -eq 1 ]]; then
-        site_log "$name" "rollback: done at $sha in $((SECONDS - started))s"
-        log_info "rolled back $name @ $sha"
+        site_log "$name" "rollback: done at $sha in $((SECONDS - started))s" ok
+        log_ok "rolled back $name @ $sha"
         notify_deploy_success deploy-success "$name" "$dir" "$((SECONDS - started))" "rolled back"
     else
-        site_log "$name" "deploy: done at $sha in $((SECONDS - started))s"
-        log_info "deployed $name @ $sha"
+        site_log "$name" "deploy: done at $sha in $((SECONDS - started))s" ok
+        log_ok "deployed $name @ $sha"
         notify_deploy_success deploy-success "$name" "$dir" "$((SECONDS - started))" "deployed"
     fi
 }

@@ -205,8 +205,8 @@ cmd_provision_preview() {
     run_ops_hooks "post-provision" "$name" "$dir" "$PHP_VERSION"
 
     record_preview_deployed "$name" "$dir"
-    site_log "$name" "provision-preview: done in $((SECONDS - started))s — https://$name.$BASE_DOMAIN"
-    log_info "provisioned preview ($mode): https://$name.$BASE_DOMAIN"
+    site_log "$name" "provision-preview: done in $((SECONDS - started))s — https://$name.$BASE_DOMAIN" ok
+    log_ok "provisioned preview ($mode): https://$name.$BASE_DOMAIN"
     notify_deploy_success preview-created "$name" "$dir" "$((SECONDS - started))" "preview created ($project / $branch)"
 }
 
@@ -311,8 +311,8 @@ cmd_deploy_preview() {
 
     local sha; sha="$(git -C "$dir" log -1 --format=%h)"
     record_preview_deployed "$name" "$dir"
-    site_log "$name" "deploy-preview: done at $sha in $((SECONDS - started))s"
-    log_info "deployed preview $name @ $sha"
+    site_log "$name" "deploy-preview: done at $sha in $((SECONDS - started))s" ok
+    log_ok "deployed preview $name @ $sha"
     notify_deploy_success deploy-success "$name" "$dir" "$((SECONDS - started))" "deployed (preview of $PREVIEW_PROJECT / $PREVIEW_BRANCH)"
 }
 
@@ -398,7 +398,7 @@ cmd_remove_preview() {
         if [[ "$mode" != "shared" ]] && id -u "www-$name" >/dev/null 2>&1; then
             userdel "www-$name" 2>/dev/null || true
         fi
-        log_info "removed preview $name"
+        log_ok "removed preview $name"
     fi
 
     remove_node_modules_cache "$name"
@@ -465,6 +465,7 @@ cmd_prune_previews() {
             removed=$((removed + 1))
         fi
     done
-    log_info "prune-previews: done in $((SECONDS - started))s — $checked preview(s) checked, $removed removed, $failures failed"
+    local summary="prune-previews: done in $((SECONDS - started))s — $checked preview(s) checked, $removed removed, $failures failed"
+    if [[ "$failures" -eq 0 ]]; then log_ok "$summary"; else log_warn "$summary"; fi
     [[ "$failures" -eq 0 ]] || die "$failures preview(s) failed to remove"
 }

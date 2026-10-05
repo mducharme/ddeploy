@@ -54,20 +54,51 @@ export RCLONE_QUIET=true
 # needs to change.
 export RCLONE_CONFIG="/etc/ddeploy/rclone-backup.conf"
 
-# Colored only when stderr is a terminal (and NO_COLOR is unset) — not
-# escape codes in cron mail, the journal, or captured site logs.
-# LOG_TIMESTAMPS=1 prefixes a UTC timestamp, same format as the site
-# logs (see log_timestamps_unless_tty). Builtins only, no subshells:
-# these run for every line of every command.
+# Every line ddeploy logs — on the terminal or in a file under $LOG_DIR —
+# starts with one of four tags, padded so the messages line up:
+#   [info]  what's happening    [ok]    something finished fine
+#   [warn]  needs a look        [error] something failed
+# In files, after a UTC timestamp: "2026-10-04T21:00:11Z [ok]    deploy:
+# done at ..." (log_line). webddeploy's log view colors the tag.
+# Sets LOG_TAG for level $1 (anything unknown is info).
+log_tag() {
+    case "$1" in
+        ok)    LOG_TAG='[ok]   ' ;;
+        warn)  LOG_TAG='[warn] ' ;;
+        error) LOG_TAG='[error]' ;;
+        *)     LOG_TAG='[info] ' ;;
+    esac
+}
+
+# To stderr. Colored only when stderr is a terminal (and NO_COLOR is
+# unset) — not escape codes in cron mail, the journal, or captured logs.
+# LOG_TIMESTAMPS=1 prefixes a UTC timestamp, same format as the files
+# (see log_timestamps_unless_tty). Builtins only, no subshells: these
+# run for every line of every command.
 _log() {
-    local tag="$1" color="$2" msg="$3" ts="" c="" r=""
+    local level="$1" color="$2" msg="$3" ts="" c="" r=""
     [[ "${LOG_TIMESTAMPS:-0}" == "1" ]] && TZ=UTC printf -v ts '%(%Y-%m-%dT%H:%M:%SZ)T ' -1
     [[ -t 2 && -z "${NO_COLOR:-}" ]] && { c=$'\033['"$color"'m'; r=$'\033[0m'; }
-    printf '%s%s%s%s %s\n' "$ts" "$c" "$tag" "$r" "$msg" >&2
+    log_tag "$level"
+    printf '%s%s%s%s %s\n' "$ts" "$c" "$LOG_TAG" "$r" "$msg" >&2
 }
-log_info()  { _log '[info] ' 36 "$*"; }
-log_warn()  { _log '[warn] ' 33 "$*"; }
-log_error() { _log '[error]' 31 "$*"; }
+log_info()  { _log info 36 "$*"; }
+log_ok()    { _log ok 32 "$*"; }
+log_warn()  { _log warn 33 "$*"; }
+log_error() { _log error 31 "$*"; }
+
+# Appends one line to log file $1: UTC timestamp, the tag for level $2
+# (info|ok|warn|error), message $3. Every ddeploy-written log line goes
+# through here; only output quoted from other programs (a failed step's
+# last lines, indented "    | " under the line that says what failed)
+# isn't tagged.
+log_line() {
+    local file="$1" level="$2" msg="$3" ts
+    TZ=UTC printf -v ts '%(%Y-%m-%dT%H:%M:%SZ)T' -1
+    log_tag "$level"
+    mkdir -p "${file%/*}"
+    printf '%s %s %s\n' "$ts" "$LOG_TAG" "$msg" >> "$file"
+}
 
 # For commands cron runs into an append-only log ($LOG_DIR/<job>.log):
 # timestamp every log line when not on a terminal, so one run can be
@@ -78,11 +109,10 @@ log_timestamps_unless_tty() {
 }
 die()       { log_error "$*"; exit 1; }
 
-# Appends a timestamped line to a site's provision/deploy log.
+# Appends a tagged, timestamped line to a site's log ($LOG_DIR/<name>.log).
+# $3: info (default), ok, warn or error.
 site_log() {
-    local name="$1" msg="$2"
-    mkdir -p "$LOG_DIR"
-    printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$msg" >> "$LOG_DIR/$name.log"
+    log_line "$LOG_DIR/$1.log" "${3:-info}" "$2"
 }
 
 # Runs "$@" with its output (stdout and stderr together) shown live on

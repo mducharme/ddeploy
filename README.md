@@ -467,16 +467,16 @@ as delivered. Check `ddeploy logs webhook` instead (and turn on the
 **The webhook log** (`ddeploy logs webhook [-n N] [-f]`, file
 `/var/log/ddeploy/webhook.log`) has every delivery that concerns a site on this
 server, every rejected delivery, and one line per action each led to,
-tagged with the forge's delivery id (first 8 chars — the same id
+with its level and the forge's delivery id (first 8 chars — the same id
 GitHub/Bitbucket show in their webhook UI):
 
 ```
-2026-09-30T14:02:11Z [3f9a1c02] github push repo=org/site branch=main by=someone from=140.82.115.4 -> accepted: push_head
-2026-09-30T14:02:11Z [3f9a1c02] deploy site: started
-2026-09-30T14:02:58Z [3f9a1c02] deploy site: OK @ a1b2c3d (47s)
-2026-09-30T14:05:40Z [77e0b5d1] github push repo=org/site branch=feature-x -> accepted: push_head
-2026-09-30T14:05:40Z [77e0b5d1] skip site: it deploys 'main', push was to feature-x
-2026-09-30T14:09:03Z [c41d9e8a] github push from=203.0.113.9 -> REJECTED: HMAC verification failed (...) — dropped
+2026-09-30T14:02:11Z [info]  [3f9a1c02] github push repo=org/site branch=main by=someone from=140.82.115.4 -> accepted: push_head
+2026-09-30T14:02:11Z [info]  [3f9a1c02] deploy site: started
+2026-09-30T14:02:58Z [ok]    [3f9a1c02] deploy site: OK @ a1b2c3d (47s)
+2026-09-30T14:05:40Z [info]  [77e0b5d1] github push repo=org/site branch=feature-x -> accepted: push_head
+2026-09-30T14:05:40Z [info]  [77e0b5d1] skip site: it deploys 'main', push was to feature-x
+2026-09-30T14:09:03Z [warn]  [c41d9e8a] github push from=203.0.113.9 -> REJECTED: HMAC verification failed (...) — dropped
 ```
 
 The webhook is org-wide, so most deliveries are for repos with no site
@@ -485,9 +485,19 @@ labels), get one line each in `ddeploy logs webhook-other`
 (`/var/log/ddeploy/webhook-other.log`, trimmed automatically past ~2 MB):
 
 ```
-2026-09-30T14:03:20Z [9d1e44b0] github push repo=org/other-project branch=main -> accepted: push_head — no site on this server uses github.com/org/other-project
-2026-09-30T14:10:00Z [0b6f2a7e] github ping repo=org/site -> ignored: nothing to do for event 'ping'
+2026-09-30T14:03:20Z [info]  [9d1e44b0] github push repo=org/other-project branch=main -> accepted: push_head — no site on this server uses github.com/org/other-project
+2026-09-30T14:10:00Z [info]  [0b6f2a7e] github ping repo=org/site -> ignored: nothing to do for event 'ping'
 ```
+
+**Every ddeploy log uses the same line format** — site logs, the
+webhook logs, the cron jobs' (`backup-uploads`, `backup-database`,
+`prune-previews`, `doctor`), `server-config`, a schedule's start/end
+lines and the run logs: a UTC time, then one of `[info]`, `[ok]`
+(something finished fine), `[warn]` or `[error]`. The only untagged
+lines are output quoted from other programs: a failed step's last lines,
+indented `    | ` under the line saying what failed, and what a queue
+worker, a scheduled command or composer/npm print themselves. So
+`grep -E '\[(warn|error)\]' /var/log/ddeploy/*.log` finds every problem.
 
 A failed action logs `FAILED (exit N, 12s)` with the tail of the site's
 own log; `ddeploy logs <site>` has the full build output. Requests

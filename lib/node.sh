@@ -430,7 +430,7 @@ run_node_build() {
     rm -f "$BUILD_OUT"
     local took=$((SECONDS - started))
     log_info "node build done in ${took}s"
-    site_log "$name" "deploy: node build ok in ${took}s"
+    site_log "$name" "deploy: node build ok in ${took}s" ok
     record_build_state "$name" ok "$pm, ${took}s"
 }
 
@@ -439,7 +439,7 @@ build_failed() {
     case "$rc" in
         124|137) hint=" — killed: hit NODE_BUILD_TIMEOUT (${NODE_BUILD_TIMEOUT}s) or NODE_BUILD_MEMORY_MAX ($NODE_BUILD_MEMORY_MAX)" ;;
     esac
-    site_log "$name" "deploy: node $what FAILED (exit $rc)$hint"
+    site_log "$name" "deploy: node $what FAILED (exit $rc)$hint" error
     site_log_output "$name" "${BUILD_OUT:-}"
     rm -f "${BUILD_OUT:-}"
     record_build_state "$name" failed "$what exit $rc"

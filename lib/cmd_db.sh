@@ -149,7 +149,7 @@ cmd_db_snapshot() {
     event_attr kind db-snapshot
     local out; out="$(db_snapshot_take "$DBX_TARGET" "$DBX_NAME" "$reason")"
     event_attr subject "snapshot $(basename "$out" .sql.gz)"
-    site_log "$name" "db-snapshot: $(basename "$out") ($(notify_trigger))"
+    site_log "$name" "db-snapshot: $(basename "$out") ($(notify_trigger))" ok
 }
 
 cmd_db_import() {
@@ -238,7 +238,7 @@ cmd_db_import() {
         die "import into '$DBX_NAME' failed${undo:+ — the database may be partly loaded; restore it with: ddeploy db-import $name --snapshot $undo --yes}"
     fi
     event_attr subject "$label${undo:+ (undo: $undo)}"
-    site_log "$name" "db-import: loaded $label into '$DBX_NAME' ($(notify_trigger))${undo:+ — undo snapshot $undo}"
+    site_log "$name" "db-import: loaded $label into '$DBX_NAME' ($(notify_trigger))${undo:+ — undo snapshot $undo}" ok
     log_info "imported $label into '$DBX_NAME'"
 
 }

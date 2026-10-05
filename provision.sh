@@ -130,6 +130,10 @@ run_notifying() {
     fi
     local errlog; errlog="$(mktemp)"
     local started="$SECONDS" rc
+    # A run detached from any terminal (the web UI's, a webhook's, cron's)
+    # is read back from its run log: timestamp its lines like every
+    # other log. Someone at a terminal sees them plain.
+    log_timestamps_unless_tty
 
     # Every run gets an id (kept if `api run start` already assigned
     # one), a full output log, and start/end events — see lib/events.sh.
@@ -206,7 +210,7 @@ run_notifying() {
             # site doesn't exist at all (a typo'd name), so that doesn't
             # leave an empty log file behind.
             if [[ -d "$(site_root "$site")" || -f "$LOG_DIR/$site.log" ]]; then
-                site_log "$site" "$label: FAILED after $((SECONDS - started))s ($(notify_trigger)) — $(head -n1 <<< "$err" | sed 's/^\[error\] *//')"
+                site_log "$site" "$label: FAILED after $((SECONDS - started))s ($(notify_trigger)) — $(head -n1 <<< "$err" | sed 's/^\[error\] *//')" error
             fi
             local details="$err" output
             output="$(notify_failure_output "$site" "$log_start")"

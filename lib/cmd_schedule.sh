@@ -59,21 +59,23 @@ cmd_schedule_run() {
     [[ -n "${DDEPLOY_RUN_ID:-}" ]] && echo_out=1
 
     if [[ -f "$(schedule_paused_path "$name")" && "$echo_out" -eq 0 ]]; then
-        printf '==> %s skipped: schedules are paused for %s\n' "$now" "$name" >> "$log"
+        log_line "$log" info "skipped: schedules are paused for $name"
         return 0
     fi
 
     local lock; lock="$(schedule_lock_path "$name" "$index")"
     exec 9>>"$lock"
     if ! flock -n 9; then
-        printf '==> %s skipped: the previous run is still going\n' "$now" >> "$log"
+        log_line "$log" warn "skipped: the previous run is still going"
         [[ "$echo_out" -eq 0 ]] || die "schedule #$index of '$name' is already running — wait for it to finish"
         return 0
     fi
 
     local started="$SECONDS" rc=0
     schedule_record "$name" "$index" "started_at=$now" "finished_at=null" "exit_code=null" "duration_s=null" "trigger=$trigger"
-    printf '==> %s started (%s)\n' "$now" "$trigger" >> "$log"
+    # ddeploy's own lines around the command's output (which is the
+    # project's, untagged): when it started, and how it ended.
+    log_line "$log" info "started ($trigger)"
     if [[ "$echo_out" -eq 1 ]]; then
         log_info "running schedule #$index of $name: $(tail -n 1 "$script")"
         runuser -u "www-$name" -- "$script" 2>&1 | tee -a "$log" || rc=$?
@@ -81,7 +83,11 @@ cmd_schedule_run() {
         runuser -u "www-$name" -- "$script" >> "$log" 2>&1 || rc=$?
     fi
     local duration=$((SECONDS - started))
-    printf '==> %s finished: exit %s, %ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc" "$duration" >> "$log"
+    if [[ "$rc" -eq 0 ]]; then
+        log_line "$log" ok "finished: exit 0, ${duration}s"
+    else
+        log_line "$log" error "finished: exit $rc, ${duration}s"
+    fi
     schedule_record "$name" "$index" "started_at=$now" "finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" "exit_code=$rc" "duration_s=$duration" "trigger=$trigger"
     flock -u 9
     if [[ "$echo_out" -eq 1 ]]; then
