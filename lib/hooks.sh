@@ -62,7 +62,7 @@ replay_hooks() {
     # already declare their build.
     prepare_site_node "$name"
     local path; path="$(toolchain_path "$php")"
-    local type cmd out
+    local type cmd out n=0
     # Each step's command runs with </dev/null: this loop reads the steps
     # file on stdin, and a step that reads stdin would otherwise swallow
     # the remaining steps, which then silently never run. And with
@@ -75,6 +75,12 @@ replay_hooks() {
             site_log "$name" "$label: SKIPPED (guardrail) $type: $cmd" warn
             continue
         fi
+        n=$((n + 1))
+        case "$type" in
+            exec) step_begin "$label-$n" "Run: $cmd" ;;
+            composer) step_begin "$label-$n" "Composer: $cmd" ;;
+            node) step_begin "$label-$n" "Frontend build" ;;
+        esac
         case "$type" in
             exec)
                 log_info "exec ($name, php$php${NODE_VERSION:+, node $NODE_VERSION}): $cmd"

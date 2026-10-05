@@ -43,8 +43,39 @@ DISK_WARN_PERCENT="${DISK_WARN_PERCENT:-85}"
 # this one site's/block's remaining checks, not the whole doctor run —
 # an array `+=` wouldn't survive that subshell boundary, a printed line
 # already captured by the parent's `$(...)` does).
+# $1 ok|warn|fail|off, $2 check, $3 detail, $4 (optional) where to look:
+#   log:<log name>|<text to find>   run:<run id>|<step>   tab:<site tab>
+# The web UI turns it into a button that opens exactly that; the CLI
+# prints the equivalent command.
 doctor_result() {
-    printf '%s\t%s\t%s\n' "$1" "$2" "$3"
+    printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "${4:-}"
+}
+
+# The CLI's version of a "see" pointer.
+doctor_see_hint() {
+    local see="$1"
+    case "$see" in
+        log:*) local l="${see#log:}"; printf "ddeploy logs %s%s" "${l%%|*}" "$( [[ "$l" == *"|"* ]] && printf " | grep -F '%s'" "${l#*|}")" ;;
+        run:*) local r="${see#run:}"; printf "ddeploy api run log %s" "${r%%|*}" ;;
+        *) ;;
+    esac
+}
+
+# What the site logged for a request that just failed: the new part of its
+# nginx error log (PHP errors arrive there through FastCGI) since byte $2.
+# Prints the most telling line, PHP's own message when there is one.
+doctor_request_error() {
+    local name="$1" from="$2" file="/var/log/nginx/$1.error.log"
+    [[ -f "$file" ]] || return 0
+    local chunk line
+    chunk="$(tail -c +"$((from + 1))" "$file" 2>/dev/null | head -c 32768 || true)"
+    [[ -n "$chunk" ]] || return 0
+    line="$(grep -m1 -E 'PHP (Fatal|Parse) error|Uncaught|Allowed memory|Maximum execution time' <<< "$chunk" || true)"
+    [[ -n "$line" ]] || line="$(grep -m1 -E '\[(error|crit|alert|emerg)\]' <<< "$chunk" || true)"
+    [[ -n "$line" ]] || return 0
+    # nginx's wrapper around PHP's message: keep PHP's words.
+    line="$(sed -E 's/.*PHP message: //; s/" while reading (response|upstream).*//; s/^[0-9/]+ [0-9:]+ \[[a-z]+\] [0-9#]+: \*[0-9]+ //; s/, client: .*//' <<< "$line")"
+    printf '%s' "${line:0:300}"
 }
 
 # $1 cert dir name under /etc/letsencrypt/live (BASE_DOMAIN for the
@@ -383,6 +414,8 @@ doctor_check_uploads_backup() {
 doctor_check_site_http() {
     local name="$1" host="$1.$BASE_DOMAIN" out code secs
     command -v curl >/dev/null 2>&1 || return 0
+    local errlog="/var/log/nginx/$name.error.log" before=0
+    [[ -f "$errlog" ]] && before="$(stat -c %s "$errlog" 2>/dev/null || echo 0)"
     out="$(curl -sk -o /dev/null -m 10 -w '%{http_code} %{time_total}' --resolve "$host:443:127.0.0.1" "https://$host/" 2>/dev/null || true)"
     code="${out%% *}"
     secs="${out#* }"
@@ -391,7 +424,15 @@ doctor_check_site_http() {
         2??|3??) doctor_result ok "http" "GET / -> $code in ${ms}ms" ;;
         401)     doctor_result ok "http" "GET / -> 401 (basic auth) in ${ms}ms" ;;
         4??)     doctor_result warn "http" "GET / -> $code in ${ms}ms" ;;
-        5??)     doctor_result fail "http" "GET / -> $code — the app is erroring (see 'ddeploy logs $name' and the PHP-FPM log)" ;;
+        5??)
+            # What this very request logged, not "see the logs".
+            sleep 0.3
+            local why; why="$(doctor_request_error "$name" "$before")"
+            if [[ -n "$why" ]]; then
+                doctor_result fail "http" "GET / -> $code: $why" "log:$name.error|${why:0:60}"
+            else
+                doctor_result fail "http" "GET / -> $code, and nothing in its nginx/PHP error log for this request — the app likely logs elsewhere (Laravel: storage/logs, Craft: storage/logs)" "log:$name.error"
+            fi ;;
         *)       doctor_result fail "http" "no response from https://$host/ within 10s" ;;
     esac
 }
@@ -431,6 +472,7 @@ doctor_check_site() {
         branch="$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null || echo 'detached')"
         doctor_result ok "last deploy" "$branch @ $sha ($when)"
     fi
+    doctor_check_last_run "$name"
 
     doctor_check_site_node "$name"
     doctor_check_site_http "$name"
@@ -462,6 +504,27 @@ doctor_check_site() {
     doctor_check_workers "$name"
 }
 
+# $1 site: did its latest deploy (or rollback, provision) fail? Which
+# step, when, and whether the new code went live — with the run to open.
+doctor_check_last_run() {
+    local name="$1" f="$EVENTS_DIR/$1.jsonl" last
+    [[ -f "$f" ]] || return 0
+    last="$(grep -E '"kind":"(deploy|rollback|provision|deploy-preview|provision-preview)","phase":"(succeeded|failed)"' "$f" | tail -n 1 || true)"
+    [[ "$last" == *'"phase":"failed"'* ]] || return 0
+    local id step when live err
+    id="$(sed -nE 's/.*"run_id":"([^"]+)".*/\1/p' <<< "$last")"
+    step="$(sed -nE 's/.*"failed_step":"([^"]+)".*/\1/p' <<< "$last")"
+    when="$(sed -nE 's/^\{"ts":"([^"]+)".*/\1/p' <<< "$last")"
+    live="$(sed -nE 's/.*"live":"([a-z]+)".*/\1/p' <<< "$last")"
+    err="$(sed -nE 's/.*"error":"([^"]*)".*/\1/p' <<< "$last")"
+    local where=""
+    case "$live" in
+        no) where=" — the site still runs the previous release" ;;
+        yes) where=" — after going live: the new code is running" ;;
+    esac
+    doctor_result warn "last run" "deploy failed${step:+ at \"$step\"} ($when)$where${err:+: ${err:0:160}}" "${id:+run:$id|$step}"
+}
+
 # $1 site: its queue workers running (and not crash-looping), its
 # scheduled tasks' last runs ending well. QUEUE_WORKERS[]/SCHEDULE[] are
 # already parsed. Nothing declared: nothing reported.
@@ -477,11 +540,11 @@ doctor_check_workers() {
         restarts="$(systemctl show -p NRestarts --value "$unit" 2>/dev/null || echo 0)"
         [[ "$restarts" =~ ^[0-9]+$ ]] || restarts=0
         if [[ "$state" == active ]] && (( restarts > 3 )); then
-            doctor_result warn "worker #$i" "running, but restarted $restarts times since it was started — it's probably crashing (log: $name.worker-$i)"
+            doctor_result warn "worker #$i" "running, but restarted $restarts times since it was started — it's probably crashing" "log:$name.worker-$i"
         elif [[ "$state" == active ]]; then
             doctor_result ok "worker #$i" "running"
         else
-            doctor_result warn "worker #$i" "${state:-not running} (log: $name.worker-$i)"
+            doctor_result warn "worker #$i" "${state:-not running}" "log:$name.worker-$i"
         fi
     done
     [[ "${#SCHEDULE[@]}" -gt 0 ]] || return 0
@@ -496,7 +559,7 @@ doctor_check_workers() {
         exit_code="$(sed -nE 's/.*"exit_code":(-?[0-9]+|null).*/\1/p' <<< "$last")"
         when="$(sed -nE 's/.*"started_at":"([^"]+)".*/\1/p' <<< "$last")"
         if [[ "$exit_code" =~ ^[0-9]+$ && "$exit_code" -ne 0 ]]; then
-            doctor_result warn "schedule #$i" "last run failed: exit $exit_code at $when (log: $name.schedule-$i)"
+            doctor_result warn "schedule #$i" "last run failed: exit $exit_code at $when" "log:$name.schedule-$i|finished: exit $exit_code"
         elif [[ "$exit_code" == 0 ]]; then
             doctor_result ok "schedule #$i" "last ran $when"
         fi
@@ -534,14 +597,18 @@ doctor_worst() {
 # widest in this block. $3=1 prints only warn/fail rows.
 doctor_print_rows() {
     local rows="$1" indent="$2" problems_only="${3:-0}"
-    local width=0 status check detail
-    while IFS=$'\t' read -r status check detail; do
+    local width=0 status check detail see hint
+    while IFS=$'\t' read -r status check detail see; do
         [[ -n "$status" ]] && (( ${#check} > width )) && width=${#check}
     done <<< "$rows"
-    while IFS=$'\t' read -r status check detail; do
+    while IFS=$'\t' read -r status check detail see; do
         [[ -z "$status" ]] && continue
         [[ "$problems_only" == "1" && "$status" != warn && "$status" != fail ]] && continue
         printf '%*s%s%-*s  %s\n' "$indent" '' "$(doctor_tag "$status")" "$width" "$check" "$detail"
+        if [[ -n "$see" && "$status" != ok ]]; then
+            hint="$(doctor_see_hint "$see")"
+            [[ -n "$hint" ]] && printf '%*s%-*s  → %s\n' "$((indent + 7))" '' "$width" '' "$hint"
+        fi
     done <<< "$rows"
 }
 

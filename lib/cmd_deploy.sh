@@ -117,9 +117,11 @@ cmd_deploy() {
                 || die "no earlier deploy recorded for '$name' to roll back to — pass an explicit <sha> (see --history), or there simply isn't one yet"
         fi
         log_warn "rolling back '$name': $(git -C "$dir" log -1 --format=%h "$current_sha") -> $(git -C "$dir" log -1 --format=%h "$target") — this moves the CODE back only; any database migration already applied by a later deploy is NOT undone"
+        step_begin fetch "Prepare release (rollback)"
         dest="$(prepare_rollback_release "$name" "$target")"
         [[ "$ROLLBACK_RELEASE_KIND" == "existing" ]] && run_hooks=0
     else
+        step_begin fetch "Fetch code"
         dest="$(prepare_forward_release "$name" "$force")"
     fi
     local verb=deploy
@@ -143,6 +145,7 @@ cmd_deploy() {
         trap '[[ -n "${NEW_RELEASE_DIR:-}" ]] && rm -rf "$NEW_RELEASE_DIR"; stop_deploy_ssh_agent' EXIT
     fi
 
+    step_begin config "Read config & link persistent files"
     CONFIG_CHECKOUT_DIR="$dest"
     local cfg_path; cfg_path="$(resolve_config_path "$name")"
     [[ -n "$cfg_path" ]] || { unset CONFIG_CHECKOUT_DIR; die "no config for '$name' (no .ddev/config.yaml or generated sidecar) — run provision first"; }
@@ -160,7 +163,11 @@ cmd_deploy() {
         log_info "skipping hook replay — retargeting an existing release that already ran them"
     fi
 
+    # The line between "the site still runs the previous release" and
+    # "the new code is live": run_notifying reports which side a failure was on.
+    step_begin switch "Go live (switch to the new release)"
     switch_current "$name" "$dest"
+    step_end ok
     NEW_RELEASE_DIR=""
     [[ "$run_hooks" -eq 1 ]] && stop_deploy_ssh_agent
     trap - EXIT
@@ -173,6 +180,7 @@ cmd_deploy() {
     # are all config an operator reasonably expects a deploy to pick up.
     # Reload after the swap so PHP's realpath cache drops the previous
     # release path.
+    step_begin services "Reload PHP & nginx"
     ensure_php_installed "$PHP_VERSION"
     install_fpm_pool "$name" "$PHP_VERSION" "" "" "${FPM_MAX_CHILDREN_CONFIG:-$FPM_MAX_CHILDREN}"
     local nginx_root="$dir"
@@ -187,9 +195,13 @@ cmd_deploy() {
     # Unconditional, same as install_fpm_pool above — a rollback also
     # needs a persistent worker restarted onto the code it just
     # retargeted current at, even when replay_hooks itself was skipped.
+    if [[ "${#QUEUE_WORKERS[@]}" -gt 0 || "${#SCHEDULE[@]}" -gt 0 ]]; then
+        step_begin workers "Restart workers & schedules"
+    fi
     install_queue_workers "$name" "$PHP_VERSION" "$dir" "www-$name" "www-$name" "$wrapper" "${QUEUE_WORKERS[@]}"
     install_schedule "$name" "$PHP_VERSION" "$dir" "www-$name" "$wrapper" "${SCHEDULE[@]}"
 
+    step_begin finish "Clean up"
     prune_old_releases "$name"
 
     # Root-run ops hooks (/etc/ddeploy/hooks/post-deploy.d/*.sh — operator concerns

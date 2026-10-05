@@ -159,7 +159,7 @@ assert_contains "$(jq_py '[l["name"] for l in d["logs"] if l["kind"] == "site"]'
 out="$(ddeploy api logs testsite --lines 3)"
 size="$(jq_py 'd["size"]' <<< "$out")"
 assert_contains "$(jq_py 'd["next_offset"]' <<< "$out")" "$size" "tail read ends at the file size"
-echo "2099-01-01T00:00:00Z appended-line" >> /var/log/ddeploy/testsite.log
+echo "2099-01-01T00:00:00Z [info]  appended-line" >> /var/log/ddeploy/testsite.log
 out="$(ddeploy api logs testsite --offset "$size")"
 assert_contains "$(jq_py 'd["text"]' <<< "$out")" "appended-line" "offset read returns only what's new"
 out="$(ddeploy api logs testsite --offset 999999999)"
@@ -442,6 +442,69 @@ assert_contains "$(head -c 5 /etc/shadow)" "root:" "...nor written through"
 rm -f "$P/wp-config.php"; mv /tmp/wpc.bak "$P/wp-config.php"
 ddeploy override testsite --unset persistent_files >/dev/null 2>&1 || true
 
+step "debugging: deploy steps, the failing step, doctor quoting the error, deploy-check, grouped errors"
+id="$(ddeploy api run start deploy testsite --actor admin@example.com | run_id_of)"
+assert_contains "$(wait_run "$id" 300)" "succeeded" "a deploy"
+show="$(ddeploy api run show "$id")"
+assert_contains "$(jq_py '[s["id"] for s in d["steps"]]' <<< "$show")" '"fetch", "config"' "records its steps, in order"
+assert_contains "$(jq_py '[s["status"] for s in d["steps"] if s["id"] == "switch"]' <<< "$show")" '"ok"' "...going live among them"
+assert_contains "$(jq_py 'all(s["status"] == "ok" for s in d["steps"])' <<< "$show")" "true" "...all ok"
+assert_contains "$(ddeploy api run log "$id" | jq_py 'd["text"]')" "==> [switch] Go live" "the run log marks where each step starts"
+out="$(ddeploy api deploy-check testsite)"
+assert_contains "$(jq_py 'd["up_to_date"]' <<< "$out")" "true" "deploy-check: the branch head is what's live"
+
+# A commit whose post-deploy script fails: the deploy stops there, before going live.
+WORK="$(mktemp -d)"
+git clone -q /srv/git/testsite.git "$WORK"
+git -C "$WORK" config user.email 'test@ddeploy.test'; git -C "$WORK" config user.name 'ddeploy test'
+mkdir -p "$WORK/.ddeploy"
+printf '#!/bin/sh\necho "migrating..."\necho "SQLSTATE[42S02]: Base table or view not found" >&2\nexit 3\n' > "$WORK/.ddeploy/post-deploy.sh"
+chmod +x "$WORK/.ddeploy/post-deploy.sh"
+git -C "$WORK" add -A && git -C "$WORK" commit -qm 'a post-deploy script that fails' && git -C "$WORK" push -q origin HEAD
+live_before="$(git -c safe.directory='*' -C /home/deploy/sites/testsite/current rev-parse HEAD)"
+out="$(ddeploy api deploy-check testsite)"
+assert_contains "$(jq_py 'd["up_to_date"]' <<< "$out")" "false" "deploy-check: a new commit is waiting"
+id="$(ddeploy api run start deploy testsite --actor admin@example.com | run_id_of)"
+assert_contains "$(wait_run "$id" 300)" "failed" "the deploy fails"
+show="$(ddeploy api run show "$id")"
+assert_contains "$(jq_py '[s["label"] for s in d["steps"] if s["status"] == "failed"]' <<< "$show")" "post-deploy script" "...and its steps say which one"
+final="$(jq_py '[e for e in d["events"] if e["phase"] == "failed"][0]' <<< "$show")"
+assert_contains "$final" '"failed_step": "Run post-deploy script' "the run records the failed step"
+assert_contains "$final" '"live": "no"' "...and that it never went live"
+assert_contains "$(git -c safe.directory='*' -C /home/deploy/sites/testsite/current rev-parse HEAD)" "$live_before" "...so the site still runs the previous release"
+doc="$(ddeploy doctor testsite --no-notify 2>&1 || true)"
+assert_contains "$doc" 'deploy failed at "Run post-deploy script' "doctor names the failed step"
+assert_contains "$doc" "still runs the previous release" "...and what it means for the site"
+assert_contains "$doc" "ddeploy api run log $id" "...and where to read more"
+assert_contains "$(ddeploy api doctor testsite | jq_py '[c["see"] for s in d["sites"] for c in s["checks"] if c["check"] == "last run"][0]["run_id"]')" "$id" "api doctor points at the run"
+git -C "$WORK" rm -q .ddeploy/post-deploy.sh && git -C "$WORK" commit -qm 'drop the failing post-deploy script' && git -C "$WORK" push -q origin HEAD
+rm -rf "$WORK"
+id="$(ddeploy api run start deploy testsite --actor admin@example.com | run_id_of)"
+assert_contains "$(wait_run "$id" 300)" "succeeded" "fixed: deploys again"
+assert_not_contains "$(ddeploy doctor testsite --no-notify 2>&1 || true)" "deploy failed at" "...and doctor stops reporting the failure"
+
+# A PHP fatal error: doctor quotes what this request logged.
+IDX=/home/deploy/sites/testsite/current/web/index.php
+cp "$IDX" /tmp/index.php.bak
+printf '<?php\nddeploy_probe_undefined_function();\n' > "$IDX"
+# opcache re-checks a file's timestamp every 2s (revalidate_freq).
+sleep 3
+doc="$(ddeploy doctor testsite --no-notify 2>&1 || true)"
+assert_contains "$doc" "GET / -> 500: PHP Fatal error" "doctor quotes the PHP error behind a 500"
+assert_contains "$doc" "ddeploy_probe_undefined_function" "...the actual one"
+assert_contains "$doc" "ddeploy logs testsite.error" "...and the log to open"
+see="$(ddeploy api doctor testsite | jq_py '[c["see"] for s in d["sites"] for c in s["checks"] if c["check"] == "http"][0]')"
+assert_contains "$see" '"log": "testsite.error"' "api doctor: the log"
+assert_contains "$see" '"find": "PHP Fatal error' "...and what to find in it"
+for _ in 1 2 3; do curl -sk -o /dev/null --resolve testsite.staging.ddeploy.test:443:127.0.0.1 https://testsite.staging.ddeploy.test/ || true; done
+out="$(ddeploy api errors testsite)"
+assert_contains "$(jq_py '[g["message"] for g in d["groups"] if "ddeploy_probe_undefined_function" in g["message"]][0]' <<< "$out")" "Call to undefined function" "errors: grouped by message"
+assert_contains "$(jq_py '[g["count"] >= 4 for g in d["groups"] if "ddeploy_probe_undefined_function" in g["message"]][0]' <<< "$out")" "true" "...with how often it happened"
+out="$(ddeploy api errors testsite --since 2099-01-01T00:00:00Z)"
+assert_contains "$(jq_py 'd["total"]' <<< "$out")" "0" "errors --since: only what's newer"
+cp /tmp/index.php.bak "$IDX"
+sleep 3
+
 step "api: queue workers and scheduled tasks — state, worker controls, pause, run now"
 # The fixture repo still declares what 03-lifecycle.sh left: one worker
 # (sleep 1000) and one every-minute schedule.
@@ -484,9 +547,14 @@ assert_contains "$(tail -n 1 /var/log/ddeploy/testsite.schedule-0.log)" "skipped
 out="$(ddeploy api run start schedule-run testsite --index 0 --actor admin@example.com 2>/dev/null || true)"
 assert_contains "$out" "already running" "run now refuses while it runs"
 wait
-# A failed last run makes the site need a look.
+# A failed last run makes the site need a look. The schedule's lock is
+# held meanwhile: its cron line fires every minute, and a real run in
+# between would overwrite this state with its own (exit 0).
+exec 8>>/var/lib/ddeploy/schedules/testsite-0.lock
+flock 8
 printf '{"started_at":"2026-10-04T10:00:00Z","finished_at":"2026-10-04T10:00:01Z","exit_code":3,"duration_s":1,"trigger":"schedule"}\n' > /var/lib/ddeploy/schedules/testsite-0.json
 assert_contains "$(ddeploy doctor testsite --no-notify 2>&1 || true)" "last run failed: exit 3" "doctor reports a failed scheduled task"
+exec 8>&-
 assert_contains "$(ddeploy api logs | jq_py '[l["name"] for l in d["logs"]]')" "testsite.worker-0" "the worker's log is listed"
 assert_contains "$(ddeploy api logs | jq_py '[l["label"] for l in d["logs"] if l["name"] == "testsite.schedule-0"]')" "schedule #0" "...and the schedule's"
 assert_contains "$(ddeploy api logs testsite.schedule-0 | jq_py 'd["text"]')" "finished: exit 0" "schedule logs read like any other"
@@ -725,7 +793,8 @@ TAG_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[(info|ok|warn|
 untagged=""
 for f in /var/log/ddeploy/*.log; do
     case "$f" in *.worker-*.log|*.schedule-*.log) continue ;; esac
-    untagged+="$(grep -vE "${TAG_RE}|^    \| " "$f" | head -3 | sed "s|^|$(basename "$f"): |")"
+    # || true: no untagged line (the expected case) is grep exiting 1.
+    untagged+="$(grep -vE "${TAG_RE}|^    \| " "$f" | head -3 | sed "s|^|$(basename "$f"): |" || true)"
 done
 [[ -z "$untagged" ]] && pass "every line of every ddeploy log starts with a time and a [tag]" \
     || fail "untagged log lines: $untagged"
@@ -734,7 +803,7 @@ for f in /var/log/ddeploy/*.schedule-*.log; do
     assert_cmd_fails "$(basename "$f"): schedule-run's own lines are tagged (no old '==>' markers)" grep -q '^==> ' "$f"
 done
 assert_cmd_fails "run logs: ddeploy's lines carry a time before their tag (detached runs)" \
-    grep -hE '^\[(info|ok|warn|error)\] ' $(ls -t /var/log/ddeploy/runs/*.log | head -5)
+    grep -rhE '^\[(info|ok|warn|error)\] ' /var/log/ddeploy/runs/
 
 step "api: cleanup"
 ddeploy remove testsite --purge-db --purge-files >/dev/null 2>&1

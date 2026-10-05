@@ -110,6 +110,10 @@ source "$LIB_DIR/cmd_api_fetch.sh"
 source "$LIB_DIR/cmd_api_files.sh"
 # shellcheck source=lib/cmd_schedule.sh
 source "$LIB_DIR/cmd_schedule.sh"
+# shellcheck source=lib/steps.sh
+source "$LIB_DIR/steps.sh"
+# shellcheck source=lib/cmd_api_debug.sh
+source "$LIB_DIR/cmd_api_debug.sh"
 # shellcheck source=lib/cmd_api_workers.sh
 source "$LIB_DIR/cmd_api_workers.sh"
 
@@ -147,6 +151,7 @@ run_notifying() {
     if [[ "$EUID" -eq 0 ]] && mkdir -p "$RUNS_LOG_DIR" 2>/dev/null; then
         chmod 750 "$RUNS_LOG_DIR" 2>/dev/null || true
         prune_run_logs
+        prune_run_steps
         # A detached `api run start` already points the unit's own
         # stdout/stderr at this file (so lines from before this point,
         # like waiting on the site lock, land in it too) — teeing here as
@@ -179,6 +184,10 @@ run_notifying() {
     rc="${PIPESTATUS[0]}"
     set -e
     trap - TERM INT HUP
+    # Which step a failure hit, and whether the new code had gone live.
+    local failed_step=""
+    [[ "$rc" -eq 0 ]] || failed_step="$(step_open_label)"
+    step_end "$( [[ "$rc" -eq 0 ]] && echo ok || echo failed )"
     local -a end_attrs=("${start_attrs[@]}") key
     for key in from_sha to_sha subject author branch project; do
         end_attrs+=("$key=$(event_attr_get "$DDEPLOY_EVENT_ATTRS" "$key")")
@@ -190,6 +199,10 @@ run_notifying() {
         end_phase="$(event_attr_get "$DDEPLOY_EVENT_ATTRS" phase succeeded)"
     else
         end_phase=failed
+        [[ -n "$failed_step" ]] && end_attrs+=("failed_step=$failed_step")
+        case "$label" in
+            deploy|deploy-preview) if steps_went_live; then end_attrs+=("live=yes"); else end_attrs+=("live=no"); fi ;;
+        esac
         # [error] at the start of a line, or after log_timestamps' prefix (cron, backups).
         end_attrs+=("error=$(sed 's/\x1b\[[0-9;]*m//g' "$errlog" | grep -E '^([0-9T:-]+Z )?\[error\]' | tail -n 1 | sed -E 's/^([0-9T:-]+Z )?\[error\] *//' | cut -c1-300 || true)")
     fi
@@ -217,6 +230,7 @@ run_notifying() {
             if [[ -n "$output" ]]; then
                 details+=$'\n```\n'"$output"$'\n```'
             fi
+            [[ -n "$failed_step" ]] && details="Failed at: $failed_step"$'\n'"$details"
             details+=$'\n'"Took $((SECONDS - started))s — $(notify_trigger)"$'\n'"Full log: ddeploy logs $site"
             notify_event deploy-failure "$site" "$site: $label FAILED" "$details"
         ) || true

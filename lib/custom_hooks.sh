@@ -24,6 +24,7 @@ run_repo_hook() {
         return 0
     fi
 
+    step_begin "$(basename "$script_rel" .sh | tr -c 'a-z0-9-\n' '-' | cut -c1-40)" "Run $label ($script_rel)"
     prepare_site_node "$name"
     local path; path="$(toolchain_path "$php")"
     log_info "running $label: $script_rel"

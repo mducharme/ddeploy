@@ -19,7 +19,10 @@ apply_permissions() {
     local owner="${3:-www-$name}"
     chown -R "$owner:www-data" "$dir"
     find "$dir" -type d -exec chmod 2750 {} +
-    find "$dir" -type f -exec chmod 640 {} +
+    # Executable stays executable (git tracks only 644/755): a repo's
+    # .ddeploy/post-deploy.sh, vendor/bin, bin/console keep their +x.
+    find "$dir" -type f -perm /111 -exec chmod 750 {} +
+    find "$dir" -type f ! -perm /111 -exec chmod 640 {} +
 }
 
 # Builds php_admin_value[] lines from PHP_INI_OVERRIDES[] (set by

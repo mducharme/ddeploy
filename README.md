@@ -897,6 +897,37 @@ checks without running any. It pages `NOTIFY_WEBHOOK` only when a check
 **starts** failing, and again when it recovers — a site down for a day
 pages once. Every `api doctor` refreshes the snapshot too.
 
+### When something fails: which step, and where to look
+
+**Deploy steps.** A deploy (and a provision) runs as named steps — fetch
+code, read config, each `composer` / build / `run` hook, the repo's
+`post-deploy` script, go live, reload PHP & nginx, restart workers,
+clean up. Each starts with a marker line in the run's log
+(`==> [composer-1] Composer: install`), and `api run show <id>` returns
+the steps with their status and duration. A failed run's final event
+carries `failed_step` and, for a deploy, `live=yes|no` — whether it
+failed after switching to the new release or the previous one still
+runs. The failure notification starts with "Failed at: <step>".
+
+**Doctor points at the cause.** A non-ok check carries where it's
+explained, printed under the row (`→ ddeploy logs mysite.error | grep -F
+'…'`, `→ ddeploy api run log <id>`) and returned by `api doctor` as
+`see`: `{"type":"log","log","find"}`, `{"type":"run","run_id","step"}`
+or `{"type":"tab","tab"}`. When the site answers 5xx, the `http` row
+quotes what that request logged (`GET / -> 500: PHP Fatal error: …`);
+a `last run` row reports a failed latest deploy, its step, and whether
+the site still runs the previous release.
+
+**`api deploy-check <name>`**: the tracked branch's head on the remote
+(one `git ls-remote`) vs what's live — `up_to_date`, and how many
+commits ahead when the remote head is already known — so a deploy
+confirmation can say "nothing new" or "3 new commits".
+
+**`api errors <name> [--since <ISO>] [--limit N]`**: the site's nginx
+error log (PHP errors arrive there through FastCGI) grouped by message,
+with counts and first/last seen — the same fatal logged 4,000 times is
+one row. The last 24 hours by default; `--since` the last deploy, say.
+
 ## Web UI
 
 [webddeploy](https://github.com/mducharme/webddeploy) is a web front end

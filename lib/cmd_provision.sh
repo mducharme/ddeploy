@@ -146,6 +146,7 @@ cmd_provision() {
             # $name is validate_name-clean, safe to splice into the trap.
             trap "provision_undo_fresh $name $fresh" EXIT
         fi
+        step_begin fetch "Clone the repository"
         dest="$(clone_into_release "$name" "$repo_url" "$opt_branch")"
         switch_current "$name" "$dest"
         trap - EXIT
@@ -202,11 +203,13 @@ cmd_provision() {
     [[ -n "$opt_custom_domains" ]] && ADDITIONAL_FQDNS_OVERRIDE="$opt_custom_domains"
     [[ -n "$opt_upload_dirs" ]] && UPLOAD_DIRS_OVERRIDE="$opt_upload_dirs"
     [[ -n "$opt_deploy_cmds" ]] && DEPLOY_CMDS_OVERRIDE="$opt_deploy_cmds"
+    step_begin config "Read config"
     parse_config "$name" "$cfg_path" 1
 
     log_info "resolved: php=$PHP_VERSION node=${NODE_VERSION_SPEC:--} build=$BUILD_ENABLED docroot='${DOCROOT}' hostnames=[${ADDITIONAL_HOSTNAMES[*]:-}]${DEPLOY_BRANCH:+ deploy_branch=$DEPLOY_BRANCH}"
     scan_hooks "$name"
 
+    step_begin services "PHP, nginx & persistent files"
     ensure_php_installed "$PHP_VERSION"
     lock_site_root "$name"
     apply_permissions "$name" "$dest"
@@ -242,6 +245,7 @@ cmd_provision() {
         log_warn "custom domain setup failed for '$name' — continuing with the rest of provisioning; re-run provision once DNS is ready to retry it"
     fi
 
+    step_begin database "Database"
     db_ensure "$name" "$dest"   # each scheme re-owns the file it writes itself
     seed_cms_env "$name" "$dest" "$DB_ENV_SCHEME" "https://$name.$BASE_DOMAIN"
 
@@ -267,6 +271,9 @@ cmd_provision() {
     # scheduled command almost always needs vendor/ to exist). $dir, not
     # $dest: same reasoning as run_ops_hooks above — this must keep
     # working after $dest itself is eventually pruned.
+    if [[ "${#QUEUE_WORKERS[@]}" -gt 0 || "${#SCHEDULE[@]}" -gt 0 ]]; then
+        step_begin workers "Start workers & schedules"
+    fi
     install_queue_workers "$name" "$PHP_VERSION" "$dir" "www-$name" "www-$name" "$wrapper" "${QUEUE_WORKERS[@]}"
     install_schedule "$name" "$PHP_VERSION" "$dir" "www-$name" "$wrapper" "${SCHEDULE[@]}"
     # So `deploy --rollback` has something to walk back to even before a

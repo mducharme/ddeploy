@@ -59,6 +59,8 @@ read:
   fetch-key                             the key for copying files from another server (created if missing)
   files <name> [--read <path>]          persistent config files (charcoal's config.local.json, persistent_files)
   workers <name>                        queue workers and scheduled tasks: declared, running, last run
+  deploy-check <name>                   is the tracked branch's head already live? (one ls-remote)
+  errors <name> [--since <time>]        the site's errors from its nginx/PHP log, grouped by message
 
 write (each needs --actor <email>):
   env <name> --apply [--unset KEY]...   set the KEY=value lines read from stdin
@@ -158,7 +160,7 @@ api_valid() {
 api_dispatch() {
     local verb="$1"; shift
     case "$verb" in
-        info|sites|site-names|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db|uploads|backups|config|fetch-key|fetch-test|files|workers|schedules) ;;
+        info|sites|site-names|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db|uploads|backups|config|fetch-key|fetch-test|files|workers|schedules|deploy-check|errors) ;;
         *) api_die unknown_verb "unknown api verb '$verb'" ;;
     esac
     load_conf
@@ -192,6 +194,8 @@ api_dispatch() {
         files)        api_files "$@" ;;
         workers)      api_workers "$@" ;;
         schedules)    api_schedules "$@" ;;
+        deploy-check) api_deploy_check "$@" ;;
+        errors)       api_errors "$@" ;;
     esac
 }
 
@@ -625,13 +629,20 @@ api_previews() {
 
 # doctor_result TSV rows on stdin -> JSON array.
 api_doctor_rows() {
-    local status check detail first=1
+    local status check detail see first=1 seejson
     printf '['
-    while IFS=$'\t' read -r status check detail; do
+    while IFS=$'\t' read -r status check detail see; do
         [[ -n "$status" ]] || continue
         [[ "$first" -eq 1 ]] || printf ','
         first=0
-        printf '{"status":%s,"check":%s,"detail":%s}' "$(json_str "$status")" "$(json_str "$check")" "$(json_str "$detail")"
+        # Where to look: {"type":"log","log","find"} / {"type":"run","run_id","step"} / {"type":"tab","tab"}.
+        seejson=null
+        case "$see" in
+            log:*) local l="${see#log:}"; seejson="{\"type\":\"log\",\"log\":$(json_str "${l%%|*}"),\"find\":$( [[ "$l" == *"|"* ]] && json_str "${l#*|}" || echo null)}" ;;
+            run:*) local r="${see#run:}"; seejson="{\"type\":\"run\",\"run_id\":$(json_str "${r%%|*}"),\"step\":$( [[ "$r" == *"|"* && -n "${r#*|}" ]] && json_str "${r#*|}" || echo null)}" ;;
+            tab:*) seejson="{\"type\":\"tab\",\"tab\":$(json_str "${see#tab:}")}" ;;
+        esac
+        printf '{"status":%s,"check":%s,"detail":%s,"see":%s}' "$(json_str "$status")" "$(json_str "$check")" "$(json_str "$detail")" "$seejson"
     done
     printf ']'
 }
@@ -1253,9 +1264,9 @@ api_run_show() {
         result="$(sed -n 's/^Result=//p' <<< "$props")"
     fi
     api_header
-    printf ',"run_id":%s,"meta":%s,"events":%s,"unit":{"load_state":%s,"active_state":%s,"result":%s},"log_size":%s,"cancelled_by":%s}\n' \
+    printf ',"run_id":%s,"meta":%s,"events":%s,"unit":{"load_state":%s,"active_state":%s,"result":%s},"log_size":%s,"cancelled_by":%s,"steps":%s}\n' \
         "$(json_str "$id")" "$meta" "$events" "$(json_str_or_null "$load")" "$(json_str_or_null "$active")" \
-        "$(json_str_or_null "$result")" "$log_size" "$(json_str_or_null "$cancelled_by")"
+        "$(json_str_or_null "$result")" "$log_size" "$(json_str_or_null "$cancelled_by")" "$(steps_json "$id")"
 }
 
 api_run_log() {
