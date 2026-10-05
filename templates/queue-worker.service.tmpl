@@ -10,6 +10,10 @@ ExecStart={{WRAPPER}}
 Restart=always
 RestartSec=5
 SyslogIdentifier=ddeploy-worker-{{NAME}}-{{INDEX}}
+# Its own log file (the web UI's Workers tab, `api logs <name>.worker-<i>`),
+# opened by systemd before it drops to the site user; logrotate copytruncates it.
+StandardOutput=append:{{LOG}}
+StandardError=inherit
 
 [Install]
 WantedBy=multi-user.target

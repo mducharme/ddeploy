@@ -1931,8 +1931,8 @@ cron_content="$(cat /etc/cron.d/ddeploy-site-testsite)"
 # is created with --shell /usr/sbin/nologin, and cron silently refuses to
 # exec anything for a user whose shell isn't a real one. `runuser -u`
 # sidesteps that; the job still actually runs as www-testsite.
-assert_contains "$cron_content" "* * * * * root runuser -u www-testsite --" "schedule cron.d entry runs via runuser -u www-testsite"
-assert_contains "$cron_content" "$LOG_DIR/testsite.log" "schedule output is redirected into the site's own log"
+assert_contains "$cron_content" "* * * * * root DDEPLOY_TRIGGER=schedule /opt/ddeploy/provision.sh schedule-run testsite 0" "schedule cron.d entry goes through schedule-run (lock, history, its own log)"
+assert_not_contains "$cron_content" "$LOG_DIR/testsite.log" "schedule output no longer mixes into ddeploy's own site log"
 
 pid_before="$(systemctl show -p MainPID --value ddeploy-worker-testsite-0)"
 
@@ -1982,6 +1982,9 @@ rm -f /tmp/schedule-marker.txt
 sleep 65
 assert_file_exists "/tmp/schedule-marker.txt" "cron actually ran the scheduled command within a minute"
 assert_contains "$(cat /tmp/schedule-marker.txt 2>/dev/null)" "schedule-ran-" "scheduled command's real output landed where expected"
+assert_contains "$(stat -c %U /tmp/schedule-marker.txt 2>/dev/null)" "www-testsite" "the scheduled command ran as www-testsite, not root"
+assert_contains "$(cat "$LOG_DIR/testsite.schedule-0.log" 2>/dev/null)" "finished: exit 0" "schedule-run logged the run in testsite.schedule-0.log"
+assert_contains "$(cat /var/lib/ddeploy/schedules/testsite-0.json 2>/dev/null)" '"exit_code":0' "...and recorded how it ended"
 rm -f /tmp/schedule-marker.txt
 
 # --- git access: no standing key copy, but a private VCS dep still works ---

@@ -89,6 +89,22 @@ event_record() {
             events_trim "$EVENTS_DIR/$site.jsonl"
         } 9>>"$EVENTS_DIR/.lock"
     } 2>/dev/null || true
+    # Warm the read index off the request path. A "started" event is too
+    # early (the command is about to change the files the row is built
+    # from, and a parse rewrites .steps). A removal already dropped the
+    # row. Anything else: the next `api sites` is a cat.
+    index_after_event "$site" "$kind" "$phase" || true
+}
+
+# Best effort. No-op where the index isn't loaded (unit tests that source
+# only this file) or this isn't root (the index is root-only).
+index_after_event() {
+    local site="$1" kind="$2" phase="$3"
+    [[ "$EUID" -eq 0 && "$phase" != started && "$kind" != remove ]] || return 0
+    declare -F index_refresh >/dev/null 2>&1 || return 0
+    declare -F is_provisioned >/dev/null 2>&1 || return 0
+    is_provisioned "$site" || return 0
+    index_refresh "$site" || true
 }
 
 # Per-site event files only (never _fleet.jsonl), one path per line.

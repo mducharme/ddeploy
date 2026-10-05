@@ -58,6 +58,7 @@ read:
   backups download <name> --file <dump> one backed-up dump on stdout (not JSON)
   fetch-key                             the key for copying files from another server (created if missing)
   files <name> [--read <path>]          persistent config files (charcoal's config.local.json, persistent_files)
+  workers <name>                        queue workers and scheduled tasks: declared, running, last run
 
 write (each needs --actor <email>):
   env <name> --apply [--unset KEY]...   set the KEY=value lines read from stdin
@@ -80,6 +81,9 @@ write (each needs --actor <email>):
   fetch-key forget --host <h> [--port n] --actor <email>
   files <name> --write <path> [--expect-sha s] --actor <email>   new content on stdin; checked, previous kept
   files <name> --restore <path> --version <id> --actor <email>
+  workers <name> --restart|--stop|--start <index> --actor <email>
+  schedules <name> --pause|--resume --actor <email>
+  run start schedule-run <name> --index <i> --actor <email>   run a scheduled task now
   run start uploads-snapshot <name> --actor <email>
   run start backup-database|backup-uploads <name> --actor <email>   back up now
   run start backup-restore-db <name> --file <dump> --actor <email>
@@ -154,7 +158,7 @@ api_valid() {
 api_dispatch() {
     local verb="$1"; shift
     case "$verb" in
-        info|sites|site-names|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db|uploads|backups|config|fetch-key|fetch-test|files) ;;
+        info|sites|site-names|site|events|previews|doctor|logs|inspect-repo|run|env|settings|branches|commits|db|uploads|backups|config|fetch-key|fetch-test|files|workers|schedules) ;;
         *) api_die unknown_verb "unknown api verb '$verb'" ;;
     esac
     load_conf
@@ -186,6 +190,8 @@ api_dispatch() {
         fetch-key)    api_fetch_key "$@" ;;
         fetch-test)   api_fetch_test "$@" ;;
         files)        api_files "$@" ;;
+        workers)      api_workers "$@" ;;
+        schedules)    api_schedules "$@" ;;
     esac
 }
 
@@ -309,7 +315,7 @@ api_site_summary() {
     if [[ -s "$f" ]]; then
         last_event="$(tail -n 1 "$f")"
         # Config changes are events but not runs: "last run" skips them.
-        last_run="$(grep -v -e '"kind":"env-change"' -e '"kind":"settings-change"' -e '"kind":"file-change"' -e '"kind":"backup-' "$f" | tail -n 1 || true)"
+        last_run="$(grep -v -e '"kind":"env-change"' -e '"kind":"settings-change"' -e '"kind":"file-change"' -e '"kind":"backup-' -e '"kind":"worker-' -e '"kind":"schedules-' "$f" | tail -n 1 || true)"
         last_deploy="$(grep -E '"kind":"(deploy|rollback|provision|provision-preview|deploy-preview)","phase":"succeeded"' "$f" | tail -n 1 || true)"
         [[ -n "$last_run" ]] || last_run=null
         [[ -n "$last_deploy" ]] || last_deploy=null
@@ -751,7 +757,7 @@ api_parse_read_opts() {
 #   nginx_access|error    /var/log/nginx/access|error.log          server-wide nginx
 #   phpX.Y_fpm            /var/log/phpX.Y-fpm.log                  PHP-FPM master (pool warnings)
 # '.' and '_' never appear in a site name, so none of these can collide.
-API_LOG_NAME_RE='^([a-z0-9][a-z0-9-]{0,27}(\.(access|error))?|nginx_(access|error)|php[0-9]\.[0-9]{1,2}_fpm)$'
+API_LOG_NAME_RE='^([a-z0-9][a-z0-9-]{0,27}(\.(access|error|worker-[0-9]{1,2}|schedule-[0-9]{1,2}))?|nginx_(access|error)|php[0-9]\.[0-9]{1,2}_fpm)$'
 
 api_log_path() {
     local name="$1"
@@ -795,6 +801,16 @@ api_logs() {
         while IFS= read -r site_name; do
             [[ -f "/var/log/nginx/$site_name.error.log" ]] && objs+=("$(api_log_entry "$site_name.error" "/var/log/nginx/$site_name.error.log" nginx "$site_name" "nginx errors + PHP")")
             [[ -f "/var/log/nginx/$site_name.access.log" ]] && objs+=("$(api_log_entry "$site_name.access" "/var/log/nginx/$site_name.access.log" nginx "$site_name" "nginx access")")
+            local wf wn
+            for wf in "$LOG_DIR/$site_name".worker-*.log "$LOG_DIR/$site_name".schedule-*.log; do
+                [[ -f "$wf" ]] || continue
+                wn="$(basename "$wf" .log)"
+                [[ "$wn" =~ $API_LOG_NAME_RE ]] || continue
+                case "$wn" in
+                    *.worker-*) objs+=("$(api_log_entry "$wn" "$wf" worker "$site_name" "queue worker #${wn##*.worker-}")") ;;
+                    *) objs+=("$(api_log_entry "$wn" "$wf" schedule "$site_name" "schedule #${wn##*.schedule-}")") ;;
+                esac
+            done
         done < <(provisioned_site_names)
         [[ -f /var/log/nginx/error.log ]] && objs+=("$(api_log_entry nginx_error /var/log/nginx/error.log server "" "nginx errors (all sites)")")
         [[ -f /var/log/nginx/access.log ]] && objs+=("$(api_log_entry nginx_access /var/log/nginx/access.log server "" "nginx access (all sites)")")
@@ -950,12 +966,12 @@ api_run_start() {
     local actor="" name="" url=""
     local -a argv=() flags=()
     case "$kind" in
-        deploy|provision|rollback|db-import|db-restore|db-snapshot|preview-create|preview-deploy|preview-remove|uploads-import|uploads-fetch|uploads-restore|uploads-snapshot|backup-database|backup-uploads|backup-restore-db|backup-restore-uploads) ;;
+        deploy|provision|rollback|db-import|db-restore|db-snapshot|preview-create|preview-deploy|preview-remove|uploads-import|uploads-fetch|uploads-restore|uploads-snapshot|schedule-run|backup-database|backup-uploads|backup-restore-db|backup-restore-uploads) ;;
         *) api_die bad_request "run start: unknown kind '$kind'" ;;
     esac
     local preview=0
     [[ "$kind" == preview-* ]] && preview=1
-    local sha="" snapshot="" upload_dir="" upload_mode=merge backup_file="" backup_version="" fetch_source="" fetch_port=22
+    local sha="" snapshot="" upload_dir="" upload_mode=merge backup_file="" backup_version="" fetch_source="" fetch_port=22 schedule_index=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -978,6 +994,10 @@ api_run_start() {
                 [[ "$kind" == backup-restore-uploads ]] || api_die bad_request "--version is only for backup-restore-uploads"
                 [[ "${2:-}" =~ $UPLOADS_VERSION_ID_RE ]] || api_die bad_request "invalid backup version '${2:-}'"
                 backup_version="$2"; shift ;;
+            --index)
+                [[ "$kind" == schedule-run ]] || api_die bad_request "--index is only for schedule-run"
+                [[ "${2:-}" =~ ^[0-9]{1,2}$ ]] || api_die bad_request "--index must be a number"
+                schedule_index="$2"; shift ;;
             --source)
                 [[ "$kind" == uploads-fetch ]] || api_die bad_request "--source is only for uploads-fetch"
                 fetch_source="${2:-}"; shift ;;
@@ -1113,6 +1133,11 @@ api_run_start() {
         local spool
         spool="$(api_spool_upload "$id")"
         argv=(uploads-import "$name" --dir "$upload_dir" --from-file "$spool" --mode "$upload_mode" --yes --delete-file)
+    elif [[ "$kind" == schedule-run ]]; then
+        [[ -n "$schedule_index" ]] || api_die bad_request "--index <i> required"
+        [[ -f "$GENERATED_DIR/$name.schedule-$schedule_index.sh" ]] || api_die not_found "'$name' has no schedule #$schedule_index installed — deploy it first"
+        schedule_is_running "$name" "$schedule_index" && api_die conflict "schedule #$schedule_index of '$name' is already running"
+        argv=(schedule-run "$name" "$schedule_index")
     elif [[ "$kind" == uploads-fetch ]]; then
         [[ -n "$upload_dir" ]] || api_die bad_request "--dir <upload dir> required"
         ( uploads_resolve_site "$name" >/dev/null 2>&1 && uploads_require_dir "$upload_dir" >/dev/null 2>&1 ) \

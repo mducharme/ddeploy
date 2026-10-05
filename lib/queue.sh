@@ -54,7 +54,8 @@ install_queue_workers() {
         unit="$WORKER_UNIT_DIR/ddeploy-worker-$name-$i.service"
         write_worker_script "$script" "$dir" "${workers[$i]}" "$toolpath" "$home"
         render_template "$PROVISIONER_DIR/templates/queue-worker.service.tmpl" "$unit" \
-            "NAME=$name" "INDEX=$i" "POOL_USER=$exec_user" "POOL_GROUP=$exec_group" "WRAPPER=$script"
+            "NAME=$name" "INDEX=$i" "POOL_USER=$exec_user" "POOL_GROUP=$exec_group" "WRAPPER=$script" \
+            "LOG=$LOG_DIR/$name.worker-$i.log"
     done
     # A redeploy that now declares fewer workers than before must not
     # leave the extra ones running forever.
@@ -136,16 +137,13 @@ install_schedule() {
         cmd="${entry#*$'\t'}"
         script="$GENERATED_DIR/$name.schedule-$i.sh"
         write_worker_script "$script" "$dir" "$cmd" "$toolpath" "$home"
-        # NOT `<user>` as the cron.d field directly — www-<name> is
-        # created with --shell /usr/sbin/nologin (lib/vhost.sh), and cron
-        # silently refuses to exec anything for a user whose shell isn't
-        # a real one: it opens and closes the PAM session but never
-        # actually runs the command (confirmed empirically in a real
-        # systemd container — no CMD line in the journal at all, no
-        # error, nothing). `root` + `runuser -u` sidesteps cron's own
-        # shell lookup entirely; runuser setuid()s directly rather than
-        # exec'ing the target user's shell as -c.
-        printf '%s root runuser -u %s -- %s >> %s/%s.log 2>&1\n' "$cron" "$exec_user" "$script" "$LOG_DIR" "$name" >> "$tmp"
+        # Root runs `schedule-run`, which runs the wrapper as the site
+        # user (runuser -u: www-<name>'s shell is nologin, and cron
+        # silently refuses to exec anything as such a user — no error,
+        # nothing in the journal). schedule-run also skips a run while
+        # the previous one is still going, records when it ran and how
+        # it ended, and keeps its output in <name>.schedule-<i>.log.
+        printf '%s root DDEPLOY_TRIGGER=schedule %s/provision.sh schedule-run %s %s >/dev/null 2>&1\n' "$cron" "$PROVISIONER_DIR" "$name" "$i" >> "$tmp"
     done
     # A redeploy with fewer schedule entries than before must not leave
     # a stale wrapper script (harmless on its own, since nothing
@@ -168,4 +166,5 @@ remove_schedule() {
     local name="$1"
     rm -f "$SCHEDULE_CRON_DIR/ddeploy-site-$name"
     rm -f "$GENERATED_DIR/$name".schedule-*.sh
+    rm -f "$SCHEDULE_STATE_DIR/$name".* "$SCHEDULE_STATE_DIR/$name"-*
 }

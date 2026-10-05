@@ -108,6 +108,10 @@ source "$LIB_DIR/cmd_api_config.sh"
 source "$LIB_DIR/cmd_api_fetch.sh"
 # shellcheck source=lib/cmd_api_files.sh
 source "$LIB_DIR/cmd_api_files.sh"
+# shellcheck source=lib/cmd_schedule.sh
+source "$LIB_DIR/cmd_schedule.sh"
+# shellcheck source=lib/cmd_api_workers.sh
+source "$LIB_DIR/cmd_api_workers.sh"
 
 # Runs a deploy-type command ($3...) for site $2 and, if it fails, sends
 # a deploy-failure notification carrying the error it printed. The
@@ -336,6 +340,12 @@ main() {
         db-import)      run_notifying db-import "$(notify_site_arg site "$@")" cmd_db_import "$@" ;;
         uploads-import) run_notifying uploads-import "$(notify_site_arg site "$@")" cmd_uploads_import "$@" ;;
         fetch-key)      cmd_fetch_key "$@" ;;
+        # From cron: plain (no history event per minute). From the web UI
+        # ("Run now", a detached run): wrapped, so it's a run with a log.
+        schedule-run)
+            if [[ -n "${DDEPLOY_RUN_ID:-}" ]]; then run_notifying schedule-run "$(notify_site_arg site "$@")" cmd_schedule_run "$@"
+            else cmd_schedule_run "$@"
+            fi ;;
         uploads-snapshot)
             if [[ " $* " == *" --list "* ]]; then cmd_uploads_snapshot "$@"
             else run_notifying uploads-snapshot "$(notify_site_arg site "$@")" cmd_uploads_snapshot "$@"

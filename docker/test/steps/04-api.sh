@@ -442,6 +442,55 @@ assert_contains "$(head -c 5 /etc/shadow)" "root:" "...nor written through"
 rm -f "$P/wp-config.php"; mv /tmp/wpc.bak "$P/wp-config.php"
 ddeploy override testsite --unset persistent_files >/dev/null 2>&1 || true
 
+step "api: queue workers and scheduled tasks — state, worker controls, pause, run now"
+# The fixture repo still declares what 03-lifecycle.sh left: one worker
+# (sleep 1000) and one every-minute schedule.
+out="$(ddeploy api workers testsite)"
+assert_contains "$(jq_py '[w["state"] for w in d["workers"]]' <<< "$out")" '"active"' "the declared worker runs"
+assert_contains "$(jq_py 'd["workers"][0]["command"]' <<< "$out")" "sleep 1000" "...with its command"
+assert_contains "$(jq_py 'd["schedules"][0]["installed"]' <<< "$out")" "current" "the schedule goes through schedule-run"
+assert_contains "$(jq_py 'd["schedules"][0]["cron"]' <<< "$out")" "* * * * *" "...on its cron expression"
+pid="$(jq_py 'd["workers"][0]["pid"]' <<< "$out")"
+out="$(ddeploy api workers testsite --restart 0 --actor admin@example.com)"
+assert_not_contains "$(jq_py 'd["workers"][0]["pid"]' <<< "$out")" "$pid" "restart starts a new process"
+assert_contains "$(jq_py 'd["workers"][0]["state"]' <<< "$out")" "active" "...that runs"
+out="$(ddeploy api workers testsite --stop 0 --actor admin@example.com)"
+assert_contains "$(jq_py 'd["workers"][0]["state"]' <<< "$out")" "inactive" "stop stops it"
+assert_contains "$(ddeploy doctor testsite --no-notify 2>&1 || true)" "worker #0" "doctor reports a stopped worker"
+out="$(ddeploy api workers testsite --start 0 --actor admin@example.com)"
+assert_contains "$(jq_py 'd["workers"][0]["state"]' <<< "$out")" "active" "start starts it again"
+assert_contains "$(grep -c '"kind":"worker-' /var/lib/ddeploy/events/testsite.jsonl)" "3" "each control lands in the site's history"
+out="$(ddeploy api workers testsite --restart 7 --actor admin@example.com 2>/dev/null || true)"
+assert_contains "$out" "has no worker #7" "an undeclared worker is refused"
+
+out="$(ddeploy api schedules testsite --pause --actor admin@example.com)"
+assert_contains "$(jq_py 'd["schedules_paused"]' <<< "$out")" "true" "schedules paused"
+DDEPLOY_TRIGGER=schedule ./provision.sh schedule-run testsite 0
+assert_contains "$(tail -n 1 /var/log/ddeploy/testsite.schedule-0.log)" "skipped: schedules are paused" "a paused schedule doesn't run from cron"
+assert_contains "$(ddeploy doctor testsite --no-notify 2>&1 || true)" "paused since" "doctor shows them paused"
+ddeploy api schedules testsite --resume --actor admin@example.com >/dev/null
+rm -f /tmp/schedule-marker.txt
+id="$(ddeploy api run start schedule-run testsite --index 0 --actor admin@example.com | run_id_of)"
+assert_contains "$(wait_run "$id" 120)" "succeeded" "run now: a run of its own"
+assert_file_exists /tmp/schedule-marker.txt "...that really ran the command"
+assert_contains "$(ddeploy api workers testsite | jq_py 'd["schedules"][0]["last"]["exit_code"]')" "0" "...and its result is recorded"
+assert_contains "$(ddeploy api run show "$id")" '"kind":"schedule-run"' "recorded as a schedule-run"
+# A run still going: the next one is skipped, not stacked.
+( exec 9>>/var/lib/ddeploy/schedules/testsite-0.lock; flock 9; sleep 4 ) &
+sleep 1
+assert_contains "$(ddeploy api workers testsite | jq_py 'd["schedules"][0]["running"]')" "true" "a run in progress shows as running"
+DDEPLOY_TRIGGER=schedule ./provision.sh schedule-run testsite 0
+assert_contains "$(tail -n 1 /var/log/ddeploy/testsite.schedule-0.log)" "skipped: the previous run is still going" "overlapping runs are skipped"
+out="$(ddeploy api run start schedule-run testsite --index 0 --actor admin@example.com 2>/dev/null || true)"
+assert_contains "$out" "already running" "run now refuses while it runs"
+wait
+# A failed last run makes the site need a look.
+printf '{"started_at":"2026-10-04T10:00:00Z","finished_at":"2026-10-04T10:00:01Z","exit_code":3,"duration_s":1,"trigger":"schedule"}\n' > /var/lib/ddeploy/schedules/testsite-0.json
+assert_contains "$(ddeploy doctor testsite --no-notify 2>&1 || true)" "last run failed: exit 3" "doctor reports a failed scheduled task"
+assert_contains "$(ddeploy api logs | jq_py '[l["name"] for l in d["logs"]]')" "testsite.worker-0" "the worker's log is listed"
+assert_contains "$(ddeploy api logs | jq_py '[l["label"] for l in d["logs"] if l["name"] == "testsite.schedule-0"]')" "schedule #0" "...and the schedule's"
+assert_contains "$(ddeploy api logs testsite.schedule-0 | jq_py 'd["text"]')" "finished: exit 0" "schedule logs read like any other"
+
 step "api: backups — a site with nothing in object storage yet"
 # Earlier steps already backed testsite up: set its prefix aside, as if new.
 remote="$(cd /opt/ddeploy && bash -c 'source lib/common.sh; load_conf >/dev/null 2>&1; source lib/backup.sh; backup_remote_spec')"

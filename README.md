@@ -1271,13 +1271,27 @@ schedule:
 `queue_workers` — each entry becomes a **persistent, supervised systemd
 service** (`ddeploy-worker-<name>-<index>.service`), running as
 `www-<name>`, `Restart=always`. Restarted on every deploy (including
-rollback). Fewer workers on redeploy stops/removes the extras. Check:
-`systemctl status ddeploy-worker-<name>-0`, `journalctl -u
-ddeploy-worker-<name>-0 -f`.
+rollback). Fewer workers on redeploy stops/removes the extras. Output
+goes to `/var/log/ddeploy/<name>.worker-<index>.log`. Check:
+`systemctl status ddeploy-worker-<name>-0`.
 
 `schedule` — each `{cron, cmd}` becomes one line in
-`/etc/cron.d/ddeploy-site-<name>`, running as `www-<name>`. Output
-appends to `/var/log/ddeploy/<name>.log`. See
+`/etc/cron.d/ddeploy-site-<name>` that runs `ddeploy schedule-run <name>
+<index>` (as root), which runs the command as `www-<name>`. It skips a
+run while the previous one is still going (no pile-up when a task takes
+longer than its interval), skips everything while the site's schedules
+are paused, appends the output to
+`/var/log/ddeploy/<name>.schedule-<index>.log`, and records the last
+run (start, end, exit code) under `/var/lib/ddeploy/schedules/`.
+`doctor` warns about a worker that's down or crash-looping and a
+schedule whose last run failed.
+
+From the web UI (or `ddeploy api`): `workers <name>` (state, restarts,
+last runs), `workers <name> --restart|--stop|--start <index>`,
+`schedules <name> --pause|--resume`, and `run start schedule-run <name>
+--index <i>` (run a task now, with its own run log). A stopped worker
+starts again on the next deploy. Schedules installed before this version
+keep their old cron line until the site's next deploy. See
 [docs/security.md](docs/security.md) for how these run a
 project-declared command safely.
 

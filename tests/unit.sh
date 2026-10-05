@@ -313,6 +313,46 @@ assert_eq "broken YAML fails like yq does" "$want_rc" "$got_rc"
 rm -rf "$yqc_dir"
 
 echo
+echo "read index fingerprint"
+idxroot="$(mktemp -d)"
+_saved_state="$DDEPLOY_STATE"
+_saved_events="$EVENTS_DIR"
+_saved_generated="$GENERATED_DIR"
+_saved_conf="$CONF_FILE"
+DDEPLOY_STATE="$idxroot/state"
+INDEX_DIR="$DDEPLOY_STATE/index"
+SITES_ROOT="$idxroot/sites"
+GENERATED_DIR="$idxroot/gen"
+EVENTS_DIR="$idxroot/events"
+CONF_FILE="$idxroot/provisioner.conf"
+mkdir -p "$SITES_ROOT/mysite/.ddev" "$GENERATED_DIR" "$EVENTS_DIR" "$INDEX_DIR"
+printf 'BASE_DOMAIN=example.test\n' > "$CONF_FILE"
+printf 'name: mysite\nphp_version: "8.3"\n' > "$SITES_ROOT/mysite/.ddev/config.yaml"
+# shellcheck source=lib/index.sh
+source lib/index.sh
+index_fingerprints mysite
+mkdir -p "$INDEX_DIR"
+printf '%s' "${INDEX_FP[mysite]}" > "$INDEX_DIR/mysite.fp"
+: > "$INDEX_DIR/mysite.summary"
+: > "$INDEX_DIR/mysite.row"
+printf 'null\n\n' > "$INDEX_DIR/mysite.config"
+assert_ok "a matching fingerprint is a hit" index_fresh mysite
+if stat -c %n "$CONF_FILE" >/dev/null 2>&1; then
+    printf 'name: mysite\nphp_version: "8.4"\n' > "$SITES_ROOT/mysite/.ddev/config.yaml"
+    index_fingerprints mysite
+    assert_fail "a touched config file is a miss" index_fresh mysite
+else
+    INDEX_FP[mysite]+=$'changed\n'
+    assert_fail "a changed fingerprint is a miss" index_fresh mysite
+fi
+DDEPLOY_STATE="$_saved_state"
+EVENTS_DIR="$_saved_events"
+GENERATED_DIR="$_saved_generated"
+CONF_FILE="$_saved_conf"
+rm -rf "$idxroot"
+unset _saved_state _saved_events _saved_generated _saved_conf
+
+echo
 echo "doctor snapshot: paging only on changes"
 # shellcheck source=lib/cmd_doctor.sh
 source lib/cmd_doctor.sh

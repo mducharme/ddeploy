@@ -459,6 +459,48 @@ doctor_check_site() {
         [[ "$DB_BACKUP_ENABLED" == "true" ]] && doctor_check_db_backup "$name"
         [[ "$BACKUP_ENABLED" == "true" ]] && doctor_check_uploads_backup "$name"
     fi
+    doctor_check_workers "$name"
+}
+
+# $1 site: its queue workers running (and not crash-looping), its
+# scheduled tasks' last runs ending well. QUEUE_WORKERS[]/SCHEDULE[] are
+# already parsed. Nothing declared: nothing reported.
+doctor_check_workers() {
+    local name="$1" i unit state restarts
+    for ((i = 0; i < ${#QUEUE_WORKERS[@]}; i++)); do
+        unit="ddeploy-worker-$name-$i"
+        if [[ ! -f "$WORKER_UNIT_DIR/$unit.service" ]]; then
+            doctor_result warn "worker #$i" "declared but not installed — deploy to install it"
+            continue
+        fi
+        state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+        restarts="$(systemctl show -p NRestarts --value "$unit" 2>/dev/null || echo 0)"
+        [[ "$restarts" =~ ^[0-9]+$ ]] || restarts=0
+        if [[ "$state" == active ]] && (( restarts > 3 )); then
+            doctor_result warn "worker #$i" "running, but restarted $restarts times since it was started — it's probably crashing (log: $name.worker-$i)"
+        elif [[ "$state" == active ]]; then
+            doctor_result ok "worker #$i" "running"
+        else
+            doctor_result warn "worker #$i" "${state:-not running} (log: $name.worker-$i)"
+        fi
+    done
+    [[ "${#SCHEDULE[@]}" -gt 0 ]] || return 0
+    if [[ -f "$(schedule_paused_path "$name")" ]]; then
+        doctor_result off "schedules" "paused since $(cut -d' ' -f1 "$(schedule_paused_path "$name")")"
+        return 0
+    fi
+    local last exit_code when
+    for ((i = 0; i < ${#SCHEDULE[@]}; i++)); do
+        last="$(cat "$(schedule_state_path "$name" "$i")" 2>/dev/null || true)"
+        [[ -n "$last" ]] || continue
+        exit_code="$(sed -nE 's/.*"exit_code":(-?[0-9]+|null).*/\1/p' <<< "$last")"
+        when="$(sed -nE 's/.*"started_at":"([^"]+)".*/\1/p' <<< "$last")"
+        if [[ "$exit_code" =~ ^[0-9]+$ && "$exit_code" -ne 0 ]]; then
+            doctor_result warn "schedule #$i" "last run failed: exit $exit_code at $when (log: $name.schedule-$i)"
+        elif [[ "$exit_code" == 0 ]]; then
+            doctor_result ok "schedule #$i" "last ran $when"
+        fi
+    done
 }
 
 # Sets the DOCTOR_C_* escapes: colored on a terminal, plain when piped
