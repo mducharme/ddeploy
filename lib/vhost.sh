@@ -120,16 +120,43 @@ auth_var_name() { echo "${1//-/_}"; }
 # for a site's own custom-domain vhost, a SEPARATE file for the SAME
 # name that would otherwise redeclare the identical map variable and
 # fail `nginx -t` with a duplicate-variable error.
+#
+# AUTH_ALLOW_IPS[] (parse_config: the site's auth_allow_ips plus the
+# server's BASIC_AUTH_ALLOW_IPS) adds a `geo` block: visitors from those
+# addresses get "off" too. geo reads $remote_addr, which behind Cloudflare
+# is the visitor's real address (lib/cloudflare.sh restores it, trusting
+# CF-Connecting-IP only from Cloudflare's ranges). With both lists, the
+# path map's default is the geo variable: an exempt path is open to
+# everyone, anything else is open to the allowlist only. Not `satisfy
+# any` + allow/deny: there, an exempt path (auth off) still hits `deny
+# all` and returns 403 to everyone outside the allowlist.
 build_auth_map_block() {
     local name="$1" suffix="$2"; shift 2
-    [[ "$#" -eq 0 ]] && return 0
-    local out="map \$uri \$auth_realm_$(auth_var_name "$name")${suffix} {"$'\n'
-    out+="    default \"Restricted\";"$'\n'
-    local path
-    for path in "$@"; do
-        out+="    ~^${path} \"off\";"$'\n'
-    done
-    out+="}"$'\n'
+    local var; var="$(auth_var_name "$name")${suffix}"
+    local -a ips=("${AUTH_ALLOW_IPS[@]}")
+    [[ "$#" -eq 0 && "${#ips[@]}" -eq 0 ]] && return 0
+    local out="" default='"Restricted"' ip path
+    if [[ "${#ips[@]}" -gt 0 ]]; then
+        # Alone, the geo block sets the realm itself; with exempt paths
+        # it's the map's default.
+        local geo_var="auth_realm_$var"
+        [[ "$#" -gt 0 ]] && geo_var="auth_ip_$var"
+        out+="geo \$${geo_var} {"$'\n'
+        out+="    default \"Restricted\";"$'\n'
+        for ip in "${ips[@]}"; do
+            out+="    ${ip} \"off\";"$'\n'
+        done
+        out+="}"$'\n'
+        default="\$${geo_var}"
+    fi
+    if [[ "$#" -gt 0 ]]; then
+        out+="map \$uri \$auth_realm_$var {"$'\n'
+        out+="    default ${default};"$'\n'
+        for path in "$@"; do
+            out+="    ~^${path} \"off\";"$'\n'
+        done
+        out+="}"$'\n'
+    fi
     printf '%s' "$out"
 }
 
@@ -172,7 +199,9 @@ build_auth_block() {
         fi
     fi
     local realm='"Restricted"'
-    [[ "${#AUTH_EXEMPT_PATHS[@]}" -gt 0 ]] && realm="\$auth_realm_$(auth_var_name "$name")${suffix}"
+    if [[ "${#AUTH_EXEMPT_PATHS[@]}" -gt 0 || "${#AUTH_ALLOW_IPS[@]}" -gt 0 ]]; then
+        realm="\$auth_realm_$(auth_var_name "$name")${suffix}"
+    fi
     printf '    auth_basic %s;\n    auth_basic_user_file %s;' "$realm" "$htpasswd_file"
 }
 

@@ -215,6 +215,9 @@ client_max_body_size: 256m
 fpm_max_children: 20
 auth_exempt_paths:
   - /webhook
+auth_allow_ips:              # skip basic auth from these addresses (plus BASIC_AUTH_ALLOW_IPS)
+  - 203.0.113.10
+  - 198.51.100.0/24
 preview_branches:            # previews from a plain push, no PR needed — see "Branch previews"
   - feature/*
 backup_exclude:
@@ -256,6 +259,17 @@ cron-style scheduled commands, running as the site's own user. See
 "Queue workers & scheduled tasks".
 - `auth_exempt_paths` — URL path prefixes that bypass basic auth even
 when it's on. Absolute paths only (`/webhook`, not `webhook`).
+- `auth_allow_ips` — visitors from these IPs or CIDR ranges (IPv4 or
+IPv6) skip basic auth: no password prompt; everyone else still gets
+one, and `auth_exempt_paths` stay open to all. Adds to the server-wide
+`BASIC_AUTH_ALLOW_IPS` (`provisioner.conf`, or the web UI's server
+settings); a `none` entry drops that list for this site. Behind
+Cloudflare it matches the visitor's real address (nginx restores it from
+`CF-Connecting-IP`, trusted only from Cloudflare's ranges). Applies on
+the next deploy; `doctor` says when the configured list differs from
+the deployed one. An allowed address skips the password for everyone
+behind it — a shared office or VPN address opens the site to that whole
+network.
 - `backup_exclude` — `rclone --exclude` glob patterns (e.g. `cache/**`),
 applied to `backup-uploads` only.
 - `db_backup_retention_days` — per-site override of the server-wide
@@ -307,7 +321,7 @@ doesn't), `composer_dev` (`true` keeps dev packages in ddeploy's default
 composer step). List keys,
 space-separated (quote the value): `additional_hostnames`,
 `additional_fqdns`, `persistent_files`, `auth_exempt_paths`,
-`backup_exclude`, `deny_php_paths`, `preview_branches`. Not supported here (need
+`auth_allow_ips`, `backup_exclude`, `deny_php_paths`, `preview_branches`. Not supported here (need
 `.ddeploy/config.yaml` in the repo): `redirects`, `php_ini`,
 `queue_workers`, `schedule`, `hooks`, a `build:` map — structured data, or (for `queue_workers`)
 a command likely to contain its own spaces.

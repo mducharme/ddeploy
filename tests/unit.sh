@@ -409,5 +409,31 @@ assert_cmd "$logdir/webhook-other.log" "webhook-other.log lines are tagged"
 rm -rf "$logdir"
 
 echo
+echo "basic auth IP allowlist"
+for v in 203.0.113.10 198.51.100.0/24 10.0.0.0/8 0.0.0.0/0 2001:db8::1 2001:db8::/32 ::1 fe80::/10; do
+    assert_ok "accepted: $v" validate_ip_allow_entry "$v" test
+done
+for v in 256.1.1.1 1.2.3 1.2.3.4/33 1.2.3.4/ 2001:db8::/129 'example.com' '1.2.3.4; deny all' '1.2.3.4 "off"; }' '$remote_addr' ':::1' 'none'; do
+    assert_fail "refused: $v" validate_ip_allow_entry "$v" test
+done
+# shellcheck source=lib/vhost.sh
+source lib/vhost.sh
+AUTH_ALLOW_IPS=(203.0.113.10 198.51.100.0/24); AUTH_EXEMPT_PATHS=()
+out="$(build_auth_map_block my-site "")"
+assert_eq "allowlist alone: geo sets the realm" 'geo $auth_realm_my_site {|    default "Restricted";|    203.0.113.10 "off";|    198.51.100.0/24 "off";|}' "$(paste -sd'|' - <<< "$out")"
+AUTH_EXEMPT_PATHS=(/health)
+out="$(build_auth_map_block my-site "_custom" /health)"
+assert_eq "with exempt paths: the path map defaults to the geo variable" \
+    'geo $auth_ip_my_site_custom {|    default "Restricted";|    203.0.113.10 "off";|    198.51.100.0/24 "off";|}|map $uri $auth_realm_my_site_custom {|    default $auth_ip_my_site_custom;|    ~^/health "off";|}' \
+    "$(paste -sd'|' - <<< "$out")"
+AUTH_ALLOW_IPS=(); AUTH_EXEMPT_PATHS=()
+assert_eq "neither: no block at all" "" "$(build_auth_map_block my-site "")"
+BASIC_AUTH_CREDENTIALS=/dev/null
+AUTH_ALLOW_IPS=(203.0.113.10)
+assert_eq "auth_basic takes the realm variable when there's an allowlist" \
+    '    auth_basic $auth_realm_my_site;' "$(build_auth_block my-site true "" 2>/dev/null | head -1)"
+AUTH_ALLOW_IPS=()
+
+echo
 echo "$PASSES passed, $FAILS failed"
 [[ "$FAILS" -eq 0 ]]

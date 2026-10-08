@@ -19,6 +19,7 @@
 # KEY:validator:apply  (apply: deploy | now | cron | web)
 API_CONFIG_KEYS=(
     BASIC_AUTH_DEFAULT:bool:deploy
+    BASIC_AUTH_ALLOW_IPS:ips:deploy
     CLIENT_MAX_BODY_SIZE:body:deploy
     FPM_MAX_CHILDREN:children:deploy
     DEFAULT_PHP:php:deploy
@@ -78,6 +79,9 @@ api_config_validate() {
         patterns)
             local p
             for p in $val; do validate_branch_pattern "$p" "$key entry"; done ;;
+        ips)
+            local ip
+            for ip in $val; do validate_ip_allow_entry "$ip" "$key entry"; done ;;
         url) [[ -z "$val" || "$val" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/?=\&%+:@-]*)?$ ]] || die "$key: an https:// URL (or empty, to turn it off)" ;;
         events)
             local e

@@ -437,6 +437,27 @@ doctor_check_site_http() {
     esac
 }
 
+# Basic auth and its IP allowlist, as deployed. The allowlist applies on
+# deploy, so a config that lists other addresses than the vhost has is
+# "changed, not deployed yet" — otherwise invisible until a visitor gets
+# a password prompt they didn't expect (or doesn't get one).
+doctor_check_auth_allowlist() {
+    local name="$1" vhost="/etc/nginx/sites-available/$1.conf"
+    [[ -f "$vhost" ]] && grep -q 'auth_basic ' "$vhost" || return 0
+    local -a deployed=()
+    mapfile -t deployed < <(sed -n '/^geo /,/^}/{s/^    \([0-9A-Fa-f.:/]*\) "off";$/\1/p}' "$vhost" | sort -u)
+    local want have
+    want="$(printf '%s\n' "${AUTH_ALLOW_IPS[@]}" | { grep . || true; } | sort -u | paste -sd' ' -)"
+    have="$(printf '%s\n' "${deployed[@]}" | { grep . || true; } | sort -u | paste -sd' ' -)"
+    if [[ "$want" != "$have" ]]; then
+        doctor_result warn "basic auth" "allowlist changed since the last deploy (deployed: ${have:-none}; configured: ${want:-none}) — deploy to apply"
+    elif [[ -n "$have" ]]; then
+        doctor_result ok "basic auth" "on, skipped for $have"
+    else
+        doctor_result ok "basic auth" "on"
+    fi
+}
+
 doctor_check_site() {
     local name="$1"
     local dir; dir="$(site_dir "$name")"
@@ -458,6 +479,7 @@ doctor_check_site() {
     else
         doctor_result fail "vhost" "not enabled"
     fi
+    doctor_check_auth_allowlist "$name"
 
     if systemctl is-active --quiet "php${PHP_VERSION}-fpm"; then
         doctor_result ok "php${PHP_VERSION}-fpm" "running"

@@ -116,6 +116,29 @@ validate_hostname() {
 # charset as auth_exempt_paths. No spaces, quotes, braces, dollars, or
 # semicolons: those are how a client-repo value would inject extra
 # directives. $1 is the value, $2 a label for the error.
+# An IPv4 or IPv6 address, or a CIDR range of either — what nginx's
+# `geo` accepts in a basic-auth allowlist (auth_allow_ips,
+# BASIC_AUTH_ALLOW_IPS). Rendered into nginx config, so nothing else.
+validate_ip_allow_entry() {
+    local v="$1" label="$2" addr prefix="" max o
+    addr="${v%%/*}"
+    [[ "$v" == */* ]] && prefix="${v#*/}"
+    if [[ "$addr" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+        for o in "${BASH_REMATCH[@]:1}"; do
+            (( 10#$o <= 255 )) || die "$label ('$v') is not a valid IP address or CIDR range"
+        done
+        max=32
+    elif [[ "$addr" =~ ^[0-9A-Fa-f:]{2,39}$ && "$addr" == *:*:* && "$addr" != *:::* ]]; then
+        max=128
+    else
+        die "$label ('$v') is not a valid IP address or CIDR range (e.g. 203.0.113.10, 198.51.100.0/24, 2001:db8::/32)"
+    fi
+    if [[ -n "$prefix" || "$v" == */ ]]; then
+        [[ "$prefix" =~ ^[0-9]{1,3}$ ]] && (( 10#$prefix <= max )) \
+            || die "$label ('$v'): the /prefix must be a number from 0 to $max"
+    fi
+}
+
 validate_url_path() {
     local val="$1" label="$2"
     local re='^/[A-Za-z0-9/_.~-]*$'
@@ -726,6 +749,26 @@ parse_config() {
     for v in "${AUTH_EXEMPT_PATHS[@]}"; do
         validate_url_path "$v" "auth_exempt_paths entry for '$name'"
     done
+
+    # auth_allow_ips: visitors from these addresses/ranges skip basic auth
+    # (see build_auth_map_block in lib/vhost.sh). The site's own list
+    # (override > .ddeploy > primary config, like every list) adds to the
+    # server-wide BASIC_AUTH_ALLOW_IPS; a "none" entry drops the server's.
+    # AUTH_ALLOW_IPS_SITE keeps the site's own entries, for the API.
+    mapfile -t AUTH_ALLOW_IPS_SITE < <(read_ext_array "$override_cfg" "$ext_cfg" "$cfg" '.auth_allow_ips[]')
+    AUTH_ALLOW_IPS=()
+    local allow_global=1
+    for v in "${AUTH_ALLOW_IPS_SITE[@]}"; do
+        if [[ "$v" == none ]]; then allow_global=0; continue; fi
+        validate_ip_allow_entry "$v" "auth_allow_ips entry for '$name'"
+        AUTH_ALLOW_IPS+=("$v")
+    done
+    if [[ "$allow_global" -eq 1 ]]; then
+        for v in ${BASIC_AUTH_ALLOW_IPS:-}; do
+            validate_ip_allow_entry "$v" "BASIC_AUTH_ALLOW_IPS entry (provisioner.conf)"
+            [[ " ${AUTH_ALLOW_IPS[*]} " == *" $v "* ]] || AUTH_ALLOW_IPS+=("$v")
+        done
+    fi
 
     # backup_exclude: rclone --exclude glob patterns (e.g. "cache/**"),
     # applied to backup-uploads only — restore naturally only ever pulls

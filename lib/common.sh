@@ -153,6 +153,7 @@ load_conf() {
     : "${GIT_DEPLOY_KEY:?provisioner.conf: GIT_DEPLOY_KEY not set}"
     PERSISTENT_ROOT="${PERSISTENT_ROOT:-/home/deploy/persistent}"
     BASIC_AUTH_DEFAULT="${BASIC_AUTH_DEFAULT:-false}"
+    BASIC_AUTH_ALLOW_IPS="${BASIC_AUTH_ALLOW_IPS:-}"
     BASIC_AUTH_CREDENTIALS="${BASIC_AUTH_CREDENTIALS:-/etc/nginx/htpasswd/default}"
     CLIENT_MAX_BODY_SIZE="${CLIENT_MAX_BODY_SIZE:-64m}"
     FPM_MAX_CHILDREN="${FPM_MAX_CHILDREN:-5}"
@@ -291,7 +292,7 @@ require_yq() {
 YQC_EXPRS=(
     '.name' '.php_version' '.docroot // ""' '.webserver_type' '.upload_dirs[]'
     '.database.name // ""' '.database.user // ""'
-    '.additional_fqdns[]' '.additional_hostnames[]' '.auth_exempt_paths[]'
+    '.additional_fqdns[]' '.additional_hostnames[]' '.auth_exempt_paths[]' '.auth_allow_ips[]'
     '.backup_exclude[]' '.persistent_files[]' '.queue_workers[]' '.deny_php_paths[]'
     '.basic_auth // ""' '.client_max_body_size // ""' '.composer_dev // ""'
     '.db_backup_retention_days // ""' '.db_env_scheme // ""' '.deny_php_in_uploads // ""'

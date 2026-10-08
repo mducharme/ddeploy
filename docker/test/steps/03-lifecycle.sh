@@ -1466,6 +1466,43 @@ else
     fail "never captured the generated basic-auth password from init's output"
 fi
 
+step "basic auth IP allowlist (auth_allow_ips, BASIC_AUTH_ALLOW_IPS)"
+# This suite reaches nginx from 127.0.0.1. With CLOUDFLARE_PROXIED=true,
+# nginx only takes CF-Connecting-IP from Cloudflare's ranges, so here the
+# visitor's address is 127.0.0.1 itself — and a forged header is ignored.
+purl() { curl -s -o /dev/null -w '%{http_code}' -k --resolve "$PREVIEW.staging.ddeploy.test:443:127.0.0.1" "$@"; }
+[[ "$(purl "https://$PREVIEW.staging.ddeploy.test/")" == 401 ]] && pass "no allowlist: a password is asked" || fail "expected 401 before the allowlist"
+./provision.sh override "$PREVIEW" auth_allow_ips="127.0.0.1" >/dev/null
+assert_contains "$(./provision.sh doctor "$PREVIEW" --no-notify 2>&1 || true)" "allowlist changed since the last deploy" \
+    "doctor: an allowlist set but not deployed yet is a warn"
+./provision.sh deploy-preview testsite feature-a >/dev/null 2>&1
+code="$(purl "https://$PREVIEW.staging.ddeploy.test/")"
+[[ "$code" == 200 ]] && pass "an allowed address gets in without a password" || fail "allowed address got $code, expected 200"
+assert_contains "$(cat "/etc/nginx/sites-available/$PREVIEW.conf")" '127.0.0.1 "off";' "the vhost lists it in a geo block"
+[[ "$(purl "https://$PREVIEW.staging.ddeploy.test/health")" == 200 ]] && pass "exempt paths still open to everyone" || fail "/health no longer open"
+assert_contains "$(./provision.sh doctor "$PREVIEW" --no-notify 2>&1 || true)" "skipped for 127.0.0.1" "doctor shows the deployed allowlist"
+assert_contains "$(./provision.sh api site "$PREVIEW" | python3 -c 'import json,sys; d=json.load(sys.stdin)["config"]; print(d["settings"]["auth_allow_ips"], d["auth_allow_ips"])')" "['127.0.0.1'] ['127.0.0.1']" \
+    "api site: the site's own list, and what applies"
+assert_cmd_fails "an entry that isn't an IP or range is refused" ./provision.sh override "$PREVIEW" auth_allow_ips='1.2.3.4;deny'
+
+./provision.sh override "$PREVIEW" auth_allow_ips="192.0.2.1" >/dev/null
+./provision.sh deploy-preview testsite feature-a >/dev/null 2>&1
+[[ "$(purl "https://$PREVIEW.staging.ddeploy.test/")" == 401 ]] && pass "another address listed: a password is asked again" || fail "expected 401 with an unrelated allowlist"
+[[ "$(purl -H 'CF-Connecting-IP: 192.0.2.1' "https://$PREVIEW.staging.ddeploy.test/")" == 401 ]] && pass "a forged CF-Connecting-IP from outside Cloudflare doesn't get in" || fail "forged header got through"
+
+# Server-wide: applies to every site with auth on; a site's `none` drops it.
+./provision.sh override "$PREVIEW" --unset auth_allow_ips >/dev/null
+echo 'BASIC_AUTH_ALLOW_IPS="127.0.0.0/8"' >> /etc/ddeploy/provisioner.conf
+./provision.sh deploy-preview testsite feature-a >/dev/null 2>&1
+[[ "$(purl "https://$PREVIEW.staging.ddeploy.test/")" == 200 ]] && pass "BASIC_AUTH_ALLOW_IPS lets a range in on every site" || fail "server-wide allowlist didn't apply"
+./provision.sh override "$PREVIEW" auth_allow_ips="none" >/dev/null
+./provision.sh deploy-preview testsite feature-a >/dev/null 2>&1
+[[ "$(purl "https://$PREVIEW.staging.ddeploy.test/")" == 401 ]] && pass "a site's 'none' drops the server-wide list" || fail "'none' didn't drop the server-wide list"
+./provision.sh override "$PREVIEW" --unset auth_allow_ips >/dev/null
+sed -i '/^BASIC_AUTH_ALLOW_IPS=/d' /etc/ddeploy/provisioner.conf
+./provision.sh deploy-preview testsite feature-a >/dev/null 2>&1
+[[ "$(purl "https://$PREVIEW.staging.ddeploy.test/")" == 401 ]] && pass "back to a password for everyone" || fail "allowlist left behind after cleanup"
+
 list_out="$(./provision.sh list)"
 assert_contains "$list_out" "✓ shared" "list marks the preview, shared mode"
 assert_cmd_ok "list shows the preview's branch" grep -qE '^testsite-feature-a .* feature-a ' <<< "$list_out"

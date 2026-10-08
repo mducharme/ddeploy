@@ -440,10 +440,14 @@ api_site_config() {
         "$(json_str "${STATIC_CACHE:-}")" "$(json_str "${DENY_PHP_IN_UPLOADS:-true}")" \
         "$(json_str "${DB_BACKUP_RETENTION_DAYS_CONFIG:-$DB_BACKUP_RETENTION_DAYS}")" "$(json_str "${NODE_VERSION_SPEC:-}")" \
         "$(json_str "${BUILD_ENABLED:-false}")" "$(json_str "${COMPOSER_DEV:-false}")"
-    printf ',"additional_hostnames":%s,"additional_fqdns":%s,"auth_exempt_paths":%s,"deny_php_paths":%s,"backup_exclude":%s,"preview_branches":%s}}' \
+    # auth_allow_ips: the site's own entries (what an override edits);
+    # what applies, with the server's BASIC_AUTH_ALLOW_IPS, is below.
+    printf ',"additional_hostnames":%s,"additional_fqdns":%s,"auth_exempt_paths":%s,"auth_allow_ips":%s,"deny_php_paths":%s,"backup_exclude":%s,"preview_branches":%s}' \
         "$(json_str_array "${extra_hosts[@]}")" "$(json_str_array "${ADDITIONAL_FQDNS[@]}")" \
-        "$(json_str_array "${AUTH_EXEMPT_PATHS[@]}")" "$(json_str_array "${DENY_PHP_PATHS[@]}")" \
+        "$(json_str_array "${AUTH_EXEMPT_PATHS[@]}")" "$(json_str_array "${AUTH_ALLOW_IPS_SITE[@]}")" \
+        "$(json_str_array "${DENY_PHP_PATHS[@]}")" \
         "$(json_str_array "${BACKUP_EXCLUDE[@]}")" "$(json_str_array "${pb[@]}")"
+    printf ',"auth_allow_ips":%s}' "$(json_str_array "${AUTH_ALLOW_IPS[@]}")"
 }
 
 api_site() {
@@ -1415,7 +1419,7 @@ api_env() {
 # What `api settings` may override: OVERRIDE_*_KEYS (lib/cmd_override.sh)
 # minus db_env_scheme and persistent_files, which rewire where the site
 # keeps its database credentials and data — CLI-only, on purpose.
-API_SETTING_KEYS="basic_auth client_max_body_size fpm_max_children security_headers static_cache deny_php_in_uploads db_backup_retention_days nodejs_version build composer_dev additional_hostnames additional_fqdns auth_exempt_paths deny_php_paths backup_exclude preview_branches"
+API_SETTING_KEYS="basic_auth client_max_body_size fpm_max_children security_headers static_cache deny_php_in_uploads db_backup_retention_days nodejs_version build composer_dev additional_hostnames additional_fqdns auth_exempt_paths auth_allow_ips deny_php_paths backup_exclude preview_branches"
 
 api_settings() {
     local name="${1:-}"
