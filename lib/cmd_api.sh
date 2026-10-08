@@ -84,6 +84,7 @@ write (each needs --actor <email>):
   files <name> --write <path> [--expect-sha s] --actor <email>   new content on stdin; checked, previous kept
   files <name> --restore <path> --version <id> --actor <email>
   workers <name> --restart|--stop|--start <index> --actor <email>
+  workers <name> --set --actor <email>    stdin: {"queue_workers":[cmd],"schedule":[{"cron","cmd"}]} — set on the server (wins over the repo), installed now
   schedules <name> --pause|--resume --actor <email>
   run start schedule-run <name> --index <i> --actor <email>   run a scheduled task now
   run start uploads-snapshot <name> --actor <email>

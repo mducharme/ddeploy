@@ -28,9 +28,10 @@ Scalar keys (one value): $OVERRIDE_SCALAR_KEYS
 List keys (space-separated value, quote it): $OVERRIDE_ARRAY_KEYS
 
 Not supported here: redirects, php_ini, queue_workers, schedule, hooks —
-structured data (or, for queue_workers, a command very likely to contain
-its own spaces) that doesn't fit a flat key=value; set those in
-.ddeploy/config.yaml in the repo.
+structured data that doesn't fit a flat key=value. Set those in
+.ddeploy/config.yaml in the repo; queue_workers and schedule can also be
+set on the server with `ddeploy api workers <name> --set` (what the web
+UI's Workers & schedules tab uses).
 
 options:
   --unset <key>   remove one override key (repeatable)

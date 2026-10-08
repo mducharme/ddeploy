@@ -22,14 +22,145 @@ api_workers_config() {
     AW_SCHEDULE=("${SCHEDULE[@]}")
 }
 
+# A config file's queue_workers / schedule as JSON ([] when absent).
+aw_workers_list() {
+    [[ -n "$1" && -f "$1" ]] || { printf '[]'; return; }
+    yq -o=json -I=0 '[(.queue_workers // [])[] | select(. != null) | tostring]' "$1" 2>/dev/null || printf '[]'
+}
+aw_schedule_list() {
+    [[ -n "$1" && -f "$1" ]] || { printf '[]'; return; }
+    yq -o=json -I=0 '[(.schedule // [])[] | {"cron": (.cron // "" | tostring), "cmd": (.cmd // "" | tostring)}]' "$1" 2>/dev/null || printf '[]'
+}
+# $1 server list $2 repo list: which one the site runs.
+aw_source() {
+    if [[ "$1" != "[]" ]]; then echo server
+    elif [[ "$2" != "[]" ]]; then echo repo
+    else echo none; fi
+}
+
+# What the site is built on, for the UI's ready-made commands: the CMS
+# detection provisioning uses, plus Laravel and Symfony (not CMSes, so
+# detect_cms leaves them out).
+aw_framework() {
+    local dir; dir="$(site_dir "$1")"
+    local cms; cms="$(detect_cms "$dir" 2>/dev/null || true)"
+    if [[ -n "$cms" ]]; then echo "$cms"
+    elif [[ -f "$dir/artisan" ]]; then echo laravel
+    elif [[ -f "$dir/bin/console" ]]; then echo symfony
+    fi
+}
+
+# Reads {"queue_workers":[...],"schedule":[{"cron","cmd"}]} on stdin and
+# stores it as the site's server-side lists (the override file, which
+# wins over the repo — an empty list falls back to the repo's). Then
+# installs them right away when the site is deployed: no deploy needed.
+api_workers_set() {
+    local name="$1" actor="$2"
+    local parsed
+    parsed="$(python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    print("E\tthe body must be JSON"); sys.exit()
+if not isinstance(d, dict):
+    print("E\tthe body must be an object"); sys.exit()
+def text(v, what):
+    if not isinstance(v, str) or not v.strip():
+        raise ValueError(what + " must be a non-empty string")
+    v = v.strip()
+    if len(v) > 500 or any(c in v for c in "\n\r\t\0"):
+        raise ValueError(what + " must be one line, at most 500 characters")
+    return v
+try:
+    w = d.get("queue_workers", [])
+    s = d.get("schedule", [])
+    if not isinstance(w, list) or not isinstance(s, list):
+        raise ValueError("queue_workers and schedule must be lists")
+    if len(w) > 20 or len(s) > 20:
+        raise ValueError("at most 20 workers and 20 scheduled tasks")
+    for i, c in enumerate(w):
+        print("W\t" + text(c, "worker #%d" % i))
+    for i, e in enumerate(s):
+        if not isinstance(e, dict):
+            raise ValueError("schedule #%d must be {cron, cmd}" % i)
+        print("S\t" + text(e.get("cron"), "schedule #%d cron" % i) + "\t" + text(e.get("cmd"), "schedule #%d command" % i))
+except ValueError as e:
+    print("E\t" + str(e))
+')"
+    local -a workers=() crons=() cmds=()
+    local kind a b
+    while IFS=$'\t' read -r kind a b; do
+        case "$kind" in
+            E) api_die bad_request "$a" ;;
+            W) workers+=("$a") ;;
+            S) crons+=("$a"); cmds+=("$b") ;;
+        esac
+    done <<< "$parsed"
+    local re='^[0-9*/,-]+[[:space:]]+[0-9*/,-]+[[:space:]]+[0-9*/,-]+[[:space:]]+[0-9*/,-]+[[:space:]]+[0-9*/,-]+$' i
+    for ((i = 0; i < ${#crons[@]}; i++)); do
+        [[ "${crons[$i]}" =~ $re ]] || api_die bad_request "schedule #$i: '${crons[$i]}' is not a 5-field cron expression (like '*/5 * * * *')"
+        ! guardrail_match "${cmds[$i]}" || api_die bad_request "schedule #$i: the command mentions ddev or /var/www/html — those only exist in the local DDEV container"
+    done
+    for ((i = 0; i < ${#workers[@]}; i++)); do
+        ! guardrail_match "${workers[$i]}" || api_die bad_request "worker #$i: the command mentions ddev or /var/www/html — those only exist in the local DDEV container"
+    done
+
+    local f; f="$(override_config_path "$name")"
+    install -d -m 755 "$GENERATED_DIR"
+    [[ -s "$f" ]] || printf '{}\n' > "$f"
+    yq eval -i 'del(.queue_workers) | del(.schedule)' "$f"
+    # Values go through the environment (strenv), never into the yq
+    # expression: a command is free to contain quotes.
+    for ((i = 0; i < ${#workers[@]}; i++)); do
+        AW_V="${workers[$i]}" yq eval -i '.queue_workers += [strenv(AW_V)]' "$f"
+    done
+    for ((i = 0; i < ${#crons[@]}; i++)); do
+        AW_C="${crons[$i]}" AW_M="${cmds[$i]}" yq eval -i '.schedule += [{"cron": strenv(AW_C), "cmd": strenv(AW_M)}]' "$f"
+    done
+    [[ "$(yq eval 'length' "$f" 2>/dev/null)" != "0" ]] || rm -f "$f"
+
+    DDEPLOY_TRIGGER="web ($actor)" event_record "$name" "workers-config" succeeded "subject=${#workers[@]} worker(s), ${#crons[@]} scheduled task(s) set on the server"
+    site_log "$name" "workers: server-side list set — ${#workers[@]} worker(s), ${#crons[@]} scheduled task(s) (web ($actor))"
+
+    # Re-read the config (the override now wins) and install what it
+    # says, the same calls a deploy makes. Not deployed yet: the first
+    # deploy installs them.
+    api_workers_config "$name"
+    if [[ -L "$(site_root "$name")/current" ]]; then
+        {
+            install_queue_workers "$name" "$PHP_VERSION" "$(site_dir "$name")" "www-$name" "www-$name" "$(site_root "$name")" "${AW_QUEUE[@]}"
+            install_schedule "$name" "$PHP_VERSION" "$(site_dir "$name")" "www-$name" "$(site_root "$name")" "${AW_SCHEDULE[@]}"
+        } >&2 || api_die error "saved, but installing them failed — the next deploy retries"
+        sleep 1
+    fi
+}
+
 api_workers_json() {
     local name="$1"
     local preview=false
     is_preview "$name" && preview=true
     local paused=false
     [[ -f "$(schedule_paused_path "$name")" ]] && paused=true
+    local override ext cfg_path
+    override="$(override_config_path "$name")"
+    ext="$(ext_config_path "$name")"
+    cfg_path="$(resolve_config_path "$name")"
+    local server_w server_s repo_w repo_s
+    server_w="$(aw_workers_list "$override")"
+    server_s="$(aw_schedule_list "$override")"
+    repo_w="$(aw_workers_list "$ext")"; [[ "$repo_w" != "[]" ]] || repo_w="$(aw_workers_list "$cfg_path")"
+    repo_s="$(aw_schedule_list "$ext")"; [[ "$repo_s" != "[]" ]] || repo_s="$(aw_schedule_list "$cfg_path")"
+    local deployed=false
+    [[ -L "$(site_root "$name")/current" ]] && deployed=true
     api_header
-    printf ',"site":%s,"preview":%s,"schedules_paused":%s,"workers":[' "$(json_str "$name")" "$preview" "$paused"
+    printf ',"site":%s,"preview":%s,"schedules_paused":%s' "$(json_str "$name")" "$preview" "$paused"
+    printf ',"framework":%s,"docroot":%s,"deployed":%s' "$(json_str_or_null "$(aw_framework "$name")")" "$(json_str "${DOCROOT:-}")" "$deployed"
+    printf ',"sources":{"workers":%s,"schedules":%s}' \
+        "$(json_str "$(aw_source "$server_w" "$repo_w")")" "$(json_str "$(aw_source "$server_s" "$repo_s")")"
+    printf ',"server":{"queue_workers":%s,"schedule":%s},"repo":{"queue_workers":%s,"schedule":%s}' "$server_w" "$server_s" "$repo_w" "$repo_s"
+    printf ',"workers":['
+
     local i first=1 unit props state sub restarts since pid log
     for ((i = 0; i < ${#AW_QUEUE[@]}; i++)); do
         unit="ddeploy-worker-$name-$i"
@@ -78,7 +209,7 @@ api_workers_json() {
     printf ']}\n'
 }
 
-# api workers <name> [--restart|--stop|--start <index> --actor <email>]
+# api workers <name> [--restart|--stop|--start <index> | --set (JSON on stdin)] --actor <email>
 api_workers() {
     local name="${1:-}"
     shift || true
@@ -87,11 +218,19 @@ api_workers() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --restart|--stop|--start) action="${1#--}"; index="${2:-}"; shift ;;
+            --set) action="set" ;;
             --actor) actor="${2:-}"; shift ;;
             *) api_die bad_request "workers: unknown option '$1'" ;;
         esac
         shift
     done
+    if [[ "$action" == set ]]; then
+        api_valid api_valid_actor "$actor"
+        is_preview "$name" && api_die conflict "previews don't run queue workers or scheduled tasks"
+        api_workers_set "$name" "$actor"
+        api_workers_json "$name"
+        return
+    fi
     api_workers_config "$name"
     if [[ -n "$action" ]]; then
         api_valid api_valid_actor "$actor"

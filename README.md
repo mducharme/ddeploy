@@ -1336,6 +1336,16 @@ keep their old cron line until the site's next deploy. See
 [docs/security.md](docs/security.md) for how these run a
 project-declared command safely.
 
+**Set on the server instead of in the repo.** `workers <name> --set`
+(the web UI's Workers & schedules tab) takes `{"queue_workers": [cmd],
+"schedule": [{"cron", "cmd"}]}` on stdin, validates it like the repo's
+(5-field cron, one line, no DDEV-only commands, 20 of each at most),
+stores it in the site's override file and installs it right away — no
+deploy needed. A server-side list wins over the repository's, the same
+as every other override; an empty one falls back to the repository's.
+Deploys keep using it. `workers <name>` says where each list comes from
+(`sources`), both lists (`server`, `repo`) and the detected framework.
+
 Not available for branch previews (shared-mode would double-process the
 parent's queue). `remove <name>` always removes worker units + the
 cron.d file.

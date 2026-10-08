@@ -881,18 +881,21 @@ parse_config() {
     # `schedule:run`) — a cron expression + command pair each, same
     # {from,to,code}-style precedence as redirects above (ext_cfg wins
     # only if it actually declares a non-empty list).
+    # The operator override (set from the web UI's Workers & schedules
+    # tab, or by hand) wins over the repo the same way.
     SCHEDULE=()
-    local schedule_src="" schedule_tag schedule_ext_count
-    if [[ -f "$ext_cfg" ]]; then
-        schedule_tag="$(yqc '.schedule | tag' "$ext_cfg" 2>/dev/null || true)"
+    local schedule_src="" schedule_tag schedule_ext_count schedule_f
+    for schedule_f in "$override_cfg" "$ext_cfg"; do
+        [[ -n "$schedule_f" && -f "$schedule_f" && -z "$schedule_src" ]] || continue
+        schedule_tag="$(yqc '.schedule | tag' "$schedule_f" 2>/dev/null || true)"
         if [[ "$schedule_tag" == "!!seq" ]]; then
-            schedule_ext_count="$(yqc '.schedule | length' "$ext_cfg" 2>/dev/null || echo 0)"
+            schedule_ext_count="$(yqc '.schedule | length' "$schedule_f" 2>/dev/null || echo 0)"
             [[ "$schedule_ext_count" =~ ^[0-9]+$ ]] || schedule_ext_count=0
-            [[ "$schedule_ext_count" -gt 0 ]] && schedule_src="$ext_cfg"
+            [[ "$schedule_ext_count" -gt 0 ]] && schedule_src="$schedule_f"
         elif [[ -n "$schedule_tag" && "$schedule_tag" != "!!null" ]]; then
             die "schedule for '$name' must be a list of {cron, cmd} maps — refusing to use it"
         fi
-    fi
+    done
     if [[ -z "$schedule_src" ]]; then
         schedule_tag="$(yqc '.schedule | tag' "$cfg" 2>/dev/null || true)"
         [[ "$schedule_tag" == "!!seq" ]] && schedule_src="$cfg"

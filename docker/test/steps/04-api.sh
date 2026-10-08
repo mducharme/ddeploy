@@ -115,6 +115,11 @@ assert_contains "$(wait_run "$b" 300)" "succeeded" "second deploy succeeded"
 burst_fail=0
 for i in 1 2 3 4 5 6; do ddeploy deploy testsite >/dev/null 2>&1 || burst_fail=$((burst_fail + 1)); done
 assert_cmd_ok "six deploys in a row: none fails on systemd's restart limit" test "$burst_fail" -eq 0
+# The run's closing event is recorded outside the command (no config
+# loaded there): it must not trip set -u in the index ("SITES_ROOT:
+# unbound variable" after every deploy, harmless but alarming).
+deploy_out="$(ddeploy deploy testsite 2>&1)"
+assert_not_contains "$deploy_out" "unbound variable" "a deploy's output has no unbound-variable errors"
 a_end="$(ddeploy api run show "$a" | jq_py 'd["events"][-1]["ts"]')"
 b_start="$(ddeploy api run show "$b" | jq_py 'd["events"][0]["ts"]')"
 if [[ ! "$b_start" < "$a_end" ]]; then
@@ -558,6 +563,27 @@ exec 8>&-
 assert_contains "$(ddeploy api logs | jq_py '[l["name"] for l in d["logs"]]')" "testsite.worker-0" "the worker's log is listed"
 assert_contains "$(ddeploy api logs | jq_py '[l["label"] for l in d["logs"] if l["name"] == "testsite.schedule-0"]')" "schedule #0" "...and the schedule's"
 assert_contains "$(ddeploy api logs testsite.schedule-0 | jq_py 'd["text"]')" "finished: exit 0" "schedule logs read like any other"
+
+# Set from the web UI: stored on the server (wins over the repo), installed right away.
+out="$(ddeploy api workers testsite)"
+assert_contains "$(jq_py 'd["sources"]' <<< "$out")" '"workers": "repo"' "workers come from the repo"
+assert_contains "$(jq_py 'd["repo"]["queue_workers"]' <<< "$out")" "sleep 1000" "...listed as the repo's"
+out="$(printf '%s' '{"queue_workers":["sleep 2000"],"schedule":[{"cron":"*/5 * * * *","cmd":"echo \"from the ui\" >> /tmp/ui-schedule.txt"}]}' | ddeploy api workers testsite --set --actor admin@example.com)"
+assert_contains "$(jq_py 'd["sources"]' <<< "$out")" '"workers": "server", "schedules": "server"' "--set: the server's lists win"
+assert_contains "$(jq_py 'd["workers"][0]["command"]' <<< "$out")" "sleep 2000" "...the worker is the new one"
+assert_contains "$(jq_py 'd["workers"][0]["state"]' <<< "$out")" "active" "...running right away, without a deploy"
+assert_contains "$(cat /etc/cron.d/ddeploy-site-testsite)" "*/5 * * * * root DDEPLOY_TRIGGER=schedule" "...and the schedule installed"
+assert_contains "$(cat /var/lib/ddeploy/generated/testsite.schedule-0.sh)" 'echo "from the ui"' "...quotes in a command survive"
+assert_contains "$(tail -n 1 /var/lib/ddeploy/events/testsite.jsonl)" '"kind":"workers-config"' "...recorded in the site's history"
+out="$(printf '%s' '{"schedule":[{"cron":"daily","cmd":"x"}]}' | ddeploy api workers testsite --set --actor admin@example.com 2>/dev/null || true)"
+assert_contains "$out" "not a 5-field cron expression" "--set refuses a bad cron expression"
+out="$(printf '%s' '{"queue_workers":["ddev exec php artisan queue:work"]}' | ddeploy api workers testsite --set --actor admin@example.com 2>/dev/null || true)"
+assert_contains "$out" "local DDEV container" "...and a DDEV-only command"
+ddeploy deploy testsite >/dev/null 2>&1
+assert_contains "$(ddeploy api workers testsite | jq_py 'd["workers"][0]["command"]')" "sleep 2000" "a deploy keeps the server's worker"
+out="$(printf '%s' '{"queue_workers":[],"schedule":[]}' | ddeploy api workers testsite --set --actor admin@example.com)"
+assert_contains "$(jq_py 'd["workers"][0]["command"]' <<< "$out")" "sleep 1000" "emptied: back to the repo's worker"
+assert_contains "$(cat /etc/cron.d/ddeploy-site-testsite)" "* * * * * root" "...and the repo's schedule"
 
 step "api: backups — a site with nothing in object storage yet"
 # Earlier steps already backed testsite up: set its prefix aside, as if new.

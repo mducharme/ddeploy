@@ -124,6 +124,11 @@ index_build() {
 # stale ones in parallel. Afterwards $INDEX_DIR/<site>.* can be read.
 index_refresh() {
     [[ $# -gt 0 ]] || return 0
+    # Rows are built from the config (where sites live, the base domain):
+    # without it loaded — a caller outside load_conf, like run_notifying's
+    # closing event — there's nothing to build from. Not an error: the
+    # next `api sites` or `list` rebuilds whatever went stale.
+    [[ -n "${SITES_ROOT:-}" && -n "${BASE_DOMAIN:-}" ]] || return 0
     index_fingerprints "$@"
     local -a stale=()
     local name
